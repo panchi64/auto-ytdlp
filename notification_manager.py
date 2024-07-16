@@ -1,37 +1,57 @@
 import platform
-import subprocess
-import win10toast
+from plyer import notification
 
 class NotificationManager:
     def __init__(self):
         self.system = platform.system()
 
     def send_notification(self, title, message):
-        if self.system == "Windows":
-            self._send_windows_notification(title, message)
-        elif self.system == "Darwin":  # macOS
-            self._send_macos_notification(title, message)
-        elif self.system == "Linux":
-            self._send_linux_notification(title, message)
-        else:
-            print(f"Unsupported OS for notifications: {self.system}")
+        """
+        Send a desktop notification.
 
-    def _send_windows_notification(self, title, message):
+        :param title: The title of the notification
+        :param message: The body of the notification
+        """
         try:
-            from win10toast import ToastNotifier
-            toaster = ToastNotifier()
-            toaster.show_toast(title, message, duration=5)
-        except ImportError:
-            print("win10toast not installed. Run 'pip install win10toast' to enable Windows notifications.")
-            print(f"Notification: {title} - {message}")
+            notification.notify(
+                title=title,
+                message=message,
+                app_name="Auto-YTDLP",
+                timeout=10  # notification will disappear after 10 seconds
+            )
+        except Exception as e:
+            print(f"Failed to send notification: {e}")
 
-    def _send_macos_notification(self, title, message):
-        apple_script = f'display notification "{message}" with title "{title}"'
-        subprocess.run(["osascript", "-e", apple_script])
+    def notify_download_complete(self, video_title):
+        """
+        Send a notification for a completed download.
 
-    def _send_linux_notification(self, title, message):
-        try:
-            subprocess.run(["notify-send", title, message])
-        except FileNotFoundError:
-            print("notify-send not found. Make sure libnotify-bin is installed.")
-            print(f"Notification: {title} - {message}")
+        :param video_title: The title of the downloaded video
+        """
+        self.send_notification(
+            title="Download Complete",
+            message=f"The video '{video_title}' has finished downloading."
+        )
+
+    def notify_download_error(self, video_title, error_message):
+        """
+        Send a notification for a download error.
+
+        :param video_title: The title of the video that encountered an error
+        :param error_message: The error message
+        """
+        self.send_notification(
+            title="Download Error",
+            message=f"Error downloading '{video_title}': {error_message}"
+        )
+
+    def notify_vpn_switch(self, new_location):
+        """
+        Send a notification for a VPN server switch.
+
+        :param new_location: The new VPN server location
+        """
+        self.send_notification(
+            title="VPN Server Switched",
+            message=f"Connected to new VPN server: {new_location}"
+        )
