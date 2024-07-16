@@ -130,7 +130,7 @@ on_error = true
 - `remove <id>`: Remove a specific download from the queue
 - `info <id>`: Show detailed information about a specific download
 - `update`: Check for and apply yt-dlp updates
-- `gui`: Open the script with a terminal GUI
+- `no-gui`: No TUI, only CLI
 - `help`: Show available commands
 
 ## Logging
