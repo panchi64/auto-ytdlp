@@ -15,7 +15,7 @@ Here's what makes this script nice to have:
 5. **Hard shell**: It can handle long download sessions like a champ. If something goes wrong, it'll let you know, and you can gracefully shut it down without losing progress.
 6. **Organized**: It keeps track of what you've already downloaded and pulls down video metadata too, so you're not left with a bunch of mystery files.
 
-And hey, if you think of some cool feature to add, the code's right there for you to tinker with! 
+And hey, if you think of some cool feature to add, the code's right there for you to tinker with!
 
 ## Features
 
@@ -51,7 +51,7 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 
 2. Set up a virtual environment (recommended):
    ```
-   python -m venv venv
+   python -m venv venv --prompt auto-ytdlp # Use python3 if python doesn't work
    ```
 
    Activate the virtual environment:
