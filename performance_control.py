@@ -1,6 +1,7 @@
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable
 import yt_dlp
 
 
@@ -22,6 +23,9 @@ class PerformanceControl:
         if bandwidth_limit:
             self.ydl_opts['ratelimit'] = bandwidth_limit
         self.stop_flag = False
+        self.current_ydl = None
+        self.executor = None
+        self.progress_hooks: List[Callable] = [self.progress_hook]
 
     def add_to_queue(self, url: str):
         self.download_queue.append(url)
@@ -53,7 +57,11 @@ class PerformanceControl:
         if self.stop_flag:
             return {"status": "stopped", "url": url}
 
-        with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+        ydl_opts = self.ydl_opts.copy()
+        ydl_opts['progress_hooks'] = self.progress_hooks
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            self.current_ydl = ydl
             try:
                 info = ydl.extract_info(url, download=False)
                 video_id = info['id']
@@ -63,14 +71,25 @@ class PerformanceControl:
                 ydl.download([url])
                 self.download_archive.add(video_id)
                 return {"status": "success", "url": url}
+            except yt_dlp.utils.DownloadError as e:
+                if 'Cancelling download' in str(e):
+                    return {"status": "cancelled", "url": url}
+                return {"status": "error", "url": url, "error": str(e)}
             except Exception as e:
                 return {"status": "error", "url": url, "error": str(e)}
+            finally:
+                self.current_ydl = None
+
+    def progress_hook(self, d: Dict[str, Any]) -> None:
+        if self.stop_flag and d['status'] == 'downloading':
+            raise yt_dlp.utils.DownloadError('Cancelling download')
 
     def process_queue(self):
         self.stop_flag = False
         results = []
-        with ThreadPoolExecutor(max_workers=self.max_concurrent_downloads) as executor:
-            future_to_url = {executor.submit(self.download_video, url): url for url in self.download_queue}
+        self.executor = ThreadPoolExecutor(max_workers=self.max_concurrent_downloads)
+        try:
+            future_to_url = {self.executor.submit(self.download_video, url): url for url in self.download_queue}
             for future in as_completed(future_to_url):
                 url = future_to_url[future]
                 try:
@@ -81,13 +100,28 @@ class PerformanceControl:
 
                 if self.stop_flag:
                     break
+        finally:
+            self.executor.shutdown(wait=False)
+            self.executor = None
 
         return results
 
     def stop_queue(self):
         self.stop_flag = True
-        # You might want to add more logic here to cancel ongoing downloads
-        # This might involve modifying yt-dlp options or sending signals to running processes
+        if self.current_ydl:
+            self.current_ydl.params['abort'] = True
+        if self.executor:
+            for pid in self.get_subprocess_pids():
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass  # Process already terminated
+            self.executor.shutdown(wait=False)
+
+    def get_subprocess_pids(self):
+        if not self.executor:
+            return []
+        return [thread._thread.ident for thread in self.executor._threads]
 
     def batch_process(self, batch_opts: List[Dict[str, Any]]):
         results = []
