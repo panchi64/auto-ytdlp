@@ -164,3 +164,4 @@ cython_debug/
 # Custom files
 config.toml
 links.txt
+/auto_ytdlp.logs

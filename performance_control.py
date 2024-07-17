@@ -6,11 +6,16 @@ import yt_dlp
 
 
 class PerformanceControl:
-    def __init__(self, max_concurrent_downloads: int = 3, bandwidth_limit: str = None):
+    def __init__(self,
+                 max_concurrent_downloads: int = 3,
+                 bandwidth_limit: str = None,
+                 tui_manager=None,
+                 download_dir: str = None):
         self.max_concurrent_downloads = max_concurrent_downloads
         self.bandwidth_limit = bandwidth_limit
         self.download_queue = []
         self.download_archive = set()
+        self.download_dir = download_dir or os.getcwd()
         self.ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -18,7 +23,8 @@ class PerformanceControl:
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'outtmpl': '%(title)s.%(ext)s',
+            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),
+            'logger': self.YDLLogger(tui_manager),
         }
         if bandwidth_limit:
             self.ydl_opts['ratelimit'] = bandwidth_limit
@@ -26,6 +32,23 @@ class PerformanceControl:
         self.current_ydl = None
         self.executor = None
         self.progress_hooks: List[Callable] = [self.progress_hook]
+        self.tui_manager = tui_manager
+
+    class YDLLogger:
+        def __init__(self, tui_manager):
+            self.tui_manager = tui_manager
+
+        def debug(self, msg):
+            if self.tui_manager:
+                self.tui_manager.show_output(f"[DEBUG] {msg}")
+
+        def warning(self, msg):
+            if self.tui_manager:
+                self.tui_manager.show_output(f"[WARNING] {msg}")
+
+        def error(self, msg):
+            if self.tui_manager:
+                self.tui_manager.show_output(f"[ERROR] {msg}")
 
     def add_to_queue(self, url: str):
         self.download_queue.append(url)
@@ -83,6 +106,11 @@ class PerformanceControl:
     def progress_hook(self, d: Dict[str, Any]) -> None:
         if self.stop_flag and d['status'] == 'downloading':
             raise yt_dlp.utils.DownloadError('Cancelling download')
+        if self.tui_manager:
+            if d['status'] == 'downloading':
+                self.tui_manager.show_output(f"Downloading: {d['filename']} - {d.get('_percent_str', 'N/A')} complete")
+            elif d['status'] == 'finished':
+                self.tui_manager.show_output(f"Finished downloading {d['filename']}")
 
     def process_queue(self):
         self.stop_flag = False

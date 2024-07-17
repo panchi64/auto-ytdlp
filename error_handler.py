@@ -1,5 +1,3 @@
-import sys
-import logging
 from urllib.error import URLError
 from ssl import SSLError
 from yt_dlp.utils import DownloadError, ExtractorError, GeoRestrictedError, YoutubeDLError

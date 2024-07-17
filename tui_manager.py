@@ -3,12 +3,14 @@ import urwid
 
 class TUIManager:
     def __init__(self, start_downloads_callback, stop_downloads_callback):
-        self.footer = None
+        self.output_listbox = None
         self.download_listbox = None
+        self.footer = None
         self.start_downloads_callback = start_downloads_callback
         self.stop_downloads_callback = stop_downloads_callback
         self.main_loop = None
         self.download_list = urwid.SimpleListWalker([])
+        self.output_list = urwid.SimpleListWalker([])
         self.is_downloading = False
 
     def run(self):
@@ -21,9 +23,18 @@ class TUIManager:
         self.footer = urwid.Text("Press Q to quit, S to start downloads, X to stop downloads")
 
         self.download_listbox = urwid.ListBox(self.download_list)
+        self.output_listbox = urwid.ListBox(self.output_list)
+
+        download_box = urwid.LineBox(self.download_listbox, title="Downloads")
+        output_box = urwid.LineBox(self.output_listbox, title="Output")
+
+        main_columns = urwid.Columns([
+            ('weight', 30, download_box),
+            ('weight', 70, output_box)
+        ])
 
         main_widget = urwid.Frame(
-            body=self.download_listbox,
+            body=main_columns,
             header=header,
             footer=self.footer
         )
@@ -51,16 +62,21 @@ class TUIManager:
             self.stop_downloads_callback()
 
     def add_download(self, url):
-        self.download_list.append(urwid.Text(f"Download: {url}"))
+        self.download_list.append(urwid.Text(f"• {url}"))
         self.main_loop.draw_screen()
 
     def update_download_status(self, url, status):
         for widget in self.download_list:
             if url in widget.text:
-                widget.set_text(f"Download: {url} - Status: {status}")
+                widget.set_text(f"• {url} - {status}")
                 break
         self.main_loop.draw_screen()
 
-    def show_message(self, message):
-        self.download_list.append(urwid.Text(message))
+    def show_output(self, message):
+        self.output_list.append(urwid.Text(message))
+        self.output_listbox.focus_position = len(self.output_list) - 1
+        self.main_loop.draw_screen()
+
+    def clear_output(self):
+        del self.output_list[:]
         self.main_loop.draw_screen()

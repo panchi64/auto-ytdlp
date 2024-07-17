@@ -17,10 +17,13 @@ class AutoYTDLP:
         self.error_handler = AutoYTDLPErrorHandler(self.logger)
         self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'),
                                       speed_threshold=self.config_manager.get('vpn', 'speed_threshold'))
+        self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads)
         self.notification_manager = NotificationManager()
         self.performance_control = PerformanceControl(
             max_concurrent_downloads=self.config_manager.get('performance', 'max_concurrent_downloads'),
-            bandwidth_limit=self.config_manager.get('performance', 'bandwidth_limit')
+            bandwidth_limit=self.config_manager.get('performance', 'bandwidth_limit'),
+            tui_manager=self.tui_manager,
+            download_dir=self.config_manager.get('general', 'download_dir'),
         )
         self.auxiliary_features = AuxiliaryFeatures(self.performance_control.ydl_opts)
         self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads)
@@ -47,10 +50,11 @@ class AutoYTDLP:
         for result in results:
             if result['status'] == 'success':
                 self.tui_manager.update_download_status(result['url'], 'Completed')
-                self.notification_manager.send_notification(f"Download complete: {result['url']}")
+                self.notification_manager.notify_download_complete(result['url'])
             elif result['status'] == 'error':
                 self.tui_manager.update_download_status(result['url'], 'Failed')
-                self.notification_manager.send_notification(f"Download failed: {result['url']}")
+                self.notification_manager.send_notification("Download failed",
+                                                            f"There was an error downloading: {result['url']}")
                 self.logger.error(f"Download failed for {result['url']}: {result['error']}")
         self.is_downloading = False
 
@@ -58,7 +62,6 @@ class AutoYTDLP:
         if not self.is_downloading:
             return
         self.performance_control.stop_queue()
-        self.tui_manager.show_message("Downloads stopped.")
         self.is_downloading = False
 
     def run_cli(self):

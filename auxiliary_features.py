@@ -1,7 +1,7 @@
 import os
 import subprocess
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 import yt_dlp
 
