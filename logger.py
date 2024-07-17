@@ -1,6 +1,7 @@
 import logging
 from typing import Optional
 
+
 class Logger:
     def __init__(self, log_file: str = "auto_ytdlp.logs", level: int = logging.INFO):
         self.logger = logging.getLogger("AutoYTDLP")

@@ -4,6 +4,7 @@ from urllib.error import URLError
 from ssl import SSLError
 from yt_dlp.utils import DownloadError, ExtractorError, GeoRestrictedError, YoutubeDLError
 
+
 class AutoYTDLPErrorHandler:
     def __init__(self, logger):
         self.logger = logger

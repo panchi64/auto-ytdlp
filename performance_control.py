@@ -1,8 +1,8 @@
 import os
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any
 import yt_dlp
+
 
 class PerformanceControl:
     def __init__(self, max_concurrent_downloads: int = 3, bandwidth_limit: str = None):
@@ -21,6 +21,7 @@ class PerformanceControl:
         }
         if bandwidth_limit:
             self.ydl_opts['ratelimit'] = bandwidth_limit
+        self.stop_flag = False
 
     def add_to_queue(self, url: str):
         self.download_queue.append(url)
@@ -49,12 +50,14 @@ class PerformanceControl:
                 f.write(f"{item}\n")
 
     def download_video(self, url: str) -> Dict[str, Any]:
+        if self.stop_flag:
+            return {"status": "stopped", "url": url}
+
         with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
                 video_id = info['id']
                 if video_id in self.download_archive:
-                    print(f"Skipping {url} (already downloaded)")
                     return {"status": "skipped", "url": url}
 
                 ydl.download([url])
@@ -64,6 +67,7 @@ class PerformanceControl:
                 return {"status": "error", "url": url, "error": str(e)}
 
     def process_queue(self):
+        self.stop_flag = False
         results = []
         with ThreadPoolExecutor(max_workers=self.max_concurrent_downloads) as executor:
             future_to_url = {executor.submit(self.download_video, url): url for url in self.download_queue}
@@ -75,11 +79,21 @@ class PerformanceControl:
                 except Exception as e:
                     results.append({"status": "error", "url": url, "error": str(e)})
 
+                if self.stop_flag:
+                    break
+
         return results
+
+    def stop_queue(self):
+        self.stop_flag = True
+        # You might want to add more logic here to cancel ongoing downloads
+        # This might involve modifying yt-dlp options or sending signals to running processes
 
     def batch_process(self, batch_opts: List[Dict[str, Any]]):
         results = []
         for opts in batch_opts:
+            if self.stop_flag:
+                break
             temp_opts = self.ydl_opts.copy()
             temp_opts.update(opts.get('ydl_opts', {}))
             with yt_dlp.YoutubeDL(temp_opts) as ydl:

@@ -2,13 +2,15 @@ import subprocess
 import time
 from typing import Tuple
 
+
 class VPNManager:
     def __init__(self, switch_after: int = 30, speed_threshold: int = 500):
         self.switch_after = switch_after
         self.speed_threshold = speed_threshold
         self.download_count = 0
 
-    def connect(self) -> bool:
+    @staticmethod
+    def connect() -> bool:
         """Connect to ExpressVPN."""
         try:
             result = subprocess.run(["expressvpn", "connect"], capture_output=True, text=True, check=True)
@@ -17,7 +19,8 @@ class VPNManager:
             print("Failed to connect to ExpressVPN")
             return False
 
-    def disconnect(self) -> bool:
+    @staticmethod
+    def disconnect() -> bool:
         """Disconnect from ExpressVPN."""
         try:
             result = subprocess.run(["expressvpn", "disconnect"], capture_output=True, text=True, check=True)
@@ -33,7 +36,8 @@ class VPNManager:
             return self.connect()
         return False
 
-    def check_connection(self) -> Tuple[bool, str]:
+    @staticmethod
+    def check_connection() -> Tuple[bool, str]:
         """Check the current VPN connection status."""
         try:
             result = subprocess.run(["expressvpn", "status"], capture_output=True, text=True, check=True)

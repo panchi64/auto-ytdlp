@@ -1,6 +1,7 @@
 import toml
 from typing import Any, Dict
 
+
 class ConfigManager:
     def __init__(self, config_file: str = "config.toml"):
         self.config_file = config_file
@@ -20,7 +21,8 @@ class ConfigManager:
             print("Using default settings.")
             self.config = self.get_default_config()
 
-    def get_default_config(self) -> Dict[str, Any]:
+    @staticmethod
+    def get_default_config() -> Dict[str, Any]:
         """Return default configuration settings."""
         return {
             "general": {

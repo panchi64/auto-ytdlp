@@ -1,11 +1,13 @@
 import platform
 from plyer import notification
 
+
 class NotificationManager:
     def __init__(self):
         self.system = platform.system()
 
-    def send_notification(self, title, message):
+    @staticmethod
+    def send_notification(title, message):
         """
         Send a desktop notification.
 
