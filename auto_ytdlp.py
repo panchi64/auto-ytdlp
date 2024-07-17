@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 
 from vpn_manager import VPNManager
 from config_manager import ConfigManager
@@ -75,7 +76,10 @@ class AutoYTDLP:
     def run(self):
         try:
             self.vpn_manager.connect()
-            self.run_cli()
+            if self.tui_manager:
+                self.tui_manager.run()
+            else:
+                self.start_downloads()
         except Exception as e:
             self.error_handler.handle_error(e)
         finally:
