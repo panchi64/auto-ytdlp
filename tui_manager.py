@@ -74,8 +74,14 @@ class TUIManager:
 
     def show_output(self, message):
         self.output_list.append(urwid.Text(message))
-        self.output_listbox.focus_position = len(self.output_list) - 1
-        self.main_loop.draw_screen()
+        if self.output_listbox is not None:
+            try:
+                self.output_listbox.focus_position = len(self.output_list) - 1
+            except IndexError:
+                # This can happen if the list is empty
+                pass
+        if self.main_loop:
+            self.main_loop.draw_screen()
 
     def clear_output(self):
         del self.output_list[:]

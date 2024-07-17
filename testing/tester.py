@@ -6,7 +6,7 @@ import tempfile
 import logging
 import urwid
 from hypothesis import given, strategies as st
-from yt_dlp.compat import shutil
+import shutil
 
 from config_manager import ConfigManager
 from logger import Logger
@@ -564,6 +564,110 @@ class TestDownloadQueueManagement(unittest.TestCase):
         results = self.pc.process_queue()
         self.assertEqual(len(results), 3)
         self.assertEqual(mock_ytdl.call_count, 3)
+
+
+class TestAutoYTDLPDownloadDirectory(unittest.TestCase):
+    @patch('auto_ytdlp.VPNManager')
+    @patch('auto_ytdlp.TUIManager')
+    @patch('auto_ytdlp.PerformanceControl')
+    @patch('auto_ytdlp.ConfigManager')
+    def setUp(self, mock_config, mock_performance, mock_tui, mock_vpn):
+        self.temp_dir = tempfile.mkdtemp()
+        self.download_dir = os.path.join(self.temp_dir, 'downloads')
+        os.makedirs(self.download_dir, exist_ok=True)
+        self.log_file = os.path.join(self.temp_dir, 'test_log.txt')
+        self.links_file = os.path.join(self.temp_dir, 'test_links.txt')
+
+        self.mock_config = mock_config.return_value
+        self.mock_performance = mock_performance.return_value
+        self.mock_tui = mock_tui.return_value
+        self.mock_vpn = mock_vpn.return_value
+
+        self.mock_config.get.side_effect = lambda section, key, default=None: {
+            ('general', 'log_file'): self.log_file,
+            ('general', 'links_file'): self.links_file,
+            ('general', 'download_dir'): self.download_dir
+        }.get((section, key), default)
+
+        self.auto_ytdlp = AutoYTDLP()
+        self.auto_ytdlp.performance_control = self.mock_performance
+        self.auto_ytdlp.tui_manager = self.mock_tui
+        self.auto_ytdlp.vpn_manager = self.mock_vpn
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    class TestAutoYTDLPDownloadDirectory(unittest.TestCase):
+        @patch('auto_ytdlp.VPNManager')
+        @patch('auto_ytdlp.TUIManager')
+        @patch('auto_ytdlp.PerformanceControl')
+        @patch('auto_ytdlp.ConfigManager')
+        def setUp(self, mock_config, mock_performance, mock_tui, mock_vpn):
+            self.temp_dir = tempfile.mkdtemp()
+            self.download_dir = os.path.join(self.temp_dir, 'downloads')
+            os.makedirs(self.download_dir, exist_ok=True)
+            self.log_file = os.path.join(self.temp_dir, 'test_log.txt')
+            self.links_file = os.path.join(self.temp_dir, 'test_links.txt')
+
+            self.mock_config = mock_config.return_value
+            self.mock_performance = mock_performance.return_value
+            self.mock_tui = mock_tui.return_value
+            self.mock_vpn = mock_vpn.return_value
+
+            self.mock_config.get.side_effect = lambda section, key, default=None: {
+                ('general', 'log_file'): self.log_file,
+                ('general', 'links_file'): self.links_file,
+                ('general', 'download_dir'): self.download_dir
+            }.get((section, key), default)
+
+            self.auto_ytdlp = AutoYTDLP()
+            self.auto_ytdlp.performance_control = self.mock_performance
+            self.auto_ytdlp.tui_manager = self.mock_tui
+            self.auto_ytdlp.vpn_manager = self.mock_vpn
+
+        def tearDown(self):
+            shutil.rmtree(self.temp_dir)
+
+        def test_download_to_correct_directory(self):
+            # Setup
+            test_video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            test_video_filename = "Never Gonna Give You Up.mp4"
+
+            with open(self.links_file, 'w') as f:
+                f.write(test_video_url)
+
+            # Mock successful download in PerformanceControl
+            self.mock_performance.process_queue.return_value = [
+                {'status': 'success', 'url': test_video_url}
+            ]
+
+            # Mock the download process in PerformanceControl
+            def mock_download(url):
+                filepath = os.path.join(self.download_dir, test_video_filename)
+                with open(filepath, 'w') as f:
+                    f.write("Mock content")
+                return {'status': 'success', 'url': url}
+
+            self.mock_performance.download_video.side_effect = mock_download
+
+            # Action
+            self.auto_ytdlp.start_downloads()
+
+            # Assert
+            expected_file_path = os.path.join(self.download_dir, test_video_filename)
+            self.assertTrue(os.path.exists(expected_file_path), f"File not found at {expected_file_path}")
+
+            self.mock_tui.update_download_status.assert_called_with(test_video_url, 'Completed')
+            self.assertEqual(self.mock_performance.process_queue.call_count, 1)
+
+            # Verify that PerformanceControl was initialized with the correct download_dir
+            self.mock_performance.assert_called_once()
+            _, kwargs = self.mock_performance.call_args
+            self.assertEqual(kwargs.get('download_dir'), self.download_dir)
+
+            print(f"Download directory: {self.download_dir}")
+            print(f"Expected file path: {expected_file_path}")
+            print(f"Files in download directory: {os.listdir(self.download_dir)}")
 
 
 class TestVPNSwitching(unittest.TestCase):

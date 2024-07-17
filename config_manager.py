@@ -1,3 +1,4 @@
+import os
 from typing import Dict, Any
 
 import toml
@@ -8,6 +9,7 @@ class ConfigManager:
         self.config_file = config_file
         self.config: Dict[str, Any] = self.get_default_config()
         self.load_config()
+        self.ensure_download_directory()
 
     def load_config(self) -> None:
         try:
@@ -55,8 +57,7 @@ class ConfigManager:
         return default
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
-        section_dict = self.config.get(section, {})
-        return section_dict.get(key, default) if section_dict else default
+        return self.config.get(section, {}).get(key, default)
 
     def set(self, section: str, key: str, value: Any) -> None:
         if section not in self.config:
@@ -66,3 +67,11 @@ class ConfigManager:
     def save_config(self) -> None:
         with open(self.config_file, 'w') as f:
             toml.dump(self.config, f)
+
+    def ensure_download_directory(self) -> None:
+        download_dir = self.get('general', 'download_dir')
+        if download_dir:
+            os.makedirs(download_dir, exist_ok=True)
+            print(f"Ensured download directory exists: {download_dir}")
+        else:
+            print("Warning: No download directory specified in config.")
