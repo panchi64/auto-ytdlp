@@ -64,7 +64,7 @@ class PerformanceControl:
             try:
                 print(f'[INFO] Downloading {url}')
                 ydl.download([url])
-                return {"status": "success", "url": url}
+                return {"status": "✅", "url": url}
             except yt_dlp.utils.DownloadError as e:
                 if 'Cancelling download' in str(e):
                     return {"status": "cancelled", "url": url}

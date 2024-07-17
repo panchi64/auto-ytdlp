@@ -49,32 +49,7 @@ class AutoYTDLP:
                 self.tui_manager.add_download(url)
 
         try:
-            while self.performance_control.download_queue:
-                if self.vpn_switch_needed:
-                    self.vpn_manager.switch_server()
-                    self.vpn_switch_needed = False
-                    if self.tui_manager:
-                        self.tui_manager.show_output("VPN connection switched")
-
-                current_url = self.performance_control.download_queue.pop(0)
-                result = self.performance_control.download_video(current_url)
-
-                if result['status'] == 'success':
-                    if self.tui_manager:
-                        self.tui_manager.update_download_status(result['url'], 'Completed')
-                    self.notification_manager.notify_download_complete(result['url'])
-                    if self.tui_manager:
-                        self.tui_manager.show_output(f"Download completed: {result['url']}")
-                elif result['status'] == 'error':
-                    if self.tui_manager:
-                        self.tui_manager.update_download_status(result['url'], 'Failed')
-                    self.notification_manager.send_notification("Download failed",
-                                                                f"There was an error downloading: {result['url']}")
-                    self.logger.exception(
-                        f"Download failed for {result['url']}: {result.get('error', 'Unknown error')}")
-                    if self.tui_manager:
-                        self.tui_manager.show_output(
-                            f"Download failed: {result['url']} - {result.get('error', 'Unknown error')}")
+            self.performance_control.process_queue()
         except Exception as e:
             self.logger.exception(f"An unexpected error occurred during downloads: {str(e)}", exc_info=e)
             if self.tui_manager:
