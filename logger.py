@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional
 
 
@@ -6,6 +7,11 @@ class Logger:
     def __init__(self, log_file: str = "auto_ytdlp.logs", level: int = logging.INFO):
         self.logger = logging.getLogger("AutoYTDLP")
         self.logger.setLevel(level)
+
+        # Ensure the directory exists
+        log_dir = os.path.dirname(log_file)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir)
 
         # File handler
         file_handler = logging.FileHandler(log_file)

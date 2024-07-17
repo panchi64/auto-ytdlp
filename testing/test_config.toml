@@ -1,0 +1,20 @@
+[general]
+links_file = "links.txt"
+download_dir = "./test_downloads"
+log_file = "auto_ytdlp.logs"
+
+[yt_dlp]
+archive_file = "download_archive.txt"  # File to store information about downloaded videos
+format = "bestvideo+bestaudio/best"
+
+[performance]
+max_concurrent_downloads = 5
+bandwidth_limit = "5M"  # 5 Mbps
+
+[vpn]
+switch_after = 30  # Switch VPN after every 30 downloads
+speed_threshold = 500  # Switch if the speed drops below 500 KBps
+
+[notifications]
+on_completion = true
+on_error = true

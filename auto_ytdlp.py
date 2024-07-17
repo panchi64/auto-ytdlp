@@ -28,6 +28,7 @@ class AutoYTDLP:
         self.auxiliary_features = AuxiliaryFeatures(self.performance_control.ydl_opts)
         self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads)
         self.is_downloading = False
+        self.max_retries = 1
 
     def load_url_list(self, file_path: str) -> list:
         try:
@@ -46,16 +47,33 @@ class AutoYTDLP:
             self.performance_control.add_to_queue(url)
             self.tui_manager.add_download(url)
 
-        results = self.performance_control.process_queue()
-        for result in results:
-            if result['status'] == 'success':
-                self.tui_manager.update_download_status(result['url'], 'Completed')
-                self.notification_manager.notify_download_complete(result['url'])
-            elif result['status'] == 'error':
-                self.tui_manager.update_download_status(result['url'], 'Failed')
-                self.notification_manager.send_notification("Download failed",
-                                                            f"There was an error downloading: {result['url']}")
-                self.logger.error(f"Download failed for {result['url']}: {result['error']}")
+        vpn_switched = False
+        for attempt in range(self.max_retries + 1):
+            results = self.performance_control.process_queue()
+            retry_queue = []
+            for result in results:
+                current_speed = self.performance_control.get_current_speed()
+                if not vpn_switched and self.vpn_manager.should_switch(current_speed):
+                    self.vpn_manager.switch_server()
+                    vpn_switched = True
+
+                if result['status'] == 'success':
+                    self.tui_manager.update_download_status(result['url'], 'Completed')
+                    self.notification_manager.notify_download_complete(result['url'])
+                elif result['status'] == 'error':
+                    self.tui_manager.update_download_status(result['url'], 'Failed')
+                    if attempt < self.max_retries:
+                        retry_queue.append(result['url'])
+                    else:
+                        self.notification_manager.send_notification("Download failed",
+                                                                    f"There was an error downloading: {result['url']}")
+                        self.logger.error(f"Download failed for {result['url']}: {result['error']}")
+
+            if not retry_queue:
+                break
+
+            self.performance_control.download_queue = retry_queue
+
         self.is_downloading = False
 
     def stop_downloads(self):

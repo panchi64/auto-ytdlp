@@ -1,5 +1,6 @@
 import os
 import signal
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Callable
 import yt_dlp
@@ -33,6 +34,9 @@ class PerformanceControl:
         self.executor = None
         self.progress_hooks: List[Callable] = [self.progress_hook]
         self.tui_manager = tui_manager
+        self.start_time = None
+        self.downloaded_bytes = 0
+        self.current_speed = 0
 
     class YDLLogger:
         def __init__(self, tui_manager):
@@ -104,13 +108,31 @@ class PerformanceControl:
                 self.current_ydl = None
 
     def progress_hook(self, d: Dict[str, Any]) -> None:
-        if self.stop_flag and d['status'] == 'downloading':
-            raise yt_dlp.utils.DownloadError('Cancelling download')
-        if self.tui_manager:
-            if d['status'] == 'downloading':
-                self.tui_manager.show_output(f"Downloading: {d['filename']} - {d.get('_percent_str', 'N/A')} complete")
-            elif d['status'] == 'finished':
+        if d['status'] == 'downloading':
+            if self.start_time is None:
+                self.start_time = time.time()
+
+            self.downloaded_bytes = d['downloaded_bytes']
+            elapsed_time = time.time() - self.start_time
+
+            if elapsed_time > 0:
+                self.current_speed = self.downloaded_bytes / elapsed_time / 1024  # Speed in KB/s
+
+            if self.tui_manager:
+                self.tui_manager.show_output(
+                    f"Downloading: {d['filename']} - {d.get('_percent_str', 'N/A')} complete, Speed: {self.current_speed:.2f} KB/s")
+
+        elif d['status'] == 'finished':
+            if self.tui_manager:
                 self.tui_manager.show_output(f"Finished downloading {d['filename']}")
+
+            # Reset for next download
+            self.start_time = None
+            self.downloaded_bytes = 0
+            self.current_speed = 0
+
+    def get_current_speed(self):
+        return self.current_speed
 
     def process_queue(self):
         self.stop_flag = False

@@ -50,9 +50,9 @@ class VPNManager:
     def should_switch(self, current_speed: float) -> bool:
         """Determine if we should switch VPN servers."""
         self.download_count += 1
+        if current_speed < self.speed_threshold:
+            return True
         if self.download_count >= self.switch_after:
             self.download_count = 0
-            return True
-        if current_speed < self.speed_threshold:
             return True
         return False
