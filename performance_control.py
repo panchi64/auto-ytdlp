@@ -10,14 +10,15 @@ class PerformanceControl:
     def __init__(self,
                  max_concurrent_downloads: int = 3,
                  tui_manager=None,
-                 download_dir: str = None):
+                 download_dir: str = None,
+                 download_archive: str = 'download_archive.txt',):
         self.max_concurrent_downloads = max_concurrent_downloads
         self.download_queue = []
-        self.download_archive = set()
+        self.download_archive = download_archive
         self.download_dir = download_dir or os.getcwd()
         self.ydl_opts = {
             'format': 'bestvideo*+bestaudio/best',
-            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),
+            'outtmpl': os.path.join(self.download_dir, '%(title)s - [%(id)s].%(ext)s'),
             'logger': self.YDLLogger(tui_manager),
             'download_archive': self.download_archive,
         }
@@ -52,22 +53,6 @@ class PerformanceControl:
     def remove_from_queue(self, url: str):
         self.download_queue.remove(url)
 
-    def set_format_preference(self, format_preference: str):
-        self.ydl_opts['format'] = format_preference
-
-    def set_download_path(self, path: str):
-        self.ydl_opts['outtmpl'] = os.path.join(path, '%(title)s.%(ext)s')
-
-    def load_download_archive(self, archive_file: str):
-        if os.path.exists(archive_file):
-            with open(archive_file, 'r') as f:
-                self.download_archive = set(line.strip() for line in f)
-
-    def save_download_archive(self, archive_file: str):
-        with open(archive_file, 'w') as f:
-            for item in self.download_archive:
-                f.write(f"{item}\n")
-
     def download_video(self, url: str) -> Dict[str, Any]:
         if self.stop_flag:
             return {"status": "stopped", "url": url}
@@ -78,13 +63,8 @@ class PerformanceControl:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             self.current_ydl = ydl
             try:
-                info = ydl.extract_info(url, download=False)
-                video_id = info['id']
-                if video_id in self.download_archive:
-                    return {"status": "skipped", "url": url}
-
+                print(f'[INFO] Downloading {url}')
                 ydl.download([url])
-                self.download_archive.add(video_id)
                 return {"status": "success", "url": url}
             except yt_dlp.utils.DownloadError as e:
                 if 'Cancelling download' in str(e):

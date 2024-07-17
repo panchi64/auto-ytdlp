@@ -23,6 +23,7 @@ class AutoYTDLP:
             max_concurrent_downloads=self.config_manager.get('performance', 'max_concurrent_downloads'),
             tui_manager=self.tui_manager,
             download_dir=self.config_manager.get('general', 'download_dir'),
+            download_archive=self.config_manager.get('yt_dlp', 'archive_file'),
         )
         self.auxiliary_features = AuxiliaryFeatures(self.performance_control.ydl_opts)
         self.is_downloading = False
