@@ -22,7 +22,7 @@ class Logger:
         console_handler.setLevel(level)
 
         # Formatter
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
         file_handler.setFormatter(formatter)
         console_handler.setFormatter(formatter)
 

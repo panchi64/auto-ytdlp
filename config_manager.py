@@ -10,6 +10,7 @@ class ConfigManager:
         self.config: Dict[str, Any] = self.get_default_config()
         self.load_config()
         self.ensure_download_directory()
+        self.ensure_archive_file()
 
     def load_config(self) -> None:
         try:
@@ -36,7 +37,6 @@ class ConfigManager:
             },
             "performance": {
                 "max_concurrent_downloads": 5,
-                "bandwidth_limit": "5M"
             },
             "vpn": {
                 "switch_after": 30,
@@ -75,3 +75,12 @@ class ConfigManager:
             print(f"Ensured download directory exists: {download_dir}")
         else:
             print("Warning: No download directory specified in config.")
+
+    def ensure_archive_file(self) -> None:
+        archive_file = self.get('yt_dlp', 'archive_file')
+        if archive_file:
+            if not os.path.exists(archive_file):
+                open(archive_file, 'a').close()
+                print(f"Created archive file: {archive_file}")
+        else:
+            print("Warning: No archive file specified in config.")

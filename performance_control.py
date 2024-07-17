@@ -9,26 +9,18 @@ import yt_dlp
 class PerformanceControl:
     def __init__(self,
                  max_concurrent_downloads: int = 3,
-                 bandwidth_limit: str = None,
                  tui_manager=None,
                  download_dir: str = None):
         self.max_concurrent_downloads = max_concurrent_downloads
-        self.bandwidth_limit = bandwidth_limit
         self.download_queue = []
         self.download_archive = set()
         self.download_dir = download_dir or os.getcwd()
         self.ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
+            'format': 'bestvideo*+bestaudio/best',
             'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),
             'logger': self.YDLLogger(tui_manager),
+            'download_archive': self.download_archive,
         }
-        if bandwidth_limit:
-            self.ydl_opts['ratelimit'] = bandwidth_limit
         self.stop_flag = False
         self.current_ydl = None
         self.executor = None
@@ -36,7 +28,7 @@ class PerformanceControl:
         self.tui_manager = tui_manager
         self.start_time = None
         self.downloaded_bytes = 0
-        self.current_speed = 0
+        self.current_speed = 0.0
 
     class YDLLogger:
         def __init__(self, tui_manager):
@@ -59,10 +51,6 @@ class PerformanceControl:
 
     def remove_from_queue(self, url: str):
         self.download_queue.remove(url)
-
-    def set_bandwidth_limit(self, limit: str):
-        self.bandwidth_limit = limit
-        self.ydl_opts['ratelimit'] = limit
 
     def set_format_preference(self, format_preference: str):
         self.ydl_opts['format'] = format_preference
@@ -129,10 +117,10 @@ class PerformanceControl:
             # Reset for next download
             self.start_time = None
             self.downloaded_bytes = 0
-            self.current_speed = 0
+            self.current_speed = 0.0
 
-    def get_current_speed(self):
-        return self.current_speed
+    def get_current_speed(self) -> float:
+        return float(self.current_speed)
 
     def process_queue(self):
         self.stop_flag = False

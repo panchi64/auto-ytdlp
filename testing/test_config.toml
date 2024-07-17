@@ -9,7 +9,6 @@ format = "bestvideo+bestaudio/best"
 
 [performance]
 max_concurrent_downloads = 5
-bandwidth_limit = "5M"  # 5 Mbps
 
 [vpn]
 switch_after = 30  # Switch VPN after every 30 downloads

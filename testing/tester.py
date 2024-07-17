@@ -82,7 +82,7 @@ class TestNotificationManager(unittest.TestCase):
 
 class TestPerformanceControl(unittest.TestCase):
     def setUp(self):
-        self.pc = PerformanceControl(max_concurrent_downloads=2, bandwidth_limit='5M')
+        self.pc = PerformanceControl(max_concurrent_downloads=2)
 
     def test_speed_tracking(self):
         self.pc.start_time = time.time() - 10  # Simulate 10 seconds elapsed
@@ -533,7 +533,7 @@ class TestTUIManagerExpanded(unittest.TestCase):
 
 class TestDownloadQueueManagement(unittest.TestCase):
     def setUp(self):
-        self.pc = PerformanceControl(max_concurrent_downloads=2, bandwidth_limit='5M')
+        self.pc = PerformanceControl(max_concurrent_downloads=2)
 
     def test_queue_order(self):
         self.pc.add_to_queue('https://example.com/video1')

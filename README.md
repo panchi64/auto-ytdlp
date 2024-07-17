@@ -11,7 +11,7 @@ Here's what makes this script nice to have:
 1. **Multi-video Downloading**: It can download multiple videos at once, so you're not sitting there, twiddling your thumbs waiting for one video to finish and then manually starting the next one.
 2. **SHHH**: Download limits suck, that's why I added VPN support, which automatically switches IPs, so you can fly "under the radar" (for legal reasons that's a joke).
 3. **Easy to Use**: The CLI interface is straightforward. You can see what's downloading, pause stuff, and remove things from the queue - all without breaking a sweat.
-4. **Flexible**: I added a config file where you can tweak settings to your heart's content. Want to limit your bandwidth? No problem. Need to change how often the VPN switches? Easy-peasy.
+4. **Flexible**: I added a config file where you can tweak settings to your heart's content. Want to make sure your IP changes after a couple of downloads? No problem.
 5. **Hard shell**: It can handle long download sessions like a champ. If something goes wrong, it'll let you know, and you can gracefully shut it down without losing progress.
 6. **Organized**: It keeps track of what you've already downloaded and pulls down video metadata too, so you're not left with a bunch of mystery files.
 
@@ -87,7 +87,6 @@ format = "bestvideo+bestaudio/best"
 
 [performance]
 max_concurrent_downloads = 5
-bandwidth_limit = "5M"  # 5 Mbps
 
 [vpn]
 switch_after = 30  # Switch VPN after every 30 downloads

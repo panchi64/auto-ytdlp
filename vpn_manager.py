@@ -6,7 +6,7 @@ from typing import Tuple
 class VPNManager:
     def __init__(self, switch_after: int = 30, speed_threshold: int = 500):
         self.switch_after = switch_after
-        self.speed_threshold = speed_threshold
+        self.speed_threshold = float(speed_threshold)
         self.download_count = 0
 
     @staticmethod
@@ -50,9 +50,9 @@ class VPNManager:
     def should_switch(self, current_speed: float) -> bool:
         """Determine if we should switch VPN servers."""
         self.download_count += 1
-        if current_speed < self.speed_threshold:
-            return True
         if self.download_count >= self.switch_after:
             self.download_count = 0
+            return True
+        if current_speed < self.speed_threshold:
             return True
         return False

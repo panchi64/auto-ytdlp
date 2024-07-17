@@ -3,6 +3,7 @@ import urwid
 
 class TUIManager:
     def __init__(self, start_downloads_callback, stop_downloads_callback):
+        self.output_list = urwid.SimpleListWalker([])
         self.output_listbox = None
         self.download_listbox = None
         self.footer = None
@@ -10,7 +11,6 @@ class TUIManager:
         self.stop_downloads_callback = stop_downloads_callback
         self.main_loop = None
         self.download_list = urwid.SimpleListWalker([])
-        self.output_list = urwid.SimpleListWalker([])
         self.is_downloading = False
 
     def run(self):
@@ -74,13 +74,12 @@ class TUIManager:
 
     def show_output(self, message):
         self.output_list.append(urwid.Text(message))
-        if self.output_listbox is not None:
+        if self.output_listbox is not None and self.main_loop:
             try:
                 self.output_listbox.focus_position = len(self.output_list) - 1
             except IndexError:
                 # This can happen if the list is empty
                 pass
-        if self.main_loop:
             self.main_loop.draw_screen()
 
     def clear_output(self):

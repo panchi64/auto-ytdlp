@@ -165,3 +165,7 @@ cython_debug/
 config.toml
 links.txt
 /auto_ytdlp.logs
+download_archive.txt
+
+# Download folders
+test_downloads
