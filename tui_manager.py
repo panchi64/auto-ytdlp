@@ -2,7 +2,7 @@ import urwid
 
 
 class TUIManager:
-    def __init__(self, start_downloads_callback, stop_downloads_callback):
+    def __init__(self, start_downloads_callback, stop_downloads_callback, initial_urls):
         self.output_list = urwid.SimpleListWalker([])
         self.output_listbox = None
         self.download_listbox = None
@@ -12,10 +12,16 @@ class TUIManager:
         self.main_loop = None
         self.download_list = urwid.SimpleListWalker([])
         self.is_downloading = False
+        self.initial_urls = initial_urls  # Store initial URLs
+
+    def populate_initial_urls(self):
+        for url in self.initial_urls:
+            self.add_download(url)
 
     def run(self):
         main_widget = self.create_main_widget()
         self.main_loop = urwid.MainLoop(main_widget, unhandled_input=self.handle_input)
+        self.populate_initial_urls()  # Populate URLs after main_loop is created
         self.main_loop.run()
 
     def create_main_widget(self):
@@ -63,12 +69,11 @@ class TUIManager:
 
     def add_download(self, url):
         self.download_list.append(urwid.Text(f"• {url}"))
-        self.main_loop.draw_screen()
 
     def update_download_status(self, url, status):
         for widget in self.download_list:
             if url in widget.text:
-                widget.set_text(f"• {url} - {status}")
+                widget.set_text(f"{status} - {url}")
                 break
         self.main_loop.draw_screen()
 

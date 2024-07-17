@@ -52,8 +52,6 @@ class VPNManager:
         if self.download_count >= self.switch_after:
             self.download_count = 0
             return True
-        if current_speed < self.speed_threshold:
-            return True
         return False
 
     def reset_download_count(self):

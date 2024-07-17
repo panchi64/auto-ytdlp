@@ -16,19 +16,22 @@ class AutoYTDLP:
         self.logger = Logger(self.config_manager.get('general', 'log_file'))
         self.error_handler = AutoYTDLPErrorHandler(self.logger)
         self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'))
-        self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads) if use_tui else None
         self.notification_manager = NotificationManager()
+        self.is_downloading = False
+        self.max_retries = 1
+        self.vpn_switch_needed = False
+        self.download_count = 0
+        initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
+        self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads, initial_urls) if use_tui else None
+
         self.performance_control = PerformanceControl(
             max_concurrent_downloads=self.config_manager.get('performance', 'max_concurrent_downloads'),
             tui_manager=self.tui_manager,
             download_dir=self.config_manager.get('general', 'download_dir'),
             download_archive=self.config_manager.get('yt_dlp', 'archive_file'),
         )
+
         self.auxiliary_features = AuxiliaryFeatures(self.performance_control.ydl_opts)
-        self.is_downloading = False
-        self.max_retries = 1
-        self.vpn_switch_needed = False
-        self.download_count = 0
 
     def load_url_list(self, file_path: str) -> list:
         try:
