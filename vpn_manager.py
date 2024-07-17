@@ -4,9 +4,8 @@ from typing import Tuple
 
 
 class VPNManager:
-    def __init__(self, switch_after: int = 30, speed_threshold: int = 500):
+    def __init__(self, switch_after: int = 30):
         self.switch_after = switch_after
-        self.speed_threshold = float(speed_threshold)
         self.download_count = 0
 
     @staticmethod
@@ -56,3 +55,6 @@ class VPNManager:
         if current_speed < self.speed_threshold:
             return True
         return False
+
+    def reset_download_count(self):
+        self.download_count = 0

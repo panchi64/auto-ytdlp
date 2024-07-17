@@ -1,7 +1,7 @@
 import os
 import signal
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
 from typing import List, Dict, Any, Callable
 import yt_dlp
 
@@ -11,7 +11,7 @@ class PerformanceControl:
                  max_concurrent_downloads: int = 3,
                  tui_manager=None,
                  download_dir: str = None,
-                 download_archive: str = 'download_archive.txt',):
+                 download_archive: str = 'download_archive.txt'):
         self.max_concurrent_downloads = max_concurrent_downloads
         self.download_queue = []
         self.download_archive = download_archive
@@ -29,7 +29,6 @@ class PerformanceControl:
         self.tui_manager = tui_manager
         self.start_time = None
         self.downloaded_bytes = 0
-        self.current_speed = 0.0
 
     class YDLLogger:
         def __init__(self, tui_manager):
@@ -81,14 +80,6 @@ class PerformanceControl:
                 self.start_time = time.time()
 
             self.downloaded_bytes = d['downloaded_bytes']
-            elapsed_time = time.time() - self.start_time
-
-            if elapsed_time > 0:
-                self.current_speed = self.downloaded_bytes / elapsed_time / 1024  # Speed in KB/s
-
-            if self.tui_manager:
-                self.tui_manager.show_output(
-                    f"Downloading: {d['filename']} - {d.get('_percent_str', 'N/A')} complete, Speed: {self.current_speed:.2f} KB/s")
 
         elif d['status'] == 'finished':
             if self.tui_manager:
@@ -97,32 +88,27 @@ class PerformanceControl:
             # Reset for next download
             self.start_time = None
             self.downloaded_bytes = 0
-            self.current_speed = 0.0
-
-    def get_current_speed(self) -> float:
-        return float(self.current_speed)
 
     def process_queue(self):
         self.stop_flag = False
-        results = []
-        self.executor = ThreadPoolExecutor(max_workers=self.max_concurrent_downloads)
-        try:
-            future_to_url = {self.executor.submit(self.download_video, url): url for url in self.download_queue}
-            for future in as_completed(future_to_url):
-                url = future_to_url[future]
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    results.append({"status": "error", "url": url, "error": str(e)})
+        futures = []
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_concurrent_downloads)
 
+        for url in self.download_queue:
+            if self.stop_flag:
+                break
+            future = self.executor.submit(self.download_video, url)
+            futures.append(future)
+
+        try:
+            for future in concurrent.futures.as_completed(futures):
                 if self.stop_flag:
                     break
+                result = future.result()
+                if self.tui_manager:
+                    self.tui_manager.update_download_status(result['url'], result['status'])
         finally:
-            self.executor.shutdown(wait=False)
-            self.executor = None
-
-        return results
+            self.stop_queue()
 
     def stop_queue(self):
         self.stop_flag = True

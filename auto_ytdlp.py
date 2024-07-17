@@ -15,8 +15,7 @@ class AutoYTDLP:
         self.config_manager = ConfigManager('./config.toml')
         self.logger = Logger(self.config_manager.get('general', 'log_file'))
         self.error_handler = AutoYTDLPErrorHandler(self.logger)
-        self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'),
-                                      speed_threshold=self.config_manager.get('vpn', 'speed_threshold'))
+        self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'))
         self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads) if use_tui else None
         self.notification_manager = NotificationManager()
         self.performance_control = PerformanceControl(
@@ -59,10 +58,6 @@ class AutoYTDLP:
 
                 current_url = self.performance_control.download_queue.pop(0)
                 result = self.performance_control.download_video(current_url)
-
-                current_speed = float(self.performance_control.get_current_speed())  # Ensure it's a float
-                if self.vpn_manager.should_switch(current_speed):
-                    self.vpn_switch_needed = True
 
                 if result['status'] == 'success':
                     if self.tui_manager:
