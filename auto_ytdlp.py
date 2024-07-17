@@ -12,14 +12,15 @@ from notification_manager import NotificationManager
 
 class AutoYTDLP:
     def __init__(self):
-        self.config_manager = ConfigManager('config.toml')
-        self.logger = Logger(self.config_manager.get('log_file', 'auto_ytdlp.log'))
+        self.config_manager = ConfigManager('./config.toml')
+        self.logger = Logger(self.config_manager.get('general', 'log_file'))
         self.error_handler = AutoYTDLPErrorHandler(self.logger)
-        self.vpn_manager = VPNManager(self.config_manager.get('vpn_settings', {}))
+        self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'),
+                                      speed_threshold=self.config_manager.get('vpn', 'speed_threshold'))
         self.notification_manager = NotificationManager()
         self.performance_control = PerformanceControl(
-            max_concurrent_downloads=self.config_manager.get('max_concurrent_downloads', 3),
-            bandwidth_limit=self.config_manager.get('bandwidth_limit')
+            max_concurrent_downloads=self.config_manager.get('performance', 'max_concurrent_downloads'),
+            bandwidth_limit=self.config_manager.get('performance', 'bandwidth_limit')
         )
         self.auxiliary_features = AuxiliaryFeatures(self.performance_control.ydl_opts)
         self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads)
@@ -37,7 +38,7 @@ class AutoYTDLP:
         if self.is_downloading:
             return
         self.is_downloading = True
-        urls = self.load_url_list(self.config_manager.get('url_list_file', 'list.txt'))
+        urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
         for url in urls:
             self.performance_control.add_to_queue(url)
             self.tui_manager.add_download(url)
