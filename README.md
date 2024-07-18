@@ -2,7 +2,7 @@
 
 ## Overview
 
-I wrote this Python script so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading, VPN integration, and an intuitive CLI interface.
+I wrote this Python script so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading, VPN integration, and an intuitive TUI.
 
 But it's not just for archiving course videos! This script can handle all sorts of video-downloading tasks. Maybe you're a researcher collecting data, a content creator gathering inspiration, or just someone who likes to keep offline copies of their favorite online content. Whatever your reason, I gotchu fam.
 
@@ -10,7 +10,7 @@ Here's what makes this script nice to have:
 
 1. **Multi-video Downloading**: It can download multiple videos at once, so you're not sitting there, twiddling your thumbs waiting for one video to finish and then manually starting the next one.
 2. **SHHH**: Download limits suck, that's why I added VPN support, which automatically switches IPs, so you can fly "under the radar" (for legal reasons that's a joke).
-3. **Easy to Use**: The CLI interface is straightforward. You can see what's downloading, pause stuff, and remove things from the queue - all without breaking a sweat.
+3. **Easy to Use**: The TUI is straightforward. You can see what's downloading, pause stuff, and remove things from the queue - all without breaking a sweat.
 4. **Flexible**: I added a config file where you can tweak settings to your heart's content. Want to make sure your IP changes after a couple of downloads? No problem.
 5. **Hard shell**: It can handle long download sessions like a champ. If something goes wrong, it'll let you know, and you can gracefully shut it down without losing progress.
 6. **Organized**: It keeps track of what you've already downloaded and pulls down video metadata too, so you're not left with a bunch of mystery files.
@@ -115,20 +115,7 @@ on_error = true
    python auto_ytdlp.py
    ```
 
-4. Use the CLI interface to manage downloads, view progress, and control the script.
-
-## CLI Interface Commands
-
-- `start`: Begin downloading
-- `pause`: Pause all downloads
-- `resume`: Resume paused downloads
-- `stop`: Stop all downloads and exit (graceful shutdown)
-- `list`: Show current download queue
-- `remove <id>`: Remove a specific download from the queue
-- `info <id>`: Show detailed information about a specific download
-- `update`: Check for and apply yt-dlp updates
-- `no-gui`: No TUI, only CLI
-- `help`: Show available commands
+4. Use the TUI interface to manage downloads, view progress, and control the script.
 
 ## Logging
 
