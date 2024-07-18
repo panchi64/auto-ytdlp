@@ -2,14 +2,16 @@ import threading
 import queue
 import yt_dlp
 import os
-import signal
 import psutil
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+from helpers.notification_manager import NotificationManager
 
 
 class DownloadManager(threading.Thread):
     def __init__(self, download_dir, download_archive, max_concurrent_downloads):
         super().__init__()
+        self.notification_manager = NotificationManager()
         self.download_dir = download_dir
         self.download_archive = download_archive
         self.max_concurrent_downloads = max_concurrent_downloads
@@ -53,13 +55,17 @@ class DownloadManager(threading.Thread):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self.log('status', url, 'Downloading')
                 self.current_processes[url] = os.getpid()
+                info = ydl.extract_info(url, download=False)
+                video_title = info.get('title', 'Unknown Title')
                 ydl.download([url])
                 del self.current_processes[url]
                 if not self.stop_event.is_set():
                     self.log('status', url, 'Completed')
+                    self.notification_manager.notify_download_complete(video_title)
         except Exception as e:
             if not self.stop_event.is_set():
                 self.log('status', url, f'Error: {str(e)}')
+                self.notification_manager.notify_download_error(url, str(e))
         finally:
             if url in self.current_processes:
                 del self.current_processes[url]

@@ -8,7 +8,6 @@ from tui_manager import TUIManager
 from helpers.logger import Logger
 from helpers.error_handler import AutoYTDLPErrorHandler
 from download_manager import DownloadManager
-from helpers.notification_manager import NotificationManager
 
 
 class AutoYTDLP:
@@ -17,7 +16,6 @@ class AutoYTDLP:
         self.logger = Logger(self.config_manager.get('general', 'log_file'))
         self.error_handler = AutoYTDLPErrorHandler(self.logger)
         self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'))
-        self.notification_manager = NotificationManager()
         self.debug = debug
 
         self.initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))

@@ -20,17 +20,15 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 ## Features
 
 - Download videos from URLs listed in a text file
-- CLI interface with progress display
+- Terminal User Interface (_TUI_)
 - Multithreaded downloads for improved performance
 - ExpressVPN integration with smart switching
 - yt-dlp archive feature to avoid re-downloading
-- Bandwidth throttling
 - Verbose logging
 - Parallel processing limit
 - Desktop notification system
-- Auto-update feature for yt-dlp
+- Auto-update feature for yt-dlp (_Coming soon_)
 - Graceful shutdown
-- Queue management through CLI GUI
 - Metadata extraction (using yt-dlp's built-in functionality)
 - All settings configurable via TOML file
 
