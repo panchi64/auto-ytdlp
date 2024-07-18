@@ -4,10 +4,11 @@ from datetime import datetime
 
 
 class TUIManager:
-    def __init__(self, start_downloads_callback, stop_downloads_callback, download_manager, initial_urls, debug=False,
-                 log_file='auto_ytdlp.log'):
+    def __init__(self, start_downloads_callback, stop_downloads_callback, quit_callback, download_manager, initial_urls,
+                 debug=False, log_file='auto_ytdlp.log'):
         self.start_downloads_callback = start_downloads_callback
         self.stop_downloads_callback = stop_downloads_callback
+        self.quit_callback = quit_callback
         self.download_manager = download_manager
         self.initial_urls = initial_urls
         self.debug = debug
@@ -23,11 +24,11 @@ class TUIManager:
 
         # Emoji status mapping
         self.status_emoji = {
-            'Queued': '🕒',  # Clock emoji for queued
-            'Downloading': '⬇️',  # Down arrow for downloading
-            'Completed': '✅',  # Check mark for completed
-            'Error': '❌',  # Cross mark for error
-            'Cancelled': '🚫',  # Prohibited sign for cancelled
+            'Queued': '🕒',
+            'Downloading': '⬇️',
+            'Completed': '✅',
+            'Error': '❌',
+            'Cancelled': '🚫',
         }
 
     def populate_initial_downloads(self):
@@ -57,6 +58,7 @@ class TUIManager:
 
     def handle_input(self, key):
         if key in ('q', 'Q'):
+            self.quit_callback()
             raise urwid.ExitMainLoop()
         elif key in ('s', 'S'):
             self.start_downloads_callback()

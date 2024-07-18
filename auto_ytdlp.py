@@ -1,4 +1,6 @@
 import argparse
+import sys
+
 from helpers.vpn_manager import VPNManager
 from helpers.config_manager import ConfigManager
 from tui_manager import TUIManager
@@ -28,6 +30,7 @@ class AutoYTDLP:
         self.tui_manager = TUIManager(
             self.start_downloads,
             self.stop_downloads,
+            self.quit,
             self.download_manager,
             initial_urls=self.initial_urls,
             debug=self.debug,
@@ -50,6 +53,11 @@ class AutoYTDLP:
     def stop_downloads(self):
         self.download_manager.stop()
 
+    def quit(self):
+        self.stop_downloads()
+        self.vpn_manager.disconnect()
+        sys.exit(0)
+
     def run(self):
         try:
             self.vpn_manager.connect()
@@ -61,8 +69,7 @@ class AutoYTDLP:
         except Exception as e:
             self.error_handler.handle_error(e)
         finally:
-            self.vpn_manager.disconnect()
-            self.download_manager.stop()
+            self.quit()
 
 
 if __name__ == "__main__":
