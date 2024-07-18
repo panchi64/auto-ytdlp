@@ -21,14 +21,16 @@ class TUIManager:
         self.output_box = None
         self.download_box = None
         self.last_progress = {}
+        self.is_stopping = False
 
         # Emoji status mapping
         self.status_emoji = {
-            'Queued': '🕒',
-            'Downloading': '⬇️',
-            'Completed': '✅',
-            'Error': '❌',
-            'Cancelled': '🚫',
+            'Queued': '🕒',  # Clock emoji for queued
+            'Downloading': '⬇️',  # Down arrow for downloading
+            'Completed': '✅',  # Check mark for completed
+            'Error': '❌',  # Cross mark for error
+            'Cancelled': '🚫',  # Prohibited sign for cancelled
+            'Stopped': '🛑',  # Stop sign for stopped
         }
 
     def populate_initial_downloads(self):
@@ -63,7 +65,13 @@ class TUIManager:
         elif key in ('s', 'S'):
             self.start_downloads_callback()
         elif key in ('x', 'X'):
-            self.stop_downloads_callback()
+            if not self.is_stopping:
+                self.is_stopping = True
+                self.update_output("Stopping downloads... Please wait.")
+                self.main_loop.draw_screen()
+                self.stop_downloads_callback()
+                self.is_stopping = False
+                self.update_output("Downloads stopped. Press 'S' to start downloads again or 'Q' to quit.")
 
     def update_tui(self, loop=None, data=None):
         while not self.download_manager.status_queue.empty():

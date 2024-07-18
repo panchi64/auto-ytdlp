@@ -1,5 +1,6 @@
 import argparse
 import sys
+import threading
 
 from helpers.vpn_manager import VPNManager
 from helpers.config_manager import ConfigManager
@@ -51,7 +52,20 @@ class AutoYTDLP:
             self.download_manager.add_download(url)
 
     def stop_downloads(self):
-        self.download_manager.stop()
+        def stop_thread():
+            try:
+                self.logger.info("Stopping downloads...")
+                self.download_manager.stop()
+                self.logger.info("Downloads stopped successfully")
+                if self.tui_manager:
+                    self.tui_manager.update_output("All downloads have been stopped.")
+            except Exception as e:
+                self.error_handler.handle_error(e)
+                self.logger.error(f"Failed to stop downloads: {str(e)}")
+                if self.tui_manager:
+                    self.tui_manager.update_output(f"Error stopping downloads: {str(e)}")
+
+        threading.Thread(target=stop_thread).start()
 
     def quit(self):
         self.stop_downloads()
