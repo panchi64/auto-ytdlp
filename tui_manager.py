@@ -1,12 +1,16 @@
 import urwid
+import os
+from datetime import datetime
 
 
 class TUIManager:
-    def __init__(self, start_downloads_callback, stop_downloads_callback, download_manager, debug=False):
+    def __init__(self, start_downloads_callback, stop_downloads_callback, download_manager, debug=False,
+                 log_file='auto_ytdlp.log'):
         self.start_downloads_callback = start_downloads_callback
         self.stop_downloads_callback = stop_downloads_callback
         self.download_manager = download_manager
         self.debug = debug
+        self.log_file = log_file
 
         self.download_list = urwid.SimpleListWalker([])
         self.output_list = urwid.SimpleListWalker([])
@@ -69,13 +73,15 @@ class TUIManager:
 
     def update_download_status(self, url, status):
         emoji = self.status_emoji.get(status, '❓')  # Default to question mark if status not found
+        status_text = f"{emoji} {url}"
         for i, widget in enumerate(self.download_list):
             if url in widget.original_widget.text:
-                self.download_list[i] = urwid.AttrMap(urwid.Text(f"{emoji} {url}"), None, focus_map='reversed')
+                self.download_list[i] = urwid.AttrMap(urwid.Text(status_text), None, focus_map='reversed')
                 break
         else:
-            self.download_list.append(urwid.AttrMap(urwid.Text(f"{emoji} {url}"), None, focus_map='reversed'))
+            self.download_list.append(urwid.AttrMap(urwid.Text(status_text), None, focus_map='reversed'))
         self.download_box.set_focus(len(self.download_list) - 1)
+        self.log_to_file(status_text)
 
     def update_progress(self, progress):
         url = progress['url']
@@ -87,10 +93,9 @@ class TUIManager:
             self.last_progress[url] = len(self.output_list)
             self.output_list.append(urwid.Text(text))
 
-        # Update the download status to show it's in progress
         self.update_download_status(url, 'Downloading')
-
         self.output_box.set_focus(len(self.output_list) - 1)
+        self.log_to_file(text)
 
     def update_output(self, text):
         self.output_list.append(urwid.Text(text))
@@ -102,6 +107,14 @@ class TUIManager:
             for url in self.last_progress:
                 self.last_progress[url] -= 1
             self.last_progress = {k: v for k, v in self.last_progress.items() if v >= 0}
+
+        self.log_to_file(text)
+
+    def log_to_file(self, message):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_message = f"[{timestamp}] {message}\n"
+        with open(self.log_file, 'a', encoding='utf-8') as f:
+            f.write(log_message)
 
     def run(self):
         main_widget = self.create_main_widget()

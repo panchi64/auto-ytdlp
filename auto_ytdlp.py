@@ -23,8 +23,13 @@ class AutoYTDLP:
             max_concurrent_downloads=self.config_manager.get('performance', 'max_concurrent_downloads')
         )
 
-        self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads, self.download_manager,
-                                      debug=self.debug) if use_tui else None
+        self.tui_manager = TUIManager(
+            self.start_downloads,
+            self.stop_downloads,
+            self.download_manager,
+            debug=self.debug,
+            log_file=self.config_manager.get('general', 'log_file')
+        ) if use_tui else None
 
         self.initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
 
