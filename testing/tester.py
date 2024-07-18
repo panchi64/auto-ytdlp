@@ -8,14 +8,14 @@ import urwid
 from hypothesis import given, strategies as st
 import shutil
 
-from config_manager import ConfigManager
-from logger import Logger
-from notification_manager import NotificationManager
+from helpers.config_manager import ConfigManager
+from helpers.logger import Logger
+from helpers.notification_manager import NotificationManager
 from performance_control import PerformanceControl
 from tui_manager import TUIManager
-from vpn_manager import VPNManager
-from auxiliary_features import AuxiliaryFeatures
-from error_handler import AutoYTDLPErrorHandler
+from helpers.vpn_manager import VPNManager
+from helpers.auxiliary_features import AuxiliaryFeatures
+from helpers.error_handler import AutoYTDLPErrorHandler
 from auto_ytdlp import AutoYTDLP
 
 

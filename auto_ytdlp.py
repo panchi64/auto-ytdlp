@@ -1,11 +1,11 @@
 import argparse
-from vpn_manager import VPNManager
-from config_manager import ConfigManager
+from helpers.vpn_manager import VPNManager
+from helpers.config_manager import ConfigManager
 from tui_manager import TUIManager
-from logger import Logger
-from error_handler import AutoYTDLPErrorHandler
+from helpers.logger import Logger
+from helpers.error_handler import AutoYTDLPErrorHandler
 from download_manager import DownloadManager
-from notification_manager import NotificationManager
+from helpers.notification_manager import NotificationManager
 
 
 class AutoYTDLP:
