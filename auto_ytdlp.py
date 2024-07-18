@@ -17,6 +17,8 @@ class AutoYTDLP:
         self.notification_manager = NotificationManager()
         self.debug = debug
 
+        self.initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
+
         self.download_manager = DownloadManager(
             download_dir=self.config_manager.get('general', 'download_dir'),
             download_archive=self.config_manager.get('yt_dlp', 'archive_file'),
@@ -27,11 +29,10 @@ class AutoYTDLP:
             self.start_downloads,
             self.stop_downloads,
             self.download_manager,
+            initial_urls=self.initial_urls,
             debug=self.debug,
             log_file=self.config_manager.get('general', 'log_file')
         ) if use_tui else None
-
-        self.initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
 
     def load_url_list(self, file_path: str) -> list:
         try:

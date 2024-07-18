@@ -4,11 +4,12 @@ from datetime import datetime
 
 
 class TUIManager:
-    def __init__(self, start_downloads_callback, stop_downloads_callback, download_manager, debug=False,
+    def __init__(self, start_downloads_callback, stop_downloads_callback, download_manager, initial_urls, debug=False,
                  log_file='auto_ytdlp.log'):
         self.start_downloads_callback = start_downloads_callback
         self.stop_downloads_callback = stop_downloads_callback
         self.download_manager = download_manager
+        self.initial_urls = initial_urls
         self.debug = debug
         self.log_file = log_file
 
@@ -28,6 +29,10 @@ class TUIManager:
             'Error': '❌',  # Cross mark for error
             'Cancelled': '🚫',  # Prohibited sign for cancelled
         }
+
+    def populate_initial_downloads(self):
+        for url in self.initial_urls:
+            self.update_download_status(url, 'Queued')
 
     def create_main_widget(self):
         header = urwid.Text("Auto-YTDLP TUI", align='center')
@@ -80,7 +85,8 @@ class TUIManager:
                 break
         else:
             self.download_list.append(urwid.AttrMap(urwid.Text(status_text), None, focus_map='reversed'))
-        self.download_box.set_focus(len(self.download_list) - 1)
+        if self.download_box:
+            self.download_box.set_focus(len(self.download_list) - 1)
         self.log_to_file(status_text)
 
     def update_progress(self, progress):
@@ -94,12 +100,14 @@ class TUIManager:
             self.output_list.append(urwid.Text(text))
 
         self.update_download_status(url, 'Downloading')
-        self.output_box.set_focus(len(self.output_list) - 1)
+        if self.output_box:
+            self.output_box.set_focus(len(self.output_list) - 1)
         self.log_to_file(text)
 
     def update_output(self, text):
         self.output_list.append(urwid.Text(text))
-        self.output_box.set_focus(len(self.output_list) - 1)
+        if self.output_box:
+            self.output_box.set_focus(len(self.output_list) - 1)
 
         # Keep only the last 100 messages to prevent excessive memory usage
         if len(self.output_list) > 100:
@@ -119,5 +127,9 @@ class TUIManager:
     def run(self):
         main_widget = self.create_main_widget()
         self.main_loop = urwid.MainLoop(main_widget, unhandled_input=self.handle_input)
+
+        # Populate the download list after creating the main widget
+        self.populate_initial_downloads()
+
         self.main_loop.set_alarm_in(0.1, self.update_tui)
         self.main_loop.run()
