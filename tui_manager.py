@@ -87,6 +87,9 @@ class TUIManager:
             self.last_progress[url] = len(self.output_list)
             self.output_list.append(urwid.Text(text))
 
+        # Update the download status to show it's in progress
+        self.update_download_status(url, 'Downloading')
+
         self.output_box.set_focus(len(self.output_list) - 1)
 
     def update_output(self, text):

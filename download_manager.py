@@ -2,6 +2,8 @@ import threading
 import queue
 import yt_dlp
 import os
+from concurrent.futures import ThreadPoolExecutor
+
 
 class DownloadManager(threading.Thread):
     def __init__(self, download_dir, download_archive, max_concurrent_downloads):
@@ -12,14 +14,25 @@ class DownloadManager(threading.Thread):
         self.download_queue = queue.Queue()
         self.status_queue = queue.Queue()
         self.stop_event = threading.Event()
+        self.executor = ThreadPoolExecutor(max_workers=max_concurrent_downloads)
 
     def run(self):
         while not self.stop_event.is_set():
-            try:
-                url = self.download_queue.get(timeout=1)
-                self.download_video(url)
-            except queue.Empty:
-                continue
+            futures = []
+            while len(futures) < self.max_concurrent_downloads:
+                try:
+                    url = self.download_queue.get(block=False)
+                    future = self.executor.submit(self.download_video, url)
+                    futures.append(future)
+                except queue.Empty:
+                    break
+
+            for future in futures:
+                future.result()  # Wait for the download to complete
+
+            if not futures:
+                # If no downloads were started, sleep briefly to avoid busy-waiting
+                self.stop_event.wait(timeout=1)
 
     def download_video(self, url):
         ydl_opts = {
@@ -59,6 +72,7 @@ class DownloadManager(threading.Thread):
 
     def stop(self):
         self.stop_event.set()
+        self.executor.shutdown(wait=False)
 
     class YoutubeDLLogger:
         def __init__(self, download_manager):
