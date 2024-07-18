@@ -1,38 +1,32 @@
 import argparse
-import asyncio
-
 from vpn_manager import VPNManager
 from config_manager import ConfigManager
 from tui_manager import TUIManager
 from logger import Logger
-from auxiliary_features import AuxiliaryFeatures
 from error_handler import AutoYTDLPErrorHandler
-from performance_control import PerformanceControl
+from download_manager import DownloadManager
 from notification_manager import NotificationManager
 
 
 class AutoYTDLP:
-    def __init__(self, use_tui=True):
+    def __init__(self, use_tui=True, debug=False):
         self.config_manager = ConfigManager('./config.toml')
         self.logger = Logger(self.config_manager.get('general', 'log_file'))
         self.error_handler = AutoYTDLPErrorHandler(self.logger)
         self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'))
         self.notification_manager = NotificationManager()
-        self.is_downloading = False
-        self.max_retries = 1
-        self.vpn_switch_needed = False
-        self.download_count = 0
-        initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
-        self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads, initial_urls) if use_tui else None
+        self.debug = debug
 
-        self.performance_control = PerformanceControl(
-            max_concurrent_downloads=self.config_manager.get('performance', 'max_concurrent_downloads'),
-            tui_manager=self.tui_manager,
+        self.download_manager = DownloadManager(
             download_dir=self.config_manager.get('general', 'download_dir'),
             download_archive=self.config_manager.get('yt_dlp', 'archive_file'),
+            max_concurrent_downloads=self.config_manager.get('performance', 'max_concurrent_downloads')
         )
 
-        self.auxiliary_features = AuxiliaryFeatures(self.performance_control.ydl_opts)
+        self.tui_manager = TUIManager(self.start_downloads, self.stop_downloads, self.download_manager,
+                                      debug=self.debug) if use_tui else None
+
+        self.initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
 
     def load_url_list(self, file_path: str) -> list:
         try:
@@ -43,35 +37,12 @@ class AutoYTDLP:
             return []
 
     def start_downloads(self):
-        if self.is_downloading:
-            return
-        self.is_downloading = True
-        urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
-        for url in urls:
-            self.performance_control.add_to_queue(url)
-            if self.tui_manager:
-                self.tui_manager.add_download(url)
-
-        try:
-            self.performance_control.process_queue()
-        except Exception as e:
-            self.logger.exception(f"An unexpected error occurred during downloads: {str(e)}", exc_info=e)
-            if self.tui_manager:
-                self.tui_manager.show_output(f"An error occurred: {str(e)}")
-        finally:
-            self.is_downloading = False
+        self.download_manager.start()
+        for url in self.initial_urls:
+            self.download_manager.add_download(url)
 
     def stop_downloads(self):
-        if not self.is_downloading:
-            return
-        self.performance_control.stop_queue()
-        self.is_downloading = False
-
-    def run_cli(self):
-        if args.no_gui:
-            self.start_downloads()
-        else:
-            self.tui_manager.run()
+        self.download_manager.stop()
 
     def run(self):
         try:
@@ -80,16 +51,19 @@ class AutoYTDLP:
                 self.tui_manager.run()
             else:
                 self.start_downloads()
+                self.download_manager.join()
         except Exception as e:
             self.error_handler.handle_error(e)
         finally:
             self.vpn_manager.disconnect()
+            self.download_manager.stop()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Auto-YTDLP')
     parser.add_argument('--no-gui', action='store_true', help='Run in CLI mode without TUI')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     args = parser.parse_args()
 
-    auto_ytdlp = AutoYTDLP(use_tui=not args.no_gui)
+    auto_ytdlp = AutoYTDLP(use_tui=not args.no_gui, debug=args.debug)
     auto_ytdlp.run()

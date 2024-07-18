@@ -2,14 +2,13 @@ import os
 import signal
 import time
 import concurrent.futures
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any
 import yt_dlp
-
+from threading import Lock
 
 class PerformanceControl:
     def __init__(self,
                  max_concurrent_downloads: int = 3,
-                 tui_manager=None,
                  download_dir: str = None,
                  download_archive: str = 'download_archive.txt'):
         self.max_concurrent_downloads = max_concurrent_downloads
@@ -19,75 +18,89 @@ class PerformanceControl:
         self.ydl_opts = {
             'format': 'bestvideo*+bestaudio/best',
             'outtmpl': os.path.join(self.download_dir, '%(title)s - [%(id)s].%(ext)s'),
-            'logger': self.YDLLogger(tui_manager),
+            'logger': self.YDLLogger(),
+            'progress_hooks': [self.progress_hook],
             'download_archive': self.download_archive,
         }
         self.stop_flag = False
         self.current_ydl = None
         self.executor = None
-        self.progress_hooks: List[Callable] = [self.progress_hook]
-        self.tui_manager = tui_manager
-        self.start_time = None
-        self.downloaded_bytes = 0
+        self.download_status = {}
+        self.download_progress = {}
+        self.status_lock = Lock()
+        self.progress_lock = Lock()
 
     class YDLLogger:
-        def __init__(self, tui_manager):
-            self.tui_manager = tui_manager
-
         def debug(self, msg):
-            if self.tui_manager:
-                self.tui_manager.show_output(f"[DEBUG] {msg}")
+            pass
 
         def warning(self, msg):
-            if self.tui_manager:
-                self.tui_manager.show_output(f"[WARNING] {msg}")
+            pass
 
         def error(self, msg):
-            if self.tui_manager:
-                self.tui_manager.show_output(f"[ERROR] {msg}")
+            pass
 
     def add_to_queue(self, url: str):
         self.download_queue.append(url)
+        with self.status_lock:
+            self.download_status[url] = "Queued"
 
     def remove_from_queue(self, url: str):
         self.download_queue.remove(url)
+        with self.status_lock:
+            if url in self.download_status:
+                del self.download_status[url]
+        with self.progress_lock:
+            if url in self.download_progress:
+                del self.download_progress[url]
 
     def download_video(self, url: str) -> Dict[str, Any]:
         if self.stop_flag:
             return {"status": "stopped", "url": url}
 
         ydl_opts = self.ydl_opts.copy()
-        ydl_opts['progress_hooks'] = self.progress_hooks
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             self.current_ydl = ydl
             try:
-                print(f'[INFO] Downloading {url}')
+                with self.status_lock:
+                    self.download_status[url] = "Downloading"
                 ydl.download([url])
+                with self.status_lock:
+                    self.download_status[url] = "Completed"
                 return {"status": "✅", "url": url}
             except yt_dlp.utils.DownloadError as e:
                 if 'Cancelling download' in str(e):
+                    with self.status_lock:
+                        self.download_status[url] = "Cancelled"
                     return {"status": "cancelled", "url": url}
+                with self.status_lock:
+                    self.download_status[url] = "Error"
                 return {"status": "error", "url": url, "error": str(e)}
             except Exception as e:
+                with self.status_lock:
+                    self.download_status[url] = "Error"
                 return {"status": "error", "url": url, "error": str(e)}
             finally:
                 self.current_ydl = None
 
     def progress_hook(self, d: Dict[str, Any]) -> None:
         if d['status'] == 'downloading':
-            if self.start_time is None:
-                self.start_time = time.time()
-
-            self.downloaded_bytes = d['downloaded_bytes']
-
+            url = d.get('info_dict', {}).get('webpage_url', 'Unknown URL')
+            progress = {
+                'filename': d.get('filename', 'Unknown'),
+                'percent': d.get('_percent_str', 'Unknown'),
+                'total': d.get('_total_bytes_str', 'Unknown'),
+                'speed': d.get('_speed_str', 'Unknown'),
+                'eta': d.get('_eta_str', 'Unknown')
+            }
+            with self.progress_lock:
+                self.download_progress[url] = progress
         elif d['status'] == 'finished':
-            if self.tui_manager:
-                self.tui_manager.show_output(f"Finished downloading {d['filename']}")
-
-            # Reset for next download
-            self.start_time = None
-            self.downloaded_bytes = 0
+            url = d.get('info_dict', {}).get('webpage_url', 'Unknown URL')
+            with self.progress_lock:
+                if url in self.download_progress:
+                    del self.download_progress[url]
 
     def process_queue(self):
         self.stop_flag = False
@@ -105,8 +118,6 @@ class PerformanceControl:
                 if self.stop_flag:
                     break
                 result = future.result()
-                if self.tui_manager:
-                    self.tui_manager.update_download_status(result['url'], result['status'])
         finally:
             self.stop_queue()
 
@@ -127,18 +138,10 @@ class PerformanceControl:
             return []
         return [thread._thread.ident for thread in self.executor._threads]
 
-    def batch_process(self, batch_opts: List[Dict[str, Any]]):
-        results = []
-        for opts in batch_opts:
-            if self.stop_flag:
-                break
-            temp_opts = self.ydl_opts.copy()
-            temp_opts.update(opts.get('ydl_opts', {}))
-            with yt_dlp.YoutubeDL(temp_opts) as ydl:
-                try:
-                    ydl.download(opts['urls'])
-                    results.append({"status": "success", "urls": opts['urls']})
-                except Exception as e:
-                    results.append({"status": "error", "urls": opts['urls'], "error": str(e)})
+    def get_download_status(self):
+        with self.status_lock:
+            return self.download_status.copy()
 
-        return results
+    def get_download_progress(self):
+        with self.progress_lock:
+            return self.download_progress.copy()

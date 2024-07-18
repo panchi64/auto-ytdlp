@@ -1,153 +1,107 @@
-import threading
 import urwid
-import asyncio
-
-from asyncio import Queue
-
-# TODO: Resolve the outputs coming out at the bottom of the TUI and not the output box area.
 
 
 class TUIManager:
-    def __init__(self, start_downloads_callback, stop_downloads_callback, initial_urls):
-        self.output_list = urwid.SimpleListWalker([])
-        self.output_listbox = None
-        self.download_listbox = None
-        self.footer = None
+    def __init__(self, start_downloads_callback, stop_downloads_callback, download_manager, debug=False):
         self.start_downloads_callback = start_downloads_callback
         self.stop_downloads_callback = stop_downloads_callback
-        self.main_loop = None
+        self.download_manager = download_manager
+        self.debug = debug
+
         self.download_list = urwid.SimpleListWalker([])
-        self.is_downloading = False
-        self.initial_urls = initial_urls
-        self.update_queue = Queue()
-        self.event_loop = None
+        self.output_list = urwid.SimpleListWalker([])
 
-    def populate_initial_urls(self):
-        for url in self.initial_urls:
-            self._add_download(url)
+        self.main_loop = None
+        self.output_box = None
+        self.download_box = None
+        self.last_progress = {}
 
-    def run(self):
-        main_widget = self.create_main_widget()
-        self.event_loop = asyncio.get_event_loop()
-        self.main_loop = urwid.MainLoop(
-            main_widget,
-            event_loop=urwid.AsyncioEventLoop(loop=self.event_loop),
-            unhandled_input=self.handle_input
-        )
-
-        self.populate_initial_urls()
-
-        update_task = self.event_loop.create_task(self.process_updates())
-
-        try:
-            self.main_loop.run()
-        finally:
-            self.event_loop.run_until_complete(self.stop())
-            self.event_loop.run_until_complete(update_task)
+        # Emoji status mapping
+        self.status_emoji = {
+            'Queued': '🕒',  # Clock emoji for queued
+            'Downloading': '⬇️',  # Down arrow for downloading
+            'Completed': '✅',  # Check mark for completed
+            'Error': '❌',  # Cross mark for error
+            'Cancelled': '🚫',  # Prohibited sign for cancelled
+        }
 
     def create_main_widget(self):
         header = urwid.Text("Auto-YTDLP TUI", align='center')
-        self.footer = urwid.Text("Press Q to quit, S to start downloads, X to stop downloads")
+        footer = urwid.Text("Press Q to quit, S to start downloads, X to stop downloads")
 
-        self.download_listbox = urwid.ListBox(self.download_list)
-        self.output_listbox = urwid.ListBox(self.output_list)
+        self.download_box = urwid.ListBox(self.download_list)
+        self.output_box = urwid.ListBox(self.output_list)
 
-        download_box = urwid.LineBox(self.download_listbox, title="Downloads")
-        output_box = urwid.LineBox(self.output_listbox, title="Output")
+        download_frame = urwid.LineBox(self.download_box, title="Downloads")
+        output_frame = urwid.LineBox(self.output_box, title="Output")
 
         main_columns = urwid.Columns([
-            ('weight', 30, download_box),
-            ('weight', 70, output_box)
+            ('weight', 30, download_frame),
+            ('weight', 70, output_frame)
         ])
 
-        main_widget = urwid.Frame(
+        return urwid.Frame(
             body=main_columns,
             header=header,
-            footer=self.footer
+            footer=footer
         )
-
-        return main_widget
 
     def handle_input(self, key):
         if key in ('q', 'Q'):
             raise urwid.ExitMainLoop()
         elif key in ('s', 'S'):
-            self.start_downloads()
-        elif key in ('x', 'X'):
-            self.stop_downloads()
-
-    def start_downloads(self):
-        if not self.is_downloading:
-            self.is_downloading = True
-            self.footer.set_text("Downloading... Press X to stop, Q to quit")
             self.start_downloads_callback()
-
-    def stop_downloads(self):
-        if self.is_downloading:
-            self.is_downloading = False
-            self.footer.set_text("Downloads stopped. Press S to start, Q to quit")
+        elif key in ('x', 'X'):
             self.stop_downloads_callback()
 
-    def add_download(self, url):
-        if self.event_loop:
-            self.event_loop.call_soon_threadsafe(
-                lambda: self.event_loop.create_task(self.update_queue.put(('add_download', url)))
-            )
+    def update_tui(self, loop=None, data=None):
+        while not self.download_manager.status_queue.empty():
+            message_type, *args = self.download_manager.status_queue.get()
+            if message_type == 'status':
+                self.update_download_status(*args)
+            elif message_type == 'progress':
+                self.update_progress(*args)
+            elif message_type in ('debug', 'warning', 'error'):
+                self.update_output(f"{message_type.upper()}: {args[0]}")
+
+        self.main_loop.draw_screen()
+        self.main_loop.set_alarm_in(0.1, self.update_tui)
 
     def update_download_status(self, url, status):
-        if self.event_loop:
-            self.event_loop.call_soon_threadsafe(
-                lambda: self.event_loop.create_task(self.update_queue.put(('download_status', (url, status))))
-            )
-
-    def show_output(self, message):
-        if self.event_loop:
-            self.event_loop.call_soon_threadsafe(
-                lambda: self.event_loop.create_task(self.update_queue.put(('output', message)))
-            )
-
-    def clear_output(self):
-        del self.output_list[:]
-        self.main_loop.draw_screen()
-
-    def start_update_thread(self):
-        self.update_thread = threading.Thread(target=self.process_updates, daemon=True)
-        self.update_thread.start()
-
-    async def process_updates(self):
-        while True:
-            update = await self.update_queue.get()
-            if update is None:  # Use None as a signal to stop processing
+        emoji = self.status_emoji.get(status, '❓')  # Default to question mark if status not found
+        for i, widget in enumerate(self.download_list):
+            if url in widget.original_widget.text:
+                self.download_list[i] = urwid.AttrMap(urwid.Text(f"{emoji} {url}"), None, focus_map='reversed')
                 break
-            update_type, data = update
-            if update_type == 'output':
-                self._show_output(data)
-            elif update_type == 'download_status':
-                self._update_download_status(*data)
-            elif update_type == 'add_download':
-                self._add_download(data)
-            self.main_loop.draw_screen()
+        else:
+            self.download_list.append(urwid.AttrMap(urwid.Text(f"{emoji} {url}"), None, focus_map='reversed'))
+        self.download_box.set_focus(len(self.download_list) - 1)
 
-    def _show_output(self, message):
-        self.output_list.append(urwid.Text(message))
-        if self.output_listbox is not None:
-            try:
-                self.output_listbox.focus_position = len(self.output_list) - 1
-            except IndexError:
-                pass
+    def update_progress(self, progress):
+        url = progress['url']
+        text = f"Downloading {progress['filename']}: {progress['percent']} of {progress['total']} at {progress['speed']} ETA {progress['eta']}"
 
-    def _update_download_status(self, url, status):
-        for widget in self.download_list:
-            if url in widget.text:
-                widget.set_text(f"{status} - {url}")
-                break
+        if url in self.last_progress:
+            self.output_list[self.last_progress[url]] = urwid.Text(text)
+        else:
+            self.last_progress[url] = len(self.output_list)
+            self.output_list.append(urwid.Text(text))
 
-    def _add_download(self, url):
-        self.download_list.append(urwid.Text(f"• {url}"))
+        self.output_box.set_focus(len(self.output_list) - 1)
 
-    async def stop(self):
-        if self.event_loop:
-            await self.update_queue.put(None)
-        if self.main_loop:
-            self.main_loop.stop()
+    def update_output(self, text):
+        self.output_list.append(urwid.Text(text))
+        self.output_box.set_focus(len(self.output_list) - 1)
 
+        # Keep only the last 100 messages to prevent excessive memory usage
+        if len(self.output_list) > 100:
+            del self.output_list[0]
+            for url in self.last_progress:
+                self.last_progress[url] -= 1
+            self.last_progress = {k: v for k, v in self.last_progress.items() if v >= 0}
+
+    def run(self):
+        main_widget = self.create_main_widget()
+        self.main_loop = urwid.MainLoop(main_widget, unhandled_input=self.handle_input)
+        self.main_loop.set_alarm_in(0.1, self.update_tui)
+        self.main_loop.run()
