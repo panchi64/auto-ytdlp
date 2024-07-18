@@ -8,6 +8,7 @@ import urwid
 from hypothesis import given, strategies as st
 import shutil
 
+from download_manager import DownloadManager
 from helpers.config_manager import ConfigManager
 from helpers.logger import Logger
 from helpers.notification_manager import NotificationManager
@@ -69,12 +70,23 @@ class TestLogger(unittest.TestCase):
 
 class TestNotificationManager(unittest.TestCase):
     @patch('plyer.notification.notify')
-    def test_send_notification(self, mock_notify):
+    def test_notify_download_complete(self, mock_notify):
         nm = NotificationManager()
-        nm.send_notification('Test Title', 'Test Message')
+        nm.notify_download_complete("Test Video")
         mock_notify.assert_called_once_with(
-            title='Test Title',
-            message='Test Message',
+            title="Download Complete",
+            message="The video 'Test Video' has finished downloading.",
+            app_name='Auto-YTDLP',
+            timeout=10
+        )
+
+    @patch('plyer.notification.notify')
+    def test_notify_download_error(self, mock_notify):
+        nm = NotificationManager()
+        nm.notify_download_error("Test Video", "Network error")
+        mock_notify.assert_called_once_with(
+            title="Download Error",
+            message="Error downloading 'Test Video': Network error",
             app_name='Auto-YTDLP',
             timeout=10
         )
@@ -127,19 +139,37 @@ class TestPerformanceControl(unittest.TestCase):
 
 class TestTUIManager(unittest.TestCase):
     def setUp(self):
-        self.tui = TUIManager(lambda: None, lambda: None)
-        self.tui.main_loop = MagicMock()  # Mock the main_loop
+        self.start_callback = Mock()
+        self.stop_callback = Mock()
+        self.quit_callback = Mock()
+        self.download_manager = Mock()
+        self.tui = TUIManager(self.start_callback, self.stop_callback, self.quit_callback, self.download_manager,
+                              ['https://example.com/video'])
 
-    def test_add_download(self):
-        self.tui.add_download('https://example.com/video')
+    def test_populate_initial_downloads(self):
+        self.tui.populate_initial_downloads()
         self.assertEqual(len(self.tui.download_list), 1)
-        self.tui.main_loop.draw_screen.assert_called_once()
+        self.assertIn('🕒', self.tui.download_list[0].original_widget.text)
+        self.assertIn('https://example.com/video', self.tui.download_list[0].original_widget.text)
+
+    def test_handle_input_start(self):
+        self.tui.handle_input('s')
+        self.start_callback.assert_called_once()
+
+    def test_handle_input_stop(self):
+        self.tui.handle_input('x')
+        self.stop_callback.assert_called_once()
+
+    def test_handle_input_quit(self):
+        with self.assertRaises(urwid.ExitMainLoop):
+            self.tui.handle_input('q')
+        self.quit_callback.assert_called_once()
 
     def test_update_download_status(self):
-        self.tui.add_download('https://example.com/video')
-        self.tui.update_download_status('https://example.com/video', 'Completed')
-        self.assertIn('Completed', self.tui.download_list[0].text)
-        self.assertEqual(self.tui.main_loop.draw_screen.call_count, 2)
+        url = 'https://example.com/video'
+        self.tui.update_download_status(url, 'Downloading')
+        self.assertIn('⬇️', self.tui.download_list[0].original_widget.text)
+        self.assertIn(url, self.tui.download_list[0].original_widget.text)
 
 
 class TestVPNManager(unittest.TestCase):
@@ -235,41 +265,53 @@ class TestErrorHandler(unittest.TestCase):
 class TestAutoYTDLP(unittest.TestCase):
     @patch('auto_ytdlp.VPNManager')
     @patch('auto_ytdlp.TUIManager')
-    @patch('auto_ytdlp.PerformanceControl')
-    def setUp(self, mock_performance, mock_tui, mock_vpn):
-        self.mock_performance = mock_performance.return_value
+    @patch('auto_ytdlp.DownloadManager')
+    @patch('auto_ytdlp.ConfigManager')
+    def setUp(self, mock_config, mock_download_manager, mock_tui, mock_vpn):
+        self.mock_config = mock_config.return_value
+        self.mock_download_manager = mock_download_manager.return_value
         self.mock_tui = mock_tui.return_value
         self.mock_vpn = mock_vpn.return_value
 
+        self.temp_dir = tempfile.mkdtemp()
+        self.log_file = os.path.join(self.temp_dir, 'test_log.txt')
+        self.links_file = os.path.join(self.temp_dir, 'test_links.txt')
+
+        self.mock_config.get.side_effect = lambda section, key, default=None: {
+            ('general', 'log_file'): self.log_file,
+            ('general', 'links_file'): self.links_file
+        }.get((section, key), default)
+
         self.auto_ytdlp = AutoYTDLP()
-        self.auto_ytdlp.performance_control = self.mock_performance
+        self.auto_ytdlp.download_manager = self.mock_download_manager
         self.auto_ytdlp.tui_manager = self.mock_tui
         self.auto_ytdlp.vpn_manager = self.mock_vpn
-        self.auto_ytdlp.tui_manager.main_loop = MagicMock()
 
-    def test_load_url_list(self):
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
-            temp_file.write('https://example.com/video1\nhttps://example.com/video2')
-            temp_file.flush()
-
-            urls = self.auto_ytdlp.load_url_list(temp_file.name)
-            self.assertEqual(len(urls), 2)
-            self.assertIn('https://example.com/video1', urls)
-            self.assertIn('https://example.com/video2', urls)
-
-        os.unlink(temp_file.name)
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
 
     def test_start_downloads(self):
-        self.mock_performance.process_queue.return_value = [
-            {'status': 'success', 'url': 'https://example.com/video1'},
-            {'status': 'error', 'url': 'https://example.com/video2', 'error': 'Download failed'}
-        ]
-        self.mock_performance.get_current_speed.return_value = 1000  # 1000 KB/s
+        urls = ["https://example.com/video1", "https://example.com/video2"]
+        with open(self.links_file, 'w') as f:
+            f.write('\n'.join(urls))
+
         self.auto_ytdlp.start_downloads()
 
-        self.mock_tui.update_download_status.assert_any_call('https://example.com/video1', 'Completed')
-        self.mock_tui.update_download_status.assert_any_call('https://example.com/video2', 'Failed')
-        self.mock_vpn.should_switch.assert_called_with(1000)
+        self.mock_download_manager.start.assert_called_once()
+        self.assertEqual(self.mock_download_manager.add_download.call_count, 2)
+        self.mock_download_manager.add_download.assert_has_calls([call(url) for url in urls])
+
+    def test_stop_downloads(self):
+        self.auto_ytdlp.stop_downloads()
+        self.mock_download_manager.stop.assert_called_once()
+        self.mock_tui.update_output.assert_called_with("All downloads have been stopped.")
+
+    def test_quit(self):
+        with patch('sys.exit') as mock_exit:
+            self.auto_ytdlp.quit()
+            self.mock_download_manager.stop.assert_called_once()
+            self.mock_vpn.disconnect.assert_called_once()
+            mock_exit.assert_called_once_with(0)
 
 
 class TestAutoYTDLPIntegration(unittest.TestCase):
@@ -690,6 +732,41 @@ class TestVPNSwitching(unittest.TestCase):
         ]
         self.assertTrue(self.vpn.switch_server())
         self.assertEqual(mock_run.call_count, 2)
+
+
+class TestDownloadManager(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.download_dir = os.path.join(self.temp_dir, 'downloads')
+        os.makedirs(self.download_dir, exist_ok=True)
+        self.archive_file = os.path.join(self.temp_dir, 'archive.txt')
+        self.dm = DownloadManager(self.download_dir, self.archive_file, 2)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    @patch('yt_dlp.YoutubeDL')
+    def test_download_video(self, mock_ytdl):
+        mock_ytdl.return_value.__enter__.return_value.extract_info.return_value = {'title': 'Test Video'}
+        url = 'https://example.com/video'
+        self.dm.download_video(url)
+        mock_ytdl.assert_called_once()
+        self.assertIn(('status', url, 'Completed'), self.dm.status_queue.queue)
+
+    def test_add_download(self):
+        url = 'https://example.com/video'
+        self.dm.add_download(url)
+        self.assertIn(url, self.dm.download_queue.queue)
+        self.assertIn(('status', url, 'Queued'), self.dm.status_queue.queue)
+
+    @patch('psutil.Process')
+    def test_stop(self, mock_process):
+        mock_process.return_value.children.return_value = []
+        self.dm.current_processes = {'https://example.com/video': 12345}
+        self.dm.stop()
+        self.assertTrue(self.dm.stop_event.is_set())
+        mock_process.assert_called_once_with(12345)
+        mock_process.return_value.terminate.assert_called_once()
 
 
 if __name__ == '__main__':
