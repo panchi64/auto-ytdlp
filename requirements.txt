@@ -1,0 +1,6 @@
+hypothesis==6.108.2
+plyer==2.1.0
+psutil==6.0.0
+toml==0.10.2
+urwid==2.6.15
+yt_dlp==2024.7.16
