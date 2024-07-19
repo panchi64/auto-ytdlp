@@ -1,7 +1,11 @@
 import platform
 from plyer import notification
 
-
+# TODO: Figure out how to make sure the notifications work on all platforms
+# Currently tested:
+    # Linux - Pop!_OS (Works)
+    # MacOS - Sonoma (Not working)
+    # Windows - Windows 10 (Not tested)
 class NotificationManager:
     def __init__(self):
         self.system = platform.system()
