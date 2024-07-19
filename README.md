@@ -1,5 +1,7 @@
 # Auto-YTDLP
 
+<img width="1706" alt="image" src="https://github.com/user-attachments/assets/78f6ed47-1158-4c5e-ab69-9f6a57aff702">
+
 ## Overview
 
 I wrote this Python script so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading, VPN integration, and an intuitive TUI.
