@@ -69,6 +69,9 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 
 4. Ensure ExpressVPN is installed and configured on your system by running `expressvpn status` in your terminal.
 
+> [!WARNING]
+> You need FFMPEG and the CLI version of ExpressVPN installed in your system for the script to work appropriately.
+
 ## Configuration
 
 All settings are managed through a `config.toml` file. Create this file in the same directory as the script. Here's an example configuration with explanations:
