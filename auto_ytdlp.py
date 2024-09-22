@@ -1,6 +1,7 @@
 import argparse
 import sys
 import threading
+import platform
 
 from helpers.vpn_manager import VPNManager
 from helpers.config_manager import ConfigManager
@@ -15,7 +16,10 @@ class AutoYTDLP:
         self.config_manager = ConfigManager('./config.toml')
         self.logger = Logger(self.config_manager.get('general', 'log_file'))
         self.error_handler = AutoYTDLPErrorHandler(self.logger)
-        self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'))
+        if platform.system() == 'Linux':
+            self.vpn_manager = VPNManager(switch_after=self.config_manager.get('vpn', 'switch_after'))
+        else:
+            self.vpn_manager = None
         self.debug = debug
 
         self.initial_urls = self.load_url_list(self.config_manager.get('general', 'links_file'))
@@ -67,12 +71,14 @@ class AutoYTDLP:
 
     def quit(self):
         self.stop_downloads()
-        self.vpn_manager.disconnect()
+        if self.vpn_manager:
+            self.vpn_manager.disconnect()
         sys.exit(0)
 
     def run(self):
         try:
-            self.vpn_manager.connect()
+            if self.vpn_manager:
+                self.vpn_manager.connect()
             if self.tui_manager:
                 self.tui_manager.run()
             else:
