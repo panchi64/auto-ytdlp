@@ -1,4 +1,10 @@
-use std::{fs, process::Command, thread};
+use indicatif::{ProgressBar, ProgressStyle};
+use std::{
+    fs,
+    process::Command,
+    sync::{Arc, Mutex},
+    thread,
+};
 
 fn main() {
     // Read URLs from file
@@ -22,7 +28,20 @@ fn main() {
         return;
     }
 
-    // Create chunks of URLs based on CPU count
+    // Create progress bar
+    let total_urls = urls.len();
+    let pb = ProgressBar::new(total_urls as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    // Wrap progress bar in Arc<Mutex> so it can be shared between threads
+    let pb = Arc::new(Mutex::new(pb));
 
     // Calculate chunk size using ceiling division to ensure all URLs are processed
     // For N urls and M cpus, we need ceiling(N/M) urls per chunk so that:
@@ -31,11 +50,10 @@ fn main() {
     // - No URLs are left unprocessed
     // Example with 10 URLs, 3 CPUs:
     // - Chunk size = ceiling(10/3) = 4
-    // - CPU 1: [URL1, URL2, URL3, URL4]
-    // - CPU 2: [URL5, URL6, URL7, URL8]
-    // - CPU 3: [URL9, URL10]
+    // - CPU 1: [URL1-4]
+    // - CPU 2: [URL5-8]
+    // - CPU 3: [URL9-10]
     let chunk_size = (urls.len() + num_cpus::get() - 1) / num_cpus::get();
-
     let url_chunks: Vec<Vec<String>> = urls
         .chunks(chunk_size)
         .map(|chunk| chunk.to_vec())
@@ -45,9 +63,14 @@ fn main() {
     let mut handles = vec![];
 
     for chunk in url_chunks {
+        let pb = Arc::clone(&pb);
         let handle = thread::spawn(move || {
             for url in chunk {
                 download_video(&url);
+                // Increment progress bar
+                if let Ok(pb) = pb.lock() {
+                    pb.inc(1);
+                }
             }
         });
         handles.push(handle);
@@ -60,18 +83,23 @@ fn main() {
         }
     }
 
-    println!("All downloads completed!");
+    // Finish progress bar
+    if let Ok(pb) = pb.lock() {
+        pb.finish_with_message("All downloads completed!");
+    };
 }
 
 fn download_video(url: &str) {
-    println!("Downloading: {}", url);
-
-    match Command::new("yt-dlp").arg(url).status() {
-        Ok(status) => {
-            if status.success() {
-                println!("Successfully downloaded: {}", url);
-            } else {
-                eprintln!("Failed to download {}: Exit status: {}", url, status);
+    match Command::new("yt-dlp")
+        .arg(url)
+        .stdout(std::process::Stdio::null())  // Hide stdout
+        .stderr(std::process::Stdio::piped())  // Keep stderr for error reporting
+        .output()  // Use output() instead of status() to capture stderr
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                let error = String::from_utf8_lossy(&output.stderr);
+                eprintln!("Failed to download {}: {}", url, error);
             }
         }
         Err(e) => eprintln!("Failed to execute yt-dlp for {}: {}", url, e),
