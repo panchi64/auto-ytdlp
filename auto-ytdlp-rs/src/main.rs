@@ -39,6 +39,7 @@ struct AppState {
     logs: Arc<Mutex<Vec<String>>>,
     paused: Arc<Mutex<bool>>,
     shutdown: Arc<Mutex<bool>>,
+    started: Arc<Mutex<bool>>,
 }
 
 impl AppState {
@@ -46,9 +47,12 @@ impl AppState {
         AppState {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             progress: Arc::new(Mutex::new(0.0)),
-            logs: Arc::new(Mutex::new(Vec::new())),
+            logs: Arc::new(Mutex::new(vec![
+                "Welcome! Press 's' to start downloads".to_string()
+            ])),
             paused: Arc::new(Mutex::new(false)),
             shutdown: Arc::new(Mutex::new(false)),
+            started: Arc::new(Mutex::new(false)),
         }
     }
 }
@@ -194,8 +198,23 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     frame.render_widget(log_list, content_layout[1]);
 
     // Help text
-    let help = Paragraph::new("[P]ause [R]efresh [A]dd links [Q]uit")
-        .block(Block::default().borders(Borders::ALL));
+    let started = state.started.lock().unwrap();
+    let paused = state.paused.lock().unwrap();
+    let mut help_text = String::new();
+
+    if !*started {
+        help_text.push_str("[S]tart ");
+    } else {
+        if *paused {
+            help_text.push_str("[R]esume ");
+        } else {
+            help_text.push_str("[P]ause ");
+        }
+        help_text.push_str("[S]top ");
+    }
+    help_text.push_str("[Q]uit [A]dd links [R]efresh");
+
+    let help = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(help, main_layout[2]);
 }
 
@@ -209,11 +228,6 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
     let tick_rate = Duration::from_millis(250);
     let mut last_tick = Instant::now();
 
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        process_queue(state_clone, max_concurrent).await;
-    });
-
     loop {
         terminal.draw(|f| ui(f, &state))?;
 
@@ -225,9 +239,26 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => break,
+                    KeyCode::Char('s') => {
+                        let mut started = state.started.lock().unwrap();
+                        let mut shutdown = state.shutdown.lock().unwrap();
+                        if !*started {
+                            *started = true;
+                            *shutdown = false;
+                            let state_clone = state.clone();
+                            tokio::spawn(async move {
+                                process_queue(state_clone, max_concurrent).await;
+                            });
+                        } else {
+                            *shutdown = true;
+                            *started = false;
+                        }
+                    }
                     KeyCode::Char('p') => {
-                        let mut paused = state.paused.lock().unwrap();
-                        *paused = !*paused;
+                        if *state.started.lock().unwrap() {
+                            let mut paused = state.paused.lock().unwrap();
+                            *paused = !*paused;
+                        }
                     }
                     KeyCode::Char('r') => {
                         load_links(&state).await?;
@@ -235,7 +266,6 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
                     KeyCode::Char('a') => {
                         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
                         if let Ok(contents) = ctx.get_contents() {
-                            // Create a temporary scope to release the lock before await
                             {
                                 let mut queue = state.queue.lock().unwrap();
                                 for line in contents.lines() {
@@ -243,7 +273,7 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
                                         queue.push_back(line.trim().to_string());
                                     }
                                 }
-                            } // MutexGuard drops here
+                            }
                             save_links(&state).await?;
                         }
                     }
