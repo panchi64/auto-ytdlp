@@ -41,6 +41,7 @@ struct AppState {
     shutdown: Arc<Mutex<bool>>,
     started: Arc<Mutex<bool>>,
     force_quit: Arc<Mutex<bool>>,
+    completed: Arc<Mutex<bool>>,
 }
 
 impl AppState {
@@ -56,6 +57,7 @@ impl AppState {
             shutdown: Arc::new(Mutex::new(false)),
             started: Arc::new(Mutex::new(false)),
             force_quit: Arc::new(Mutex::new(false)),
+            completed: Arc::new(Mutex::new(false)),
         }
     }
 }
@@ -116,8 +118,9 @@ fn update_progress(state: &AppState) {
 
 async fn process_queue(state: AppState, max_concurrent: usize) {
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
+    let mut normal_completion = false;
+
     loop {
-        // Check force quit first
         if *state.force_quit.lock().unwrap() {
             break;
         }
@@ -133,7 +136,7 @@ async fn process_queue(state: AppState, max_concurrent: usize) {
 
         let url = {
             let queue = state.queue.lock().unwrap();
-            queue.front().cloned() // Peek instead of pop
+            queue.front().cloned()
         };
 
         if let Some(url) = url {
@@ -148,13 +151,19 @@ async fn process_queue(state: AppState, max_concurrent: usize) {
                 download_worker(url_clone, state_clone, permit).await;
             });
 
-            // Remove the URL from queue after spawning worker
             let mut queue = state.queue.lock().unwrap();
             queue.pop_front();
             update_progress(&state);
         } else {
-            sleep(Duration::from_millis(500)).await;
+            // Queue is empty - normal completion
+            normal_completion = true;
+            break;
         }
+    }
+
+    // Set completion flag if we exited normally
+    if normal_completion {
+        *state.completed.lock().unwrap() = true;
     }
 }
 
@@ -359,10 +368,13 @@ async fn main() -> Result<()> {
         run_tui(state.clone(), args.concurrent).await?;
     }
 
-    Notification::new()
-        .summary("Download Complete")
-        .body("All downloads finished")
-        .show()?;
+    // Only show notification if we completed normally
+    if *state.completed.lock().unwrap() {
+        Notification::new()
+            .summary("Download Complete")
+            .body("All downloads finished")
+            .show()?;
+    }
 
     Ok(())
 }
