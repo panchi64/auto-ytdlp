@@ -75,7 +75,7 @@ async fn download_worker(url: String, state: AppState, _permit: tokio::sync::Own
 
     let output = Command::new("yt-dlp")
         .arg("--download-archive")
-        .arg("archive.txt")
+        .arg("download_archive.txt")
         .arg(&url)
         .output()
         .await;
