@@ -13,13 +13,13 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs, io,
     path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{process::Command, sync::Semaphore, time::sleep};
+use tokio::{io::AsyncBufReadExt, process::Command, sync::Semaphore, time::sleep};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -35,6 +35,7 @@ struct Args {
 #[derive(Clone)]
 struct AppState {
     queue: Arc<Mutex<VecDeque<String>>>,
+    active_downloads: Arc<Mutex<HashSet<String>>>,
     progress: Arc<Mutex<f64>>,
     logs: Arc<Mutex<Vec<String>>>,
     paused: Arc<Mutex<bool>>,
@@ -48,6 +49,7 @@ impl AppState {
     fn new() -> Self {
         AppState {
             queue: Arc::new(Mutex::new(VecDeque::new())),
+            active_downloads: Arc::new(Mutex::new(HashSet::new())),
             progress: Arc::new(Mutex::new(0.0)),
             logs: Arc::new(Mutex::new(vec![
                 "Welcome! Press 'S' to start downloads".to_string(),
@@ -67,46 +69,80 @@ async fn download_worker(url: String, state: AppState, _permit: tokio::sync::Own
         return;
     }
 
+    // Add to active downloads
+    {
+        let mut active = state.active_downloads.lock().unwrap();
+        active.insert(url.clone());
+    }
+
     // Add log entry when download starts
+    let start_msg = format!("Starting download: {}", url);
     {
         let mut logs = state.logs.lock().unwrap();
-        logs.push(format!("Starting download: {}", url));
+        logs.push(start_msg);
     }
 
-    let output = Command::new("yt-dlp")
+    let mut cmd = Command::new("yt-dlp");
+    let mut child = cmd
         .arg("--download-archive")
         .arg("download_archive.txt")
+        .arg("--newline")
         .arg(&url)
-        .output()
-        .await;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Failed to start yt-dlp");
 
-    match output {
-        Ok(output) => {
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = tokio::io::BufReader::new(stdout).lines();
+
+    while let Some(line) = reader.next_line().await.unwrap_or(None) {
+        let log_line = if line.contains("ERROR") {
+            format!("Error: {}", line)
+        } else if line.contains("Destination") || line.contains("[download]") {
+            line.clone()
+        } else {
+            continue;
+        };
+
+        {
             let mut logs = state.logs.lock().unwrap();
-            logs.push(format!("Downloaded: {}", url));
-            if !output.status.success() {
-                logs.push(format!(
-                    "Error downloading {}: {}",
-                    url,
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-                Notification::new()
-                    .summary("Download Error")
-                    .body(&format!("Failed to download {}", url))
-                    .show()
-                    .ok();
-            }
-        }
-        Err(e) => {
-            state.logs.lock().unwrap().push(format!("Error: {}", e));
+            logs.push(log_line);
         }
     }
 
-    let mut queue = state.queue.lock().unwrap();
-    if let Some(pos) = queue.iter().position(|item| item == &url) {
-        queue.remove(pos);
+    let status = child.wait().await.unwrap();
+
+    // Remove from active downloads
+    {
+        let mut active = state.active_downloads.lock().unwrap();
+        active.remove(&url);
     }
+
+    // Update logs and remove from links.txt
+    let result_msg = if status.success() {
+        remove_link_from_file(&url).await.unwrap();
+        format!("Completed: {}", url)
+    } else {
+        format!("Failed: {}", url)
+    };
+
+    {
+        let mut logs = state.logs.lock().unwrap();
+        logs.push(result_msg);
+    }
+
     update_progress(&state);
+}
+
+async fn remove_link_from_file(url: &str) -> Result<()> {
+    let content = fs::read_to_string("links.txt").unwrap_or_default();
+    let new_content: Vec<&str> = content
+        .lines()
+        .filter(|line| line.trim() != url.trim())
+        .collect();
+    fs::write("links.txt", new_content.join("\n"))?;
+    Ok(())
 }
 
 fn update_progress(state: &AppState) {
@@ -182,8 +218,9 @@ async fn save_links(state: &AppState) -> Result<()> {
 }
 
 fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
-    // Clone the state for UI rendering to avoid holding locks
+    // Clone state for UI rendering
     let queue = state.queue.lock().unwrap().clone();
+    let active_downloads = state.active_downloads.lock().unwrap().clone();
     let logs = state.logs.lock().unwrap().clone();
     let progress = *state.progress.lock().unwrap();
     let started = *state.started.lock().unwrap();
@@ -194,7 +231,8 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         .constraints(
             [
                 ratatui::layout::Constraint::Length(3),
-                ratatui::layout::Constraint::Min(10),
+                ratatui::layout::Constraint::Percentage(60),
+                ratatui::layout::Constraint::Percentage(40),
                 ratatui::layout::Constraint::Length(3),
             ]
             .as_ref(),
@@ -208,7 +246,7 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         .percent(progress as u16);
     frame.render_widget(gauge, main_layout[0]);
 
-    // Download list and logs
+    // Download lists
     let content_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Horizontal)
         .constraints(
@@ -220,20 +258,44 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         )
         .split(main_layout[1]);
 
-    // Queue list
-    let items: Vec<ListItem> = queue.iter().map(|i| ListItem::new(i.as_str())).collect();
-    let list = List::new(items).block(Block::default().title("Queue").borders(Borders::ALL));
-    frame.render_widget(list, content_layout[0]);
+    // Pending downloads
+    let pending_items: Vec<ListItem> = queue.iter().map(|i| ListItem::new(i.as_str())).collect();
+    let pending_list = List::new(pending_items).block(
+        Block::default()
+            .title("Pending Downloads")
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(pending_list, content_layout[0]);
 
-    // Logs list (show last 20 entries)
+    // Active downloads
+    let active_items: Vec<ListItem> = active_downloads
+        .iter()
+        .map(|i| ListItem::new(i.as_str()))
+        .collect();
+    let active_list = List::new(active_items).block(
+        Block::default()
+            .title("Active Downloads")
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(active_list, content_layout[1]);
+
+    // Logs
+    let log_layout = ratatui::layout::Layout::default()
+        .constraints([ratatui::layout::Constraint::Min(1)])
+        .split(main_layout[2]);
+
     let log_items: Vec<ListItem> = logs
         .iter()
         .rev()
         .take(20)
         .map(|l| ListItem::new(l.as_str()))
         .collect();
-    let log_list = List::new(log_items).block(Block::default().title("Logs").borders(Borders::ALL));
-    frame.render_widget(log_list, content_layout[1]);
+    let log_list = List::new(log_items).block(
+        Block::default()
+            .title("Download Logs")
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(log_list, log_layout[0]);
 
     // Help text
     let mut help_text = String::new();
@@ -250,7 +312,7 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     help_text.push_str("[Q]uit [Shift+Q] Force Quit [A]dd links [R]efresh");
 
     let help = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(help, main_layout[2]);
+    frame.render_widget(help, main_layout[3]);
 }
 
 async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
