@@ -40,6 +40,7 @@ struct AppState {
     paused: Arc<Mutex<bool>>,
     shutdown: Arc<Mutex<bool>>,
     started: Arc<Mutex<bool>>,
+    force_quit: Arc<Mutex<bool>>,
 }
 
 impl AppState {
@@ -48,24 +49,31 @@ impl AppState {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             progress: Arc::new(Mutex::new(0.0)),
             logs: Arc::new(Mutex::new(vec![
-                "Welcome! Press 's' to start downloads".to_string()
+                "Welcome! Press 'S' to start downloads".to_string(),
+                "Press 'Q' to quit, 'Shift+Q' to force quit".to_string(),
             ])),
             paused: Arc::new(Mutex::new(false)),
             shutdown: Arc::new(Mutex::new(false)),
             started: Arc::new(Mutex::new(false)),
+            force_quit: Arc::new(Mutex::new(false)),
         }
     }
 }
 
-async fn download_worker(url: String, state: AppState, semaphore: Arc<Semaphore>) {
-    let _permit = semaphore.acquire().await.unwrap();
-    if *state.shutdown.lock().unwrap() {
+async fn download_worker(url: String, state: AppState, _permit: tokio::sync::OwnedSemaphorePermit) {
+    if *state.force_quit.lock().unwrap() {
         return;
+    }
+
+    // Add log entry when download starts
+    {
+        let mut logs = state.logs.lock().unwrap();
+        logs.push(format!("Starting download: {}", url));
     }
 
     let output = Command::new("yt-dlp")
         .arg("--download-archive")
-        .arg("download_archive.txt")
+        .arg("archive.txt")
         .arg(&url)
         .output()
         .await;
@@ -109,6 +117,11 @@ fn update_progress(state: &AppState) {
 async fn process_queue(state: AppState, max_concurrent: usize) {
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
     loop {
+        // Check force quit first
+        if *state.force_quit.lock().unwrap() {
+            break;
+        }
+
         if *state.shutdown.lock().unwrap() {
             break;
         }
@@ -119,16 +132,26 @@ async fn process_queue(state: AppState, max_concurrent: usize) {
         }
 
         let url = {
-            let mut queue = state.queue.lock().unwrap();
-            queue.pop_front()
+            let queue = state.queue.lock().unwrap();
+            queue.front().cloned() // Peek instead of pop
         };
 
         if let Some(url) = url {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            if *state.force_quit.lock().unwrap() || *state.shutdown.lock().unwrap() {
+                break;
+            }
+
             let state_clone = state.clone();
-            let semaphore_clone = semaphore.clone();
+            let url_clone = url.clone();
             tokio::spawn(async move {
-                download_worker(url, state_clone, semaphore_clone).await;
+                download_worker(url_clone, state_clone, permit).await;
             });
+
+            // Remove the URL from queue after spawning worker
+            let mut queue = state.queue.lock().unwrap();
+            queue.pop_front();
+            update_progress(&state);
         } else {
             sleep(Duration::from_millis(500)).await;
         }
@@ -150,6 +173,13 @@ async fn save_links(state: &AppState) -> Result<()> {
 }
 
 fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
+    // Clone the state for UI rendering to avoid holding locks
+    let queue = state.queue.lock().unwrap().clone();
+    let logs = state.logs.lock().unwrap().clone();
+    let progress = *state.progress.lock().unwrap();
+    let started = *state.started.lock().unwrap();
+    let paused = *state.paused.lock().unwrap();
+
     let main_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints(
@@ -163,7 +193,6 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         .split(frame.size());
 
     // Progress bar
-    let progress = *state.progress.lock().unwrap();
     let gauge = Gauge::default()
         .block(Block::default().title("Progress").borders(Borders::ALL))
         .gauge_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green))
@@ -182,37 +211,34 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         )
         .split(main_layout[1]);
 
-    let queue = state.queue.lock().unwrap();
+    // Queue list
     let items: Vec<ListItem> = queue.iter().map(|i| ListItem::new(i.as_str())).collect();
     let list = List::new(items).block(Block::default().title("Queue").borders(Borders::ALL));
     frame.render_widget(list, content_layout[0]);
 
-    let logs = state.logs.lock().unwrap();
+    // Logs list (show last 20 entries)
     let log_items: Vec<ListItem> = logs
         .iter()
         .rev()
-        .take(10)
+        .take(20)
         .map(|l| ListItem::new(l.as_str()))
         .collect();
     let log_list = List::new(log_items).block(Block::default().title("Logs").borders(Borders::ALL));
     frame.render_widget(log_list, content_layout[1]);
 
     // Help text
-    let started = state.started.lock().unwrap();
-    let paused = state.paused.lock().unwrap();
     let mut help_text = String::new();
-
-    if !*started {
+    if !started {
         help_text.push_str("[S]tart ");
     } else {
-        if *paused {
+        if paused {
             help_text.push_str("[R]esume ");
         } else {
             help_text.push_str("[P]ause ");
         }
         help_text.push_str("[S]top ");
     }
-    help_text.push_str("[Q]uit [A]dd links [R]efresh");
+    help_text.push_str("[Q]uit [Shift+Q] Force Quit [A]dd links [R]efresh");
 
     let help = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(help, main_layout[2]);
@@ -238,7 +264,18 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('q') => break,
+                    KeyCode::Char('q') => {
+                        if key.modifiers.contains(event::KeyModifiers::SHIFT) {
+                            // Force quit
+                            *state.force_quit.lock().unwrap() = true;
+                            *state.shutdown.lock().unwrap() = true;
+                            break;
+                        } else {
+                            // Graceful shutdown
+                            *state.shutdown.lock().unwrap() = true;
+                            break;
+                        }
+                    }
                     KeyCode::Char('s') => {
                         let mut started = state.started.lock().unwrap();
                         let mut shutdown = state.shutdown.lock().unwrap();
