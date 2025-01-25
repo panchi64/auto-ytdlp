@@ -181,50 +181,41 @@ fn update_progress(state: &AppState) {
 }
 
 fn process_queue(state: AppState, args: Args) {
-    // Initialize total tasks with current queue length
+    // Initialize total tasks
     *state.total_tasks.lock().unwrap() = state.queue.lock().unwrap().len();
 
     let mut handles = vec![];
 
-    // Create worker threads based on concurrent limit
+    // Create worker threads
     for _ in 0..args.concurrent {
         let state_clone = state.clone();
         let args_clone = args.clone();
 
         let handle = thread::spawn(move || {
             loop {
-                // Check exit conditions
-                if *state_clone.force_quit.lock().unwrap() {
+                // Check exit conditions first
+                if *state_clone.force_quit.lock().unwrap() || *state_clone.shutdown.lock().unwrap()
+                {
                     break;
                 }
 
-                // Check pause state
+                // Handle pause state
                 if *state_clone.paused.lock().unwrap() {
                     thread::sleep(Duration::from_millis(100));
                     continue;
                 }
 
-                // Get next URL
-                let url = {
-                    let mut queue = state_clone.queue.lock().unwrap();
-                    queue.pop_front()
-                };
+                // Get next URL (atomic operation)
+                let url = state_clone.queue.lock().unwrap().pop_front();
 
                 if let Some(url) = url {
-                    // Process the download
                     download_worker(url, state_clone.clone(), args_clone.clone());
-                    update_progress(&state_clone);
                 } else {
-                    // Queue is empty, check shutdown status
-                    if *state_clone.shutdown.lock().unwrap() {
-                        break;
-                    }
-                    // Wait before checking again
+                    // Wait for new items or shutdown
                     thread::sleep(Duration::from_millis(100));
                 }
             }
         });
-
         handles.push(handle);
     }
 
@@ -234,9 +225,9 @@ fn process_queue(state: AppState, args: Args) {
     }
 
     // Mark completion if queue is empty
-    if state.queue.lock().unwrap().is_empty() {
-        *state.completed.lock().unwrap() = true;
-    }
+    let completed = state.queue.lock().unwrap().is_empty();
+    *state.completed.lock().unwrap() = completed;
+    *state.started.lock().unwrap() = false;
 }
 
 fn load_links(state: &AppState) -> Result<()> {
@@ -270,7 +261,6 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     let queue = state.queue.lock().unwrap().clone();
     let active_downloads = state.active_downloads.lock().unwrap().clone();
     let started = *state.started.lock().unwrap();
-    let paused = *state.paused.lock().unwrap();
     let logs = state.logs.lock().unwrap().clone();
 
     let main_layout = ratatui::layout::Layout::default()
@@ -337,15 +327,15 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     // Help text
     let (line1, line2) = if *state.completed.lock().unwrap() {
         (
-            "Keys: [S]tart New Downloads  [A]dd from Clipboard  [R]efresh",
+            "Keys: [S]tart New  [A]dd  [R]efresh",
             "      [Q]uit  [Shift+Q] Force Quit",
         )
     } else if !started {
         (
-            "Keys: [S]tart Downloads  [A]dd from Clipboard  [R]efresh",
+            "Keys: [S]tart  [A]dd  [R]efresh",
             "      [Q]uit  [Shift+Q] Force Quit",
         )
-    } else if paused {
+    } else if *state.paused.lock().unwrap() {
         (
             "Keys: [R]esume  [S]top  [A]dd  [R]efresh",
             "      [Q]uit  [Shift+Q] Force Quit",
@@ -395,28 +385,41 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                     KeyCode::Char('s') => {
                         let mut started = state.started.lock().unwrap();
                         let mut shutdown = state.shutdown.lock().unwrap();
+                        let mut paused = state.paused.lock().unwrap();
 
                         if !*started {
-                            *started = true;
+                            // Reset all control states for fresh start
                             *shutdown = false;
-                            // Reset completion status when restarting
+                            *paused = false;
+                            *started = true;
                             *state.completed.lock().unwrap() = false;
+
+                            // Launch new worker threads
                             let state_clone = state.clone();
                             let args_clone = args.clone();
                             thread::spawn(move || process_queue(state_clone, args_clone));
                         } else {
+                            // Stop ongoing downloads
                             *shutdown = true;
                             *started = false;
+                            *paused = false;
                         }
                     }
                     KeyCode::Char('p') => {
                         if *state.started.lock().unwrap() {
                             let mut paused = state.paused.lock().unwrap();
                             *paused = !*paused;
+                            // Force UI refresh
+                            last_tick = Instant::now() - tick_rate;
                         }
                     }
                     KeyCode::Char('r') => {
-                        load_links(&state)?;
+                        // Only allow resume if downloads are paused
+                        if *state.started.lock().unwrap() && *state.paused.lock().unwrap() {
+                            *state.paused.lock().unwrap() = false;
+                            // Force UI refresh
+                            last_tick = Instant::now() - tick_rate;
+                        }
                     }
                     KeyCode::Char('a') => {
                         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
