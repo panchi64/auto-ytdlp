@@ -4,42 +4,42 @@
 
 ## Overview
 
-I wrote this Python script so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading, VPN integration, and an intuitive TUI.
+I wrote this script originally in Python so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading, VPN integration, and an intuitive TUI.
 
-But it's not just for archiving course videos! This script can handle all sorts of video-downloading tasks. Maybe you're a researcher collecting data, a content creator gathering inspiration, or just someone who likes to keep offline copies of their favorite online content. Whatever your reason, I gotchu fam.
+However I rewrote it in Rust as a little practice for myself, since I've been trying to write more Rust recently.
+
+It's not just for archiving course videos however! This script can handle all sorts of video-downloading tasks. Maybe you're a researcher collecting data, a content creator gathering inspiration, or just someone who likes to keep offline copies of their favorite online content. Whatever your reason, I gotchu fam.
 
 Here's what makes this script nice to have:
 
-1. **Multi-video Downloading**: It can download multiple videos at once, so you're not sitting there, twiddling your thumbs waiting for one video to finish and then manually starting the next one.
-2. **SHHH**: Download limits suck, that's why I added VPN support, which automatically switches IPs, so you can fly "under the radar" (for legal reasons that's a joke).
-3. **Easy to Use**: The TUI is straightforward. You can see what's downloading, pause stuff, and remove things from the queue - all without breaking a sweat.
-4. **Flexible**: I added a config file where you can tweak settings to your heart's content. Want to make sure your IP changes after a couple of downloads? No problem.
-5. **Hard shell**: It can handle long download sessions like a champ. If something goes wrong, it'll let you know, and you can gracefully shut it down without losing progress.
-6. **Organized**: It keeps track of what you've already downloaded and pulls down video metadata too, so you're not left with a bunch of mystery files.
+1. **Multi-video Downloading**: Downloads multiple videos concurrently, making efficient use of your bandwidth and saving time.
+2. **Clean Interface**: The TUI shows you exactly what's happening - active downloads, queue status, and detailed logs all in one view.
+3. **Easy to Use**: Simple keyboard controls let you manage downloads, pause/resume operations, and add new URLs without hassle.
+4. **Flexible**: Configure concurrent download limits, download directories, and archive locations to suit your needs.
+5. **Hard Shell**: Built in Rust for rock-solid stability. Handles long download sessions reliably and shuts down gracefully when needed.
+6. **Organized**: Keeps track of downloaded videos and maintains clean logs, so you always know what's happening.
 
 And hey, if you think of some cool feature to add, the code's right there for you to tinker with!
 
 ## Features
 
 - Download videos from URLs listed in a text file
-- Terminal User Interface (_TUI_)
+- Terminal User Interface (TUI)
 - Multithreaded downloads for improved performance
-- ExpressVPN integration with smart switching
 - yt-dlp archive feature to avoid re-downloading
 - Verbose logging
 - Parallel processing limit
 - Desktop notification system
-- Auto-update feature for yt-dlp (_Coming soon_)
 - Graceful shutdown
 - Metadata extraction (using yt-dlp's built-in functionality)
-- All settings configurable via TOML file
+- Clipboard integration for easy URL addition
+- Progress tracking with visual feedback
 
 ## Requirements
 
-- Python 3.7+
+- Rust (latest stable version)
 - yt-dlp
-- ExpressVPN (installed and configured)
-- Additional Python packages (listed in `requirements.txt`)
+- Additional dependencies will be handled by Cargo
 
 ## Installation
 
@@ -49,97 +49,64 @@ And hey, if you think of some cool feature to add, the code's right there for yo
    cd auto-ytdlp
    ```
 
-2. Set up a virtual environment (recommended):
+2. Build the project:
    ```
-   python -m venv venv --prompt auto-ytdlp # Use python3 if python doesn't work
-   ```
-
-   Activate the virtual environment:
-   - On Windows:
-     ```
-     venv\Scripts\activate
-     ```
-   - On macOS and Linux:
-     ```
-     source venv/bin/activate
-     ```
-
-3. Install required packages:
-   ```
-   pip install -r requirements.txt
+   cargo build --release
    ```
 
-4. Ensure ExpressVPN is installed and configured on your system by running `expressvpn status` in your terminal.
-
+3. Run the application:
+   ```
+   cargo run --release
+   ```   
 > [!WARNING]
-> You need FFMPEG and the CLI version of ExpressVPN installed in your system for the script to work appropriately.
-
-## Configuration
-
-All settings are managed through a `config.toml` file. Create this file in the same directory as the script. Here's an example configuration with explanations:
-
-```toml
-[general]
-links_file = "links.txt"
-download_dir = "/path/to/downloads"
-log_file = "auto_ytdlp.logs"
-
-[yt_dlp]
-archive_file = "download_archive.txt"  # File to store information about downloaded videos
-format = "bestvideo+bestaudio/best"
-
-[performance]
-max_concurrent_downloads = 5
-
-[vpn]
-switch_after = 30  # Switch VPN after every 30 downloads
-speed_threshold = 500  # Switch if the speed drops below 500 KBps
-
-[notifications]
-on_completion = true
-on_error = true
-```
-> [!NOTE]
-> The `archive_file` setting in the `[yt_dlp]` section specifies the file where yt-dlp will store information about downloaded videos. This helps avoid re-downloading videos that have already been processed.
+> You need FFMPEG and yt-dlp installed in your system for the script to work appropriately.
 
 ## Usage
 
-1. Activate the virtual environment (if you haven't already):
-   - On Windows:
-     ```
-     venv\Scripts\activate
-     ```
-   - On macOS and Linux:
-     ```
-     source venv/bin/activate
-     ```
-2. Prepare a text file (default: `links.txt`) with one video URL per line.
+The application can be run in two modes:
 
-3. Run the script:
-   ```
-   python auto_ytdlp.py
-   ```
+### TUI Mode (Default):
+```
+./auto-ytdlp-rs
+```
 
-4. Use the TUI interface to manage downloads, view progress, and control the script.
+#### Interface Controls
+- `S`: Start/Stop downloads
+- `P`: Pause active downloads
+- `R`: Resume paused downloads
+- `A`: Add URLs from clipboard
+- `Q`: Graceful shutdown
+- `Shift+Q`: Force quit
 
-## Logging
+> [!NOTE]
+> All quit options will wait for the currently active downloads to finish, even the **Force Quit**
 
-Verbose logs are written to the specified log file (default: `auto_ytdlp.logs`). This includes download progress, errors, and system messages.
+### Automated Mode (no TUI):
+```
+./auto-ytdlp-rust --auto
+```
 
-## Notifications
+#### Command Line options
+```
+-a, --auto              Run in automated mode without TUI
+-c, --concurrent <N>    Set maximum concurrent downloads (default: 4)
+-d, --download-dir <P>  Specify download directory (default: "./yt_dlp_downloads")
+-h, --archive-file <P>  Specify archive file location (default: "download_archive.txt")
+```
 
-The script sends desktop notifications for completed downloads and errors. These notifications are OS-specific and will appear as standard system notifications if enabled.
+## File Management
+The application handles several important files:
 
-## VPN Integration
-
-The script integrates with ExpressVPN to protect your IP address. It will automatically switch connections based on the configured number of downloads or if a speed degradation is detected.
+- `links.txt`: Contains your download queue
+- `download_archive.txt`: Tracks completed downloads
+- _Download directory_: Where your content gets saved
 
 ## Troubleshooting
 
-1. Ensure ExpressVPN is properly installed and configured.
-2. Check the log file for detailed error messages.
-3. Verify that your `config.toml` file is correctly formatted and located in the script directory.
-4. Make sure you have the necessary permissions for the download directory.
+1. Ensure yt-dlp is properly installed and in your PATH
+2. Check the logs panel for detailed error messages
+3. Verify your URLs are valid and accessible
+4. Make sure you have write permissions in the download directory
 
 ## Contributing
 
