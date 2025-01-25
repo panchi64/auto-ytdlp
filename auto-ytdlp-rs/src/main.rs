@@ -237,21 +237,20 @@ fn load_links(state: &AppState) -> Result<()> {
 
 fn save_links(state: &AppState) -> Result<()> {
     let queue = state.queue.lock().unwrap();
-    let existing = fs::read_to_string("links.txt").unwrap_or_default();
-
-    // Deduplicate and format links
-    let mut all_links: HashSet<String> = existing
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // Deduplicate while preserving order of first occurrence
+    let mut seen = HashSet::new();
+    let unique_links: Vec<_> = queue
+        .iter()
+        .filter_map(|link| {
+            let trimmed = link.trim().to_string();
+            if seen.insert(trimmed.clone()) {
+                Some(trimmed)
+            } else {
+                None
+            }
+        })
         .collect();
-
-    for link in queue.iter() {
-        all_links.insert(link.trim().to_string());
-    }
-
-    let content = all_links.into_iter().collect::<Vec<_>>().join("\n");
-    fs::write("links.txt", content)?;
+    fs::write("links.txt", unique_links.join("\n"))?;
     Ok(())
 }
 
@@ -405,17 +404,26 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                     KeyCode::Char('a') => {
                         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
                         if let Ok(contents) = ctx.get_contents() {
-                            let mut queue = state.queue.lock().unwrap();
-                            let mut links_added = 0;
+                            // Process clipboard contents first
+                            let links: Vec<String> = contents
+                                .lines()
+                                .map(|l| l.trim().to_string())
+                                .filter(|l| !l.is_empty())
+                                .collect();
 
-                            for line in contents.lines() {
-                                let trimmed = line.trim();
-                                if !trimmed.is_empty() && !queue.contains(&trimmed.to_string()) {
-                                    queue.push_back(trimmed.to_string());
-                                    links_added += 1;
-                                }
-                            }
+                            // Lock queue only during modification
+                            let links_added = {
+                                let mut queue = state.queue.lock().unwrap();
+                                let existing: HashSet<_> = queue.iter().cloned().collect();
+                                let new_links = links
+                                    .into_iter()
+                                    .filter(|link| !existing.contains(link))
+                                    .collect::<Vec<_>>();
+                                queue.extend(new_links.iter().cloned());
+                                new_links.len()
+                            };
 
+                            // Save and log after releasing queue lock
                             if links_added > 0 {
                                 save_links(&state)?;
                                 state
