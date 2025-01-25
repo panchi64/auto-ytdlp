@@ -168,7 +168,9 @@ fn update_progress(state: &AppState) {
     let completed = *state.completed_tasks.lock().unwrap();
 
     let progress = if total > 0 {
-        (completed as f64 / total as f64) * 100.0
+        let p = (completed as f64 / total as f64) * 100.0;
+        // Clamp between 0-100 to prevent gauge panic
+        p.clamp(0.0, 100.0)
     } else {
         0.0
     };
@@ -181,8 +183,10 @@ fn update_progress(state: &AppState) {
 }
 
 fn process_queue(state: AppState, args: Args) {
-    // Initialize total tasks
-    *state.total_tasks.lock().unwrap() = state.queue.lock().unwrap().len();
+    // Initialize total tasks with current queue length
+    let queue_len = state.queue.lock().unwrap().len();
+    *state.total_tasks.lock().unwrap() = queue_len;
+    *state.completed_tasks.lock().unwrap() = 0; // Reset completed count
 
     let mut handles = vec![];
 
@@ -388,11 +392,14 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                         let mut paused = state.paused.lock().unwrap();
 
                         if !*started {
-                            // Reset all control states for fresh start
+                            // Reset all states
                             *shutdown = false;
                             *paused = false;
                             *started = true;
                             *state.completed.lock().unwrap() = false;
+                            *state.progress.lock().unwrap() = 0.0;
+                            *state.completed_tasks.lock().unwrap() = 0;
+                            *state.total_tasks.lock().unwrap() = 0;
 
                             // Launch new worker threads
                             let state_clone = state.clone();
