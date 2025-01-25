@@ -1,0 +1,13 @@
+[package]
+name = "auto-ytdlp-rs"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+clipboard = "0.5"
+crossterm = "0.27"
+notify-rust = "4.8"
+ratatui = "0.23"
+url = "2.5.4"
