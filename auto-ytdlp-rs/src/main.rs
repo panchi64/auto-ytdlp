@@ -53,6 +53,7 @@ struct AppState {
     completed: Arc<Mutex<bool>>,
     total_tasks: Arc<Mutex<usize>>,
     completed_tasks: Arc<Mutex<usize>>,
+    notification_sent: Arc<Mutex<bool>>,
 }
 
 impl AppState {
@@ -72,6 +73,7 @@ impl AppState {
             completed: Arc::new(Mutex::new(false)),
             total_tasks: Arc::new(Mutex::new(0)),
             completed_tasks: Arc::new(Mutex::new(0)),
+            notification_sent: Arc::new(Mutex::new(false)),
         }
     }
 }
@@ -369,6 +371,20 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
     loop {
         terminal.draw(|f| ui(f, &state))?;
 
+        // Check for completed downloads and show notification
+        {
+            let completed = *state.completed.lock().unwrap();
+            let mut notification_sent = state.notification_sent.lock().unwrap();
+
+            if completed && !*notification_sent {
+                Notification::new()
+                    .summary("Download Complete")
+                    .body("All downloads finished")
+                    .show()?;
+                *notification_sent = true;
+            }
+        }
+
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
@@ -400,6 +416,7 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                             *state.progress.lock().unwrap() = 0.0;
                             *state.completed_tasks.lock().unwrap() = 0;
                             *state.total_tasks.lock().unwrap() = 0;
+                            *state.notification_sent.lock().unwrap() = false;
 
                             // Launch new worker threads
                             let state_clone = state.clone();
@@ -502,13 +519,6 @@ fn main() -> Result<()> {
         process_queue(state.clone(), args.clone());
     } else {
         run_tui(state.clone(), args.clone())?;
-    }
-
-    if *state.completed.lock().unwrap() {
-        Notification::new()
-            .summary("Download Complete")
-            .body("All downloads finished")
-            .show()?;
     }
 
     Ok(())
