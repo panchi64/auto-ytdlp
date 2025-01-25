@@ -51,6 +51,8 @@ struct AppState {
     started: Arc<Mutex<bool>>,
     force_quit: Arc<Mutex<bool>>,
     completed: Arc<Mutex<bool>>,
+    total_tasks: Arc<Mutex<usize>>,
+    completed_tasks: Arc<Mutex<usize>>,
 }
 
 impl AppState {
@@ -68,6 +70,8 @@ impl AppState {
             started: Arc::new(Mutex::new(false)),
             force_quit: Arc::new(Mutex::new(false)),
             completed: Arc::new(Mutex::new(false)),
+            total_tasks: Arc::new(Mutex::new(0)),
+            completed_tasks: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -139,6 +143,7 @@ fn download_worker(url: String, state: AppState, args: Args) {
     // Update logs and remove from links.txt
     let result_msg = if status.success() {
         remove_link_from_file(&url).unwrap();
+        *state.completed_tasks.lock().unwrap() += 1;
         format!("Completed: {}", url)
     } else {
         format!("Failed: {}", url)
@@ -159,20 +164,26 @@ fn remove_link_from_file(url: &str) -> Result<()> {
 }
 
 fn update_progress(state: &AppState) {
-    let queue = state.queue.lock().unwrap();
-    let active = state.active_downloads.lock().unwrap();
-    let total = queue.len() + active.len();
+    let total = *state.total_tasks.lock().unwrap();
+    let completed = *state.completed_tasks.lock().unwrap();
 
-    if total == 0 {
-        return;
-    }
+    let progress = if total > 0 {
+        (completed as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
 
-    let completed = total - (queue.len() + active.len());
-    let mut progress = state.progress.lock().unwrap();
-    *progress = (completed as f64 / total as f64) * 100.0;
+    *state.progress.lock().unwrap() = progress;
+
+    // Update completion state
+    let mut completed_state = state.completed.lock().unwrap();
+    *completed_state = total > 0 && completed == total;
 }
 
 fn process_queue(state: AppState, args: Args) {
+    // Initialize total tasks with current queue length
+    *state.total_tasks.lock().unwrap() = state.queue.lock().unwrap().len();
+
     let mut handles = vec![];
 
     // Create worker threads based on concurrent limit
@@ -324,8 +335,12 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     frame.render_widget(logs_widget, main_layout[2]);
 
     // Help text
-    let completed = *state.completed.lock().unwrap();
-    let (line1, line2) = if !started || completed {
+    let (line1, line2) = if *state.completed.lock().unwrap() {
+        (
+            "Keys: [S]tart New Downloads  [A]dd from Clipboard  [R]efresh",
+            "      [Q]uit  [Shift+Q] Force Quit",
+        )
+    } else if !started {
         (
             "Keys: [S]tart Downloads  [A]dd from Clipboard  [R]efresh",
             "      [Q]uit  [Shift+Q] Force Quit",
@@ -384,6 +399,8 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                         if !*started {
                             *started = true;
                             *shutdown = false;
+                            // Reset completion status when restarting
+                            *state.completed.lock().unwrap() = false;
                             let state_clone = state.clone();
                             let args_clone = args.clone();
                             thread::spawn(move || process_queue(state_clone, args_clone));
@@ -404,17 +421,18 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                     KeyCode::Char('a') => {
                         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
                         if let Ok(contents) = ctx.get_contents() {
-                            // Process clipboard contents first
+                            // Process clipboard contents with URL validation
                             let links: Vec<String> = contents
                                 .lines()
                                 .map(|l| l.trim().to_string())
                                 .filter(|l| !l.is_empty())
+                                .filter(|l| url::Url::parse(l).is_ok())
                                 .collect();
 
                             // Lock queue only during modification
                             let links_added = {
                                 let mut queue = state.queue.lock().unwrap();
-                                let existing: HashSet<_> = queue.iter().cloned().collect();
+                                let existing: HashSet<_> = queue.iter().collect();
                                 let new_links = links
                                     .into_iter()
                                     .filter(|link| !existing.contains(link))
@@ -425,12 +443,15 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
 
                             // Save and log after releasing queue lock
                             if links_added > 0 {
+                                // Reset completion states
+                                *state.total_tasks.lock().unwrap() += links_added;
+                                *state.completed.lock().unwrap() = false;
                                 save_links(&state)?;
                                 state
                                     .logs
                                     .lock()
                                     .unwrap()
-                                    .push(format!("Added {} links from clipboard", links_added));
+                                    .push(format!("Added {} URLs", links_added));
                             }
                         }
                     }
