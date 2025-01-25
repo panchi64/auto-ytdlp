@@ -1,0 +1,98 @@
+name: Release Binaries
+
+on:
+  push:
+    paths:
+      - 'Cargo.toml'
+    branches:
+      - main
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      should_release: ${{ steps.check-version.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Get current version
+        id: get-version
+        run: |
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if version changed
+        id: check-version
+        run: |
+          git fetch origin
+          CHANGED=$(git diff HEAD^ HEAD -- Cargo.toml | grep '^+version = ')
+          if [ ! -z "$CHANGED" ]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            extension: ''
+          - os: windows-latest
+            platform: windows
+            extension: '.exe'
+          - os: macos-latest
+            platform: macos
+            extension: ''
+            
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Build binary
+        run: cargo build --release
+        
+      - name: Rename binary with version and platform
+        shell: bash
+        run: |
+          cd target/release
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            mv auto-ytdlp-rs${{ matrix.extension }} auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}${{ matrix.extension }}
+          else
+            mv auto-ytdlp-rs auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}${{ matrix.extension }}
+          fi
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.platform }}
+          path: target/release/auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}${{ matrix.extension }}
+          
+  create-release:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: Release v${{ needs.check-version.outputs.version }}
+          draft: false
+          prerelease: false
+          files: |
+            binary-*/auto-ytdlp-${{ needs.check-version.outputs.version }}-*

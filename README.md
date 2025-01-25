@@ -44,19 +44,44 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 
 ## Installation
 
-1. Clone this repository:
+### Using [Pre-built Binaries](https://github.com/panchi64/auto-ytdlp/releases/new)
+
+1. Go to the [Releases page](https://github.com/panchi64/auto-ytdlp/releases/new)
+2. Download the appropriate binary for your system:
+
+   - Windows: `auto-ytdlp-[version]-windows.exe`
+   - macOS: `auto-ytdlp-[version]-macos`
+   - Linux: `auto-ytdlp-[version]-linux`
+
+
+3. Make the binary executable (macOS/Linux only):
+   ```bash
+   chmod +x auto-ytdlp-[version]-[platform]
    ```
+
+4. Optional: Move the binary to a directory in your `PATH`:
+
+   - Windows: Move to `C:\Windows\` or add the binary location to your `PATH`
+   - macOS/Linux:
+      ```bash
+      sudo mv auto-ytdlp-[version]-[platform] /usr/local/bin/auto-ytdlp
+      ```
+
+### Building from source
+
+1. Clone this repository:
+   ```bash
    git clone https://github.com/panchi64/auto-ytdlp.git
    cd auto-ytdlp
    ```
 
 2. Build the project:
-   ```
+   ```bash
    cargo build --release
    ```
 
 3. Run the application:
-   ```
+   ```bash
    cargo run --release
    ```   
 > [!WARNING]
@@ -67,8 +92,12 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 The application can be run in two modes:
 
 ### TUI Mode (Default):
-```
-./auto-ytdlp-rs
+```bash
+# Using pre-built binary
+./auto-ytdlp
+
+# Or if installed to PATH
+auto-ytdlp
 ```
 
 #### Interface Controls
@@ -83,8 +112,12 @@ The application can be run in two modes:
 > All quit options will wait for the currently active downloads to finish, even the **Force Quit**
 
 ### Automated Mode (no TUI):
-```
-./auto-ytdlp-rust --auto
+```bash
+# Using pre-built binary
+./auto-ytdlp --auto
+
+# Or if installed to PATH
+auto-ytdlp --auto
 ```
 
 #### Command Line options
@@ -104,7 +137,7 @@ The application handles several important files:
 
 ## Troubleshooting
 
-1. Ensure yt-dlp is properly installed and in your PATH
+1. Ensure yt-dlp is properly installed and in your `PATH`
 2. Check the logs panel for detailed error messages
 3. Verify your URLs are valid and accessible
 4. Make sure you have write permissions in the download directory
