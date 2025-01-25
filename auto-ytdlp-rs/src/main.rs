@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use clipboard::{ClipboardContext, ClipboardProvider};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -14,22 +14,30 @@ use ratatui::{
 };
 use std::{
     collections::{HashSet, VecDeque},
-    fs, io,
-    path::Path,
+    fs::{self, File},
+    io::{self, BufRead, BufReader},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
-use tokio::{io::AsyncBufReadExt, process::Command, sync::Semaphore, time::sleep};
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Run in automated mode without TUI
     #[arg(short, long)]
     auto: bool,
     /// Max concurrent downloads
-    #[arg(short, long, default_value_t = 5)]
+    #[arg(short, long, default_value_t = 4)]
     concurrent: usize,
+    /// Download directory
+    #[arg(short, long, default_value = "./yt_dlp_downloads")]
+    download_dir: PathBuf,
+    /// Archive file path
+    #[arg(short, long, default_value = "download_archive.txt")]
+    archive_file: PathBuf,
 }
 
 #[derive(Clone)]
@@ -64,7 +72,7 @@ impl AppState {
     }
 }
 
-async fn download_worker(url: String, state: AppState, _permit: tokio::sync::OwnedSemaphorePermit) {
+fn download_worker(url: String, state: AppState, args: Args) {
     if *state.force_quit.lock().unwrap() {
         return;
     }
@@ -76,66 +84,71 @@ async fn download_worker(url: String, state: AppState, _permit: tokio::sync::Own
     }
 
     // Add log entry when download starts
-    let start_msg = format!("Starting download: {}", url);
     {
         let mut logs = state.logs.lock().unwrap();
-        logs.push(start_msg);
+        logs.push(format!("Starting download: {}", url));
     }
 
-    let mut cmd = Command::new("yt-dlp");
-    let mut child = cmd
+    let output_template = args
+        .download_dir
+        .join("%(title)s - [%(id)s].%(ext)s")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let mut cmd = Command::new("yt-dlp")
+        .arg("--format")
+        .arg("bestvideo*+bestaudio/best")
         .arg("--download-archive")
-        .arg("download_archive.txt")
+        .arg(&args.archive_file)
+        .arg("--output")
+        .arg(output_template)
         .arg("--newline")
         .arg(&url)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start yt-dlp");
 
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = tokio::io::BufReader::new(stdout).lines();
+    let stdout = cmd.stdout.take().unwrap();
+    let reader = BufReader::new(stdout);
 
-    while let Some(line) = reader.next_line().await.unwrap_or(None) {
+    // Use map_while to handle potential read errors properly
+    for line in reader.lines().map_while(Result::ok) {
+        if *state.force_quit.lock().unwrap() {
+            cmd.kill().ok();
+            break;
+        }
+
         let log_line = if line.contains("ERROR") {
             format!("Error: {}", line)
         } else if line.contains("Destination") || line.contains("[download]") {
-            line.clone()
+            line
         } else {
             continue;
         };
 
-        {
-            let mut logs = state.logs.lock().unwrap();
-            logs.push(log_line);
-        }
+        state.logs.lock().unwrap().push(log_line);
     }
 
-    let status = child.wait().await.unwrap();
+    let status = cmd.wait().expect("Failed to wait on yt-dlp");
 
     // Remove from active downloads
-    {
-        let mut active = state.active_downloads.lock().unwrap();
-        active.remove(&url);
-    }
+    state.active_downloads.lock().unwrap().remove(&url);
 
     // Update logs and remove from links.txt
     let result_msg = if status.success() {
-        remove_link_from_file(&url).await.unwrap();
+        remove_link_from_file(&url).unwrap();
         format!("Completed: {}", url)
     } else {
         format!("Failed: {}", url)
     };
 
-    {
-        let mut logs = state.logs.lock().unwrap();
-        logs.push(result_msg);
-    }
-
+    state.logs.lock().unwrap().push(result_msg);
     update_progress(&state);
 }
 
-async fn remove_link_from_file(url: &str) -> Result<()> {
+fn remove_link_from_file(url: &str) -> Result<()> {
     let content = fs::read_to_string("links.txt").unwrap_or_default();
     let new_content: Vec<&str> = content
         .lines()
@@ -147,93 +160,117 @@ async fn remove_link_from_file(url: &str) -> Result<()> {
 
 fn update_progress(state: &AppState) {
     let queue = state.queue.lock().unwrap();
-    let total = queue.len() as f64 + 1.0;
-    let mut progress = state.progress.lock().unwrap();
-    *progress = ((total - queue.len() as f64) / total) * 100.0;
-}
+    let active = state.active_downloads.lock().unwrap();
+    let total = queue.len() + active.len();
 
-async fn process_queue(state: AppState, max_concurrent: usize) {
-    let semaphore = Arc::new(Semaphore::new(max_concurrent));
-    let mut normal_completion = false;
-
-    loop {
-        if *state.force_quit.lock().unwrap() {
-            break;
-        }
-
-        if *state.shutdown.lock().unwrap() {
-            break;
-        }
-
-        if *state.paused.lock().unwrap() {
-            sleep(Duration::from_secs(1)).await;
-            continue;
-        }
-
-        let url = {
-            let queue = state.queue.lock().unwrap();
-            queue.front().cloned()
-        };
-
-        if let Some(url) = url {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            if *state.force_quit.lock().unwrap() || *state.shutdown.lock().unwrap() {
-                break;
-            }
-
-            let state_clone = state.clone();
-            let url_clone = url.clone();
-            tokio::spawn(async move {
-                download_worker(url_clone, state_clone, permit).await;
-            });
-
-            let mut queue = state.queue.lock().unwrap();
-            queue.pop_front();
-            update_progress(&state);
-        } else {
-            // Queue is empty - normal completion
-            normal_completion = true;
-            break;
-        }
+    if total == 0 {
+        return;
     }
 
-    // Set completion flag if we exited normally
-    if normal_completion {
+    let completed = total - (queue.len() + active.len());
+    let mut progress = state.progress.lock().unwrap();
+    *progress = (completed as f64 / total as f64) * 100.0;
+}
+
+fn process_queue(state: AppState, args: Args) {
+    let mut handles = vec![];
+
+    // Create worker threads based on concurrent limit
+    for _ in 0..args.concurrent {
+        let state_clone = state.clone();
+        let args_clone = args.clone();
+
+        let handle = thread::spawn(move || {
+            loop {
+                // Check exit conditions
+                if *state_clone.force_quit.lock().unwrap() {
+                    break;
+                }
+
+                // Check pause state
+                if *state_clone.paused.lock().unwrap() {
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+
+                // Get next URL
+                let url = {
+                    let mut queue = state_clone.queue.lock().unwrap();
+                    queue.pop_front()
+                };
+
+                if let Some(url) = url {
+                    // Process the download
+                    download_worker(url, state_clone.clone(), args_clone.clone());
+                    update_progress(&state_clone);
+                } else {
+                    // Queue is empty, check shutdown status
+                    if *state_clone.shutdown.lock().unwrap() {
+                        break;
+                    }
+                    // Wait before checking again
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    // Wait for all workers to finish
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Mark completion if queue is empty
+    if state.queue.lock().unwrap().is_empty() {
         *state.completed.lock().unwrap() = true;
     }
 }
 
-async fn load_links(state: &AppState) -> Result<()> {
+fn load_links(state: &AppState) -> Result<()> {
     let content = fs::read_to_string("links.txt").unwrap_or_default();
     let mut queue = state.queue.lock().unwrap();
     *queue = content.lines().map(String::from).collect();
     Ok(())
 }
 
-async fn save_links(state: &AppState) -> Result<()> {
+fn save_links(state: &AppState) -> Result<()> {
     let queue = state.queue.lock().unwrap();
-    let content = queue.iter().cloned().collect::<Vec<_>>().join("\n");
+    let existing = fs::read_to_string("links.txt").unwrap_or_default();
+
+    // Deduplicate and format links
+    let mut all_links: HashSet<String> = existing
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for link in queue.iter() {
+        all_links.insert(link.trim().to_string());
+    }
+
+    let content = all_links.into_iter().collect::<Vec<_>>().join("\n");
     fs::write("links.txt", content)?;
     Ok(())
 }
 
 fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
-    // Clone state for UI rendering
+    let progress = *state.progress.lock().unwrap();
     let queue = state.queue.lock().unwrap().clone();
     let active_downloads = state.active_downloads.lock().unwrap().clone();
-    let logs = state.logs.lock().unwrap().clone();
-    let progress = *state.progress.lock().unwrap();
     let started = *state.started.lock().unwrap();
     let paused = *state.paused.lock().unwrap();
+    let logs = state.logs.lock().unwrap().clone();
 
     let main_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints(
             [
                 ratatui::layout::Constraint::Length(3),
-                ratatui::layout::Constraint::Percentage(60),
                 ratatui::layout::Constraint::Percentage(40),
-                ratatui::layout::Constraint::Length(3),
+                ratatui::layout::Constraint::Percentage(40),
+                ratatui::layout::Constraint::Length(4),
             ]
             .as_ref(),
         )
@@ -246,28 +283,25 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         .percent(progress as u16);
     frame.render_widget(gauge, main_layout[0]);
 
-    // Download lists
-    let content_layout = ratatui::layout::Layout::default()
+    // Downloads area (Pending + Active)
+    let downloads_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Horizontal)
-        .constraints(
-            [
-                ratatui::layout::Constraint::Percentage(50),
-                ratatui::layout::Constraint::Percentage(50),
-            ]
-            .as_ref(),
-        )
+        .constraints([
+            ratatui::layout::Constraint::Percentage(50),
+            ratatui::layout::Constraint::Percentage(50),
+        ])
         .split(main_layout[1]);
 
-    // Pending downloads
+    // Pending downloads list
     let pending_items: Vec<ListItem> = queue.iter().map(|i| ListItem::new(i.as_str())).collect();
     let pending_list = List::new(pending_items).block(
         Block::default()
             .title("Pending Downloads")
             .borders(Borders::ALL),
     );
-    frame.render_widget(pending_list, content_layout[0]);
+    frame.render_widget(pending_list, downloads_layout[0]);
 
-    // Active downloads
+    // Active downloads list
     let active_items: Vec<ListItem> = active_downloads
         .iter()
         .map(|i| ListItem::new(i.as_str()))
@@ -277,45 +311,44 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
             .title("Active Downloads")
             .borders(Borders::ALL),
     );
-    frame.render_widget(active_list, content_layout[1]);
+    frame.render_widget(active_list, downloads_layout[1]);
 
-    // Logs
-    let log_layout = ratatui::layout::Layout::default()
-        .constraints([ratatui::layout::Constraint::Min(1)])
-        .split(main_layout[2]);
+    // Logs display
+    let log_text = logs.join("\n");
+    let text_height = logs.len() as u16;
+    let area_height = main_layout[2].height;
+    let scroll = text_height.saturating_sub(area_height);
 
-    let log_items: Vec<ListItem> = logs
-        .iter()
-        .rev()
-        .take(20)
-        .map(|l| ListItem::new(l.as_str()))
-        .collect();
-    let log_list = List::new(log_items).block(
-        Block::default()
-            .title("Download Logs")
-            .borders(Borders::ALL),
-    );
-    frame.render_widget(log_list, log_layout[0]);
+    let logs_widget = Paragraph::new(log_text)
+        .block(Block::default().title("Logs").borders(Borders::ALL))
+        .scroll((scroll, 0));
+    frame.render_widget(logs_widget, main_layout[2]);
 
     // Help text
-    let mut help_text = String::new();
-    if !started {
-        help_text.push_str("[S]tart ");
+    let completed = *state.completed.lock().unwrap();
+    let (line1, line2) = if !started || completed {
+        (
+            "Keys: [S]tart Downloads  [A]dd from Clipboard  [R]efresh",
+            "      [Q]uit  [Shift+Q] Force Quit",
+        )
+    } else if paused {
+        (
+            "Keys: [R]esume  [S]top  [A]dd  [R]efresh",
+            "      [Q]uit  [Shift+Q] Force Quit",
+        )
     } else {
-        if paused {
-            help_text.push_str("[R]esume ");
-        } else {
-            help_text.push_str("[P]ause ");
-        }
-        help_text.push_str("[S]top ");
-    }
-    help_text.push_str("[Q]uit [Shift+Q] Force Quit [A]dd links [R]efresh");
+        (
+            "Keys: [P]ause  [S]top  [A]dd  [R]efresh",
+            "      [Q]uit  [Shift+Q] Force Quit",
+        )
+    };
 
+    let help_text = format!("{}\n{}", line1, line2);
     let help = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(help, main_layout[3]);
 }
 
-async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
+fn run_tui(state: AppState, args: Args) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -336,13 +369,11 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => {
-                        if key.modifiers.contains(event::KeyModifiers::SHIFT) {
-                            // Force quit
+                        if key.modifiers.contains(KeyModifiers::SHIFT) {
                             *state.force_quit.lock().unwrap() = true;
                             *state.shutdown.lock().unwrap() = true;
                             break;
                         } else {
-                            // Graceful shutdown
                             *state.shutdown.lock().unwrap() = true;
                             break;
                         }
@@ -350,13 +381,13 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
                     KeyCode::Char('s') => {
                         let mut started = state.started.lock().unwrap();
                         let mut shutdown = state.shutdown.lock().unwrap();
+
                         if !*started {
                             *started = true;
                             *shutdown = false;
                             let state_clone = state.clone();
-                            tokio::spawn(async move {
-                                process_queue(state_clone, max_concurrent).await;
-                            });
+                            let args_clone = args.clone();
+                            thread::spawn(move || process_queue(state_clone, args_clone));
                         } else {
                             *shutdown = true;
                             *started = false;
@@ -369,20 +400,30 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
                         }
                     }
                     KeyCode::Char('r') => {
-                        load_links(&state).await?;
+                        load_links(&state)?;
                     }
                     KeyCode::Char('a') => {
                         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
                         if let Ok(contents) = ctx.get_contents() {
-                            {
-                                let mut queue = state.queue.lock().unwrap();
-                                for line in contents.lines() {
-                                    if !line.trim().is_empty() {
-                                        queue.push_back(line.trim().to_string());
-                                    }
+                            let mut queue = state.queue.lock().unwrap();
+                            let mut links_added = 0;
+
+                            for line in contents.lines() {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() && !queue.contains(&trimmed.to_string()) {
+                                    queue.push_back(trimmed.to_string());
+                                    links_added += 1;
                                 }
                             }
-                            save_links(&state).await?;
+
+                            if links_added > 0 {
+                                save_links(&state)?;
+                                state
+                                    .logs
+                                    .lock()
+                                    .unwrap()
+                                    .push(format!("Added {} links from clipboard", links_added));
+                            }
                         }
                     }
                     _ => {}
@@ -406,31 +447,24 @@ async fn run_tui(state: AppState, max_concurrent: usize) -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
     let state = AppState::new();
 
+    fs::create_dir_all(&args.download_dir)?;
+
     if !Path::new("links.txt").exists() {
-        fs::File::create("links.txt")?;
+        File::create("links.txt")?;
     }
 
-    load_links(&state).await?;
+    load_links(&state)?;
 
     if args.auto {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            process_queue(state_clone, args.concurrent).await;
-        });
-
-        while !state.queue.lock().unwrap().is_empty() {
-            sleep(Duration::from_secs(1)).await;
-        }
+        process_queue(state.clone(), args.clone());
     } else {
-        run_tui(state.clone(), args.concurrent).await?;
+        run_tui(state.clone(), args.clone())?;
     }
 
-    // Only show notification if we completed normally
     if *state.completed.lock().unwrap() {
         Notification::new()
             .summary("Download Complete")
