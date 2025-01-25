@@ -59,6 +59,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+        
       - name: Build binary
         run: cargo build --release
         
