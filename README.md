@@ -142,6 +142,11 @@ The application handles several important files:
 3. Verify your URLs are valid and accessible
 4. Make sure you have write permissions in the download directory
 
+If you get the "auto-ytdlp-[version]-macos not opened" message on Apple devices. Use the following command to remove it from the quarantine:
+```
+xattr -dr com.apple.quarantine <path to file>/auto-ytdlp-[version]-macos
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
