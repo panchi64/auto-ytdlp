@@ -5,11 +5,11 @@
 
 ## Overview
 
-I wrote this script originally in Python so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading, VPN integration, and an intuitive TUI.
+I wrote this script originally in Python so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading and an intuitive TUI.
 
-However I rewrote it in Rust as a little practice for myself, since I've been trying to write more Rust recently.
+However I rewrote it in Rust, as a little practice for myself, since I've been trying to write more Rust recently.
 
-It's not just for archiving course videos however! This script can handle all sorts of video-downloading tasks. Maybe you're a researcher collecting data, a content creator gathering inspiration, or just someone who likes to keep offline copies of their favorite online content. Whatever your reason, I gotchu fam.
+It's not just for archiving course videos however! This script can handle all sorts of video-downloading tasks. Maybe you're a researcher collecting data, a content creator gathering inspiration, or just someone who likes to keep offline copies of their favorite online content. Whatever your reason, I hope my little repo helps.
 
 Here's what makes this script nice to have:
 
@@ -40,6 +40,7 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 
 - Rust (latest stable version)
 - yt-dlp
+- ffmpeg (yt-dlp requires it as an internal dependency)
 - Additional dependencies will be handled by Cargo
 
 ## Installation
@@ -122,10 +123,10 @@ auto-ytdlp --auto
 
 #### Command Line options
 ```
--a, --auto              Run in automated mode without TUI
--c, --concurrent <N>    Set maximum concurrent downloads (default: 4)
--d, --download-dir <P>  Specify download directory (default: "./yt_dlp_downloads")
--h, --archive-file <P>  Specify archive file location (default: "download_archive.txt")
+ --auto              Run in automated mode without TUI
+ --concurrent <N>    Set maximum concurrent downloads (default: 4)
+ --download-dir <P>  Specify download directory (default: "./yt_dlp_downloads")
+ --archive-file <P>  Specify archive file location (default: "download_archive.txt")
 ```
 
 ## File Management
@@ -142,7 +143,7 @@ The application handles several important files:
 3. Verify your URLs are valid and accessible
 4. Make sure you have write permissions in the download directory
 
-If you get the "auto-ytdlp-[version]-macos not opened" message on Apple devices. Use the following command to remove it from the quarantine:
+If you get the "auto-ytdlp-[version]-macos not opened" message on Apple devices. Use the following command to remove it from quarantine:
 ```
 xattr -dr com.apple.quarantine <path to file>/auto-ytdlp-[version]-macos
 ```
