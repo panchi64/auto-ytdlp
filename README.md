@@ -91,10 +91,18 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 
 The application can be run in two modes:
 
+> [!NOTE]
+> The following commands assume you've renamed the downloaded binary file from:
+> 
+> `auto-ytdlp-[version]-[platform]` to `auto-ytdlp`
+
 ### TUI Mode (Default):
 ```bash
 # Using pre-built binary
 ./auto-ytdlp
+
+# If you wanna download the videos into the folder you're in, use:
+./auto-ytdlp -d ./
 
 # Or if installed to PATH
 auto-ytdlp
@@ -113,7 +121,7 @@ auto-ytdlp
 
 ### Automated Mode (no TUI):
 ```bash
-# Using pre-built binary
+# Using pre-built binary:
 ./auto-ytdlp --auto
 
 # Or if installed to PATH
