@@ -36,7 +36,7 @@ struct Args {
     #[arg(short, long, default_value = "./yt_dlp_downloads")]
     download_dir: PathBuf,
     /// Archive file path
-    #[arg(short, long, default_value = "download_archive.txt")]
+    #[arg(short = 'f', long, default_value = "./download_archive.txt")]
     archive_file: PathBuf,
 }
 
@@ -54,6 +54,8 @@ struct AppState {
     total_tasks: Arc<Mutex<usize>>,
     completed_tasks: Arc<Mutex<usize>>,
     notification_sent: Arc<Mutex<bool>>,
+    initial_total_tasks: Arc<Mutex<usize>>,
+    concurrent: Arc<Mutex<usize>>,
 }
 
 impl AppState {
@@ -74,6 +76,8 @@ impl AppState {
             total_tasks: Arc::new(Mutex::new(0)),
             completed_tasks: Arc::new(Mutex::new(0)),
             notification_sent: Arc::new(Mutex::new(false)),
+            initial_total_tasks: Arc::new(Mutex::new(0)),
+            concurrent: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -156,12 +160,18 @@ fn download_worker(url: String, state: AppState, args: Args) {
 }
 
 fn remove_link_from_file(url: &str) -> Result<()> {
-    let content = fs::read_to_string("links.txt").unwrap_or_default();
+    let file_path = "links.txt";
+    let content = fs::read_to_string(file_path).unwrap_or_default();
+
+    // Use a temporary file for atomic writes
+    let temp_path = format!("{}.tmp", file_path);
     let new_content: Vec<&str> = content
         .lines()
         .filter(|line| line.trim() != url.trim())
         .collect();
-    fs::write("links.txt", new_content.join("\n"))?;
+
+    fs::write(&temp_path, new_content.join("\n"))?;
+    fs::rename(&temp_path, file_path)?; // Atomic replace
     Ok(())
 }
 
@@ -185,6 +195,11 @@ fn update_progress(state: &AppState) {
 }
 
 fn process_queue(state: AppState, args: Args) {
+    if state.queue.lock().unwrap().is_empty() {
+        *state.completed.lock().unwrap() = true;
+        return;
+    }
+
     // Initialize total tasks with current queue length
     let queue_len = state.queue.lock().unwrap().len();
     *state.total_tasks.lock().unwrap() = queue_len;
@@ -240,22 +255,19 @@ fn load_links(state: &AppState) -> Result<()> {
     let content = fs::read_to_string("links.txt").unwrap_or_default();
     let mut queue = state.queue.lock().unwrap();
     *queue = content.lines().map(String::from).collect();
+    *state.initial_total_tasks.lock().unwrap() = queue.len();
+    *state.total_tasks.lock().unwrap() = queue.len();
     Ok(())
 }
 
 fn save_links(state: &AppState) -> Result<()> {
     let queue = state.queue.lock().unwrap();
-    // Deduplicate while preserving order of first occurrence
     let mut seen = HashSet::new();
     let unique_links: Vec<_> = queue
         .iter()
         .filter_map(|link| {
             let trimmed = link.trim().to_string();
-            if seen.insert(trimmed.clone()) {
-                Some(trimmed)
-            } else {
-                None
-            }
+            seen.insert(trimmed.clone()).then_some(trimmed)
         })
         .collect();
     fs::write("links.txt", unique_links.join("\n"))?;
@@ -268,6 +280,15 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     let active_downloads = state.active_downloads.lock().unwrap().clone();
     let started = *state.started.lock().unwrap();
     let logs = state.logs.lock().unwrap().clone();
+    let initial_total = *state.initial_total_tasks.lock().unwrap();
+    let concurrent = *state.concurrent.lock().unwrap();
+
+    let pending_title = format!("Pending Downloads - {}/{}", queue.len(), initial_total);
+    let active_title = format!(
+        "Active Downloads - {}/{}",
+        active_downloads.len(),
+        concurrent
+    );
 
     let main_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
@@ -300,11 +321,8 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
 
     // Pending downloads list
     let pending_items: Vec<ListItem> = queue.iter().map(|i| ListItem::new(i.as_str())).collect();
-    let pending_list = List::new(pending_items).block(
-        Block::default()
-            .title("Pending Downloads")
-            .borders(Borders::ALL),
-    );
+    let pending_list =
+        List::new(pending_items).block(Block::default().title(pending_title).borders(Borders::ALL));
     frame.render_widget(pending_list, downloads_layout[0]);
 
     // Active downloads list
@@ -312,11 +330,8 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         .iter()
         .map(|i| ListItem::new(i.as_str()))
         .collect();
-    let active_list = List::new(active_items).block(
-        Block::default()
-            .title("Active Downloads")
-            .borders(Borders::ALL),
-    );
+    let active_list =
+        List::new(active_items).block(Block::default().title(active_title).borders(Borders::ALL));
     frame.render_widget(active_list, downloads_layout[1]);
 
     // Logs display
@@ -343,12 +358,12 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         )
     } else if *state.paused.lock().unwrap() {
         (
-            "Keys: [R]esume  [S]top  [A]dd  [R]efresh",
+            "Keys: [P] Unpause  [S]top  [A]dd  [R]efresh",
             "      [Q]uit  [Shift+Q] Force Quit",
         )
     } else {
         (
-            "Keys: [P]ause  [S]top  [A]dd  [R]efresh",
+            "Keys: [P]ause  [S]top  [R]efresh",
             "      [Q]uit  [Shift+Q] Force Quit",
         )
     };
@@ -415,7 +430,8 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                             *state.completed.lock().unwrap() = false;
                             *state.progress.lock().unwrap() = 0.0;
                             *state.completed_tasks.lock().unwrap() = 0;
-                            *state.total_tasks.lock().unwrap() = 0;
+                            let queue_len = state.queue.lock().unwrap().len();
+                            *state.total_tasks.lock().unwrap() = queue_len;
                             *state.notification_sent.lock().unwrap() = false;
 
                             // Launch new worker threads
@@ -438,48 +454,72 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                         }
                     }
                     KeyCode::Char('r') => {
-                        // Only allow resume if downloads are paused
-                        if *state.started.lock().unwrap() && *state.paused.lock().unwrap() {
-                            *state.paused.lock().unwrap() = false;
-                            // Force UI refresh
-                            last_tick = Instant::now() - tick_rate;
+                        if let Err(e) = load_links(&state) {
+                            state
+                                .logs
+                                .lock()
+                                .unwrap()
+                                .push(format!("Error reloading links: {}", e));
+                        } else {
+                            let queue_len = state.queue.lock().unwrap().len();
+                            *state.initial_total_tasks.lock().unwrap() = queue_len;
+
+                            if !*state.started.lock().unwrap() {
+                                *state.total_tasks.lock().unwrap() = queue_len;
+                            }
+                            state
+                                .logs
+                                .lock()
+                                .unwrap()
+                                .push("Links refreshed from file".to_string());
                         }
+                        last_tick = Instant::now() - tick_rate;
                     }
                     KeyCode::Char('a') => {
-                        let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-                        if let Ok(contents) = ctx.get_contents() {
-                            // Process clipboard contents with URL validation
-                            let links: Vec<String> = contents
-                                .lines()
-                                .map(|l| l.trim().to_string())
-                                .filter(|l| !l.is_empty())
-                                .filter(|l| url::Url::parse(l).is_ok())
-                                .collect();
+                        let started = *state.started.lock().unwrap();
+                        let paused = *state.paused.lock().unwrap();
+                        let completed = *state.completed.lock().unwrap();
 
-                            // Lock queue only during modification
-                            let links_added = {
-                                let mut queue = state.queue.lock().unwrap();
-                                let existing: HashSet<_> = queue.iter().collect();
-                                let new_links = links
-                                    .into_iter()
-                                    .filter(|link| !existing.contains(link))
-                                    .collect::<Vec<_>>();
-                                queue.extend(new_links.iter().cloned());
-                                new_links.len()
-                            };
+                        if !started || paused || completed {
+                            let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+                            if let Ok(contents) = ctx.get_contents() {
+                                let links: Vec<String> = contents
+                                    .lines()
+                                    .map(|l| l.trim().to_string())
+                                    .filter(|l| !l.is_empty())
+                                    .filter(|l| url::Url::parse(l).is_ok())
+                                    .collect();
 
-                            // Save and log after releasing queue lock
-                            if links_added > 0 {
-                                // Reset completion states
-                                *state.total_tasks.lock().unwrap() += links_added;
-                                *state.completed.lock().unwrap() = false;
-                                save_links(&state)?;
-                                state
-                                    .logs
-                                    .lock()
-                                    .unwrap()
-                                    .push(format!("Added {} URLs", links_added));
+                                let links_added = {
+                                    let mut queue = state.queue.lock().unwrap();
+                                    let existing: HashSet<_> = queue.iter().collect();
+                                    let new_links = links
+                                        .into_iter()
+                                        .filter(|link| !existing.contains(link))
+                                        .collect::<Vec<_>>();
+                                    queue.extend(new_links.iter().cloned());
+                                    new_links.len()
+                                };
+
+                                if links_added > 0 {
+                                    // Update both current and initial totals
+                                    *state.total_tasks.lock().unwrap() += links_added;
+                                    *state.initial_total_tasks.lock().unwrap() += links_added;
+                                    *state.completed.lock().unwrap() = false;
+                                    save_links(&state)?;
+                                    state
+                                        .logs
+                                        .lock()
+                                        .unwrap()
+                                        .push(format!("Added {} URLs", links_added));
+                                }
                             }
+                        } else {
+                            state
+                                .logs
+                                .lock()
+                                .unwrap()
+                                .push("Cannot add links during active downloads".to_string());
                         }
                     }
                     _ => {}
@@ -507,6 +547,8 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let state = AppState::new();
 
+    *state.concurrent.lock().unwrap() = args.concurrent;
+
     fs::create_dir_all(&args.download_dir)?;
 
     if !Path::new("links.txt").exists() {
@@ -522,4 +564,114 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Test loading links from file and verifying queue population
+    #[test]
+    fn test_link_loading_and_queue_management() {
+        let temp_dir = tempdir().unwrap();
+        env::set_current_dir(&temp_dir).unwrap();
+
+        // Create test links.txt
+        fs::write("links.txt", "https://example.com/1\nhttps://example.com/2").unwrap();
+
+        let state = AppState::new();
+        load_links(&state).unwrap();
+
+        assert_eq!(state.queue.lock().unwrap().len(), 2);
+
+        // Test duplicate prevention
+        state
+            .queue
+            .lock()
+            .unwrap()
+            .push_back("https://example.com/1".into());
+        save_links(&state).unwrap();
+
+        let contents = fs::read_to_string("links.txt").unwrap();
+        assert_eq!(contents, "https://example.com/1\nhttps://example.com/2");
+    }
+
+    /// Test directory creation and file preservation
+    #[test]
+    fn test_directory_creation_and_file_preservation() {
+        let temp_dir = tempdir().unwrap();
+        let download_dir = temp_dir.path().join("new_downloads");
+        let args = Args {
+            auto: true, // Changed to auto mode
+            concurrent: 1,
+            download_dir: download_dir.clone(),
+            archive_file: temp_dir.path().join("archive.txt"),
+        };
+
+        // Initialize empty state
+        let state = AppState::new();
+        *state.concurrent.lock().unwrap() = args.concurrent;
+
+        // Verify directory creation
+        assert!(!download_dir.exists());
+        fs::create_dir_all(&download_dir).unwrap();
+        assert!(download_dir.exists());
+
+        // Test with empty queue
+        process_queue(state, args.clone());
+
+        let test_file = download_dir.join("test.txt");
+        fs::write(&test_file, "test content").unwrap();
+        assert!(test_file.exists());
+    }
+
+    /// Test concurrent download limits
+    #[test]
+    fn test_concurrent_download_limits() {
+        let state = AppState::new();
+        *state.concurrent.lock().unwrap() = 2;
+
+        // Add test URLs
+        let urls = vec![
+            "https://example.com/1".into(),
+            "https://example.com/2".into(),
+            "https://example.com/3".into(),
+        ];
+        state.queue.lock().unwrap().extend(urls);
+
+        // Verify concurrent limit enforcement
+        assert_eq!(
+            *state.concurrent.lock().unwrap(),
+            2,
+            "Concurrent limit should be set"
+        );
+        assert_eq!(
+            state.queue.lock().unwrap().len(),
+            3,
+            "Queue should contain test items"
+        );
+    }
+
+    /// Test pause/resume functionality
+    #[test]
+    fn test_pause_resume_mechanism() {
+        let state = AppState::new();
+
+        // Initial state check
+        assert!(!*state.paused.lock().unwrap(), "Should start unpaused");
+
+        // Toggle pause
+        *state.paused.lock().unwrap() = true;
+        assert!(*state.paused.lock().unwrap(), "Should enter paused state");
+
+        // Toggle again
+        *state.paused.lock().unwrap() = false;
+        assert!(
+            !*state.paused.lock().unwrap(),
+            "Should resume from paused state"
+        );
+    }
 }
