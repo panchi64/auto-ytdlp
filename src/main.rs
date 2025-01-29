@@ -356,7 +356,7 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         )
     } else if *state.paused.lock().unwrap() {
         (
-            "Keys: [P] Resume  [S]top  [A]dd  [R]efresh",
+            "Keys: [P] Unpause  [S]top  [A]dd  [R]efresh",
             "      [Q]uit  [Shift+Q] Force Quit",
         )
     } else {
@@ -462,7 +462,7 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                         } else {
                             let queue_len = state.queue.lock().unwrap().len();
                             *state.initial_total_tasks.lock().unwrap() = queue_len;
-                            
+
                             let started = *state.started.lock().unwrap();
                             if !started {
                                 let queue_len = state.queue.lock().unwrap().len();

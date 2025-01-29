@@ -104,7 +104,7 @@ auto-ytdlp
 #### Interface Controls
 - `S`: Start/Stop downloads
 - `P`: Pause active downloads
-- `R`: Resume paused downloads
+- `R`: Refresh downloads from links list file
 - `A`: Add URLs from clipboard
 - `Q`: Graceful shutdown
 - `Shift+Q`: Force quit
@@ -123,10 +123,12 @@ auto-ytdlp --auto
 
 #### Command Line options
 ```
- --auto              Run in automated mode without TUI
- --concurrent <N>    Set maximum concurrent downloads (default: 4)
- --download-dir <P>  Specify download directory (default: "./yt_dlp_downloads")
- --archive-file <P>  Specify archive file location (default: "download_archive.txt")
+-a, --auto                         Run in automated mode without TUI
+-c, --concurrent <CONCURRENT>      Max concurrent downloads [default: 4]
+-d, --download-dir <DOWNLOAD_DIR>  Download directory [default: ./yt_dlp_downloads]
+-f, --archive-file <ARCHIVE_FILE>  Archive file path [default: ./download_archive.txt]
+-h, --help                         Print help
+-V, --version                      Print version
 ```
 
 ## File Management
