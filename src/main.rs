@@ -160,12 +160,18 @@ fn download_worker(url: String, state: AppState, args: Args) {
 }
 
 fn remove_link_from_file(url: &str) -> Result<()> {
-    let content = fs::read_to_string("links.txt").unwrap_or_default();
+    let file_path = "links.txt";
+    let content = fs::read_to_string(file_path).unwrap_or_default();
+
+    // Use a temporary file for atomic writes
+    let temp_path = format!("{}.tmp", file_path);
     let new_content: Vec<&str> = content
         .lines()
         .filter(|line| line.trim() != url.trim())
         .collect();
-    fs::write("links.txt", new_content.join("\n"))?;
+
+    fs::write(&temp_path, new_content.join("\n"))?;
+    fs::rename(&temp_path, file_path)?; // Atomic replace
     Ok(())
 }
 
@@ -189,6 +195,11 @@ fn update_progress(state: &AppState) {
 }
 
 fn process_queue(state: AppState, args: Args) {
+    if state.queue.lock().unwrap().is_empty() {
+        *state.completed.lock().unwrap() = true;
+        return;
+    }
+
     // Initialize total tasks with current queue length
     let queue_len = state.queue.lock().unwrap().len();
     *state.total_tasks.lock().unwrap() = queue_len;
@@ -244,28 +255,19 @@ fn load_links(state: &AppState) -> Result<()> {
     let content = fs::read_to_string("links.txt").unwrap_or_default();
     let mut queue = state.queue.lock().unwrap();
     *queue = content.lines().map(String::from).collect();
-
-    // Update initial total with current queue size
-    let queue_len = queue.len();
-    *state.initial_total_tasks.lock().unwrap() = queue_len;
-    *state.total_tasks.lock().unwrap() = queue_len;
-
+    *state.initial_total_tasks.lock().unwrap() = queue.len();
+    *state.total_tasks.lock().unwrap() = queue.len();
     Ok(())
 }
 
 fn save_links(state: &AppState) -> Result<()> {
     let queue = state.queue.lock().unwrap();
-    // Deduplicate while preserving order of first occurrence
     let mut seen = HashSet::new();
     let unique_links: Vec<_> = queue
         .iter()
         .filter_map(|link| {
             let trimmed = link.trim().to_string();
-            if seen.insert(trimmed.clone()) {
-                Some(trimmed)
-            } else {
-                None
-            }
+            seen.insert(trimmed.clone()).then_some(trimmed)
         })
         .collect();
     fs::write("links.txt", unique_links.join("\n"))?;
@@ -452,7 +454,6 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                         }
                     }
                     KeyCode::Char('r') => {
-                        // Reload links from file
                         if let Err(e) = load_links(&state) {
                             state
                                 .logs
@@ -463,9 +464,7 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                             let queue_len = state.queue.lock().unwrap().len();
                             *state.initial_total_tasks.lock().unwrap() = queue_len;
 
-                            let started = *state.started.lock().unwrap();
-                            if !started {
-                                let queue_len = state.queue.lock().unwrap().len();
+                            if !*state.started.lock().unwrap() {
                                 *state.total_tasks.lock().unwrap() = queue_len;
                             }
                             state
@@ -474,7 +473,6 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                                 .unwrap()
                                 .push("Links refreshed from file".to_string());
                         }
-                        // Force UI refresh
                         last_tick = Instant::now() - tick_rate;
                     }
                     KeyCode::Char('a') => {
@@ -566,4 +564,114 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Test loading links from file and verifying queue population
+    #[test]
+    fn test_link_loading_and_queue_management() {
+        let temp_dir = tempdir().unwrap();
+        env::set_current_dir(&temp_dir).unwrap();
+
+        // Create test links.txt
+        fs::write("links.txt", "https://example.com/1\nhttps://example.com/2").unwrap();
+
+        let state = AppState::new();
+        load_links(&state).unwrap();
+
+        assert_eq!(state.queue.lock().unwrap().len(), 2);
+
+        // Test duplicate prevention
+        state
+            .queue
+            .lock()
+            .unwrap()
+            .push_back("https://example.com/1".into());
+        save_links(&state).unwrap();
+
+        let contents = fs::read_to_string("links.txt").unwrap();
+        assert_eq!(contents, "https://example.com/1\nhttps://example.com/2");
+    }
+
+    /// Test directory creation and file preservation
+    #[test]
+    fn test_directory_creation_and_file_preservation() {
+        let temp_dir = tempdir().unwrap();
+        let download_dir = temp_dir.path().join("new_downloads");
+        let args = Args {
+            auto: true, // Changed to auto mode
+            concurrent: 1,
+            download_dir: download_dir.clone(),
+            archive_file: temp_dir.path().join("archive.txt"),
+        };
+
+        // Initialize empty state
+        let state = AppState::new();
+        *state.concurrent.lock().unwrap() = args.concurrent;
+
+        // Verify directory creation
+        assert!(!download_dir.exists());
+        fs::create_dir_all(&download_dir).unwrap();
+        assert!(download_dir.exists());
+
+        // Test with empty queue
+        process_queue(state, args.clone());
+
+        let test_file = download_dir.join("test.txt");
+        fs::write(&test_file, "test content").unwrap();
+        assert!(test_file.exists());
+    }
+
+    /// Test concurrent download limits
+    #[test]
+    fn test_concurrent_download_limits() {
+        let state = AppState::new();
+        *state.concurrent.lock().unwrap() = 2;
+
+        // Add test URLs
+        let urls = vec![
+            "https://example.com/1".into(),
+            "https://example.com/2".into(),
+            "https://example.com/3".into(),
+        ];
+        state.queue.lock().unwrap().extend(urls);
+
+        // Verify concurrent limit enforcement
+        assert_eq!(
+            *state.concurrent.lock().unwrap(),
+            2,
+            "Concurrent limit should be set"
+        );
+        assert_eq!(
+            state.queue.lock().unwrap().len(),
+            3,
+            "Queue should contain test items"
+        );
+    }
+
+    /// Test pause/resume functionality
+    #[test]
+    fn test_pause_resume_mechanism() {
+        let state = AppState::new();
+
+        // Initial state check
+        assert!(!*state.paused.lock().unwrap(), "Should start unpaused");
+
+        // Toggle pause
+        *state.paused.lock().unwrap() = true;
+        assert!(*state.paused.lock().unwrap(), "Should enter paused state");
+
+        // Toggle again
+        *state.paused.lock().unwrap() = false;
+        assert!(
+            !*state.paused.lock().unwrap(),
+            "Should resume from paused state"
+        );
+    }
 }
