@@ -244,6 +244,12 @@ fn load_links(state: &AppState) -> Result<()> {
     let content = fs::read_to_string("links.txt").unwrap_or_default();
     let mut queue = state.queue.lock().unwrap();
     *queue = content.lines().map(String::from).collect();
+
+    // Update initial total with current queue size
+    let queue_len = queue.len();
+    *state.initial_total_tasks.lock().unwrap() = queue_len;
+    *state.total_tasks.lock().unwrap() = queue_len;
+
     Ok(())
 }
 
@@ -424,7 +430,6 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                             *state.completed_tasks.lock().unwrap() = 0;
                             let queue_len = state.queue.lock().unwrap().len();
                             *state.total_tasks.lock().unwrap() = queue_len;
-                            *state.initial_total_tasks.lock().unwrap() = queue_len;
                             *state.notification_sent.lock().unwrap() = false;
 
                             // Launch new worker threads
@@ -455,6 +460,9 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                                 .unwrap()
                                 .push(format!("Error reloading links: {}", e));
                         } else {
+                            let queue_len = state.queue.lock().unwrap().len();
+                            *state.initial_total_tasks.lock().unwrap() = queue_len;
+                            
                             let started = *state.started.lock().unwrap();
                             if !started {
                                 let queue_len = state.queue.lock().unwrap().len();
@@ -496,7 +504,9 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                                 };
 
                                 if links_added > 0 {
+                                    // Update both current and initial totals
                                     *state.total_tasks.lock().unwrap() += links_added;
+                                    *state.initial_total_tasks.lock().unwrap() += links_added;
                                     *state.completed.lock().unwrap() = false;
                                     save_links(&state)?;
                                     state
