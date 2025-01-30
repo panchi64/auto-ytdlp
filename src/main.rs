@@ -194,6 +194,38 @@ fn update_progress(state: &AppState) {
     *completed_state = total > 0 && completed == total;
 }
 
+fn check_dependencies() -> Result<(), Vec<String>> {
+    let mut missing = Vec::new();
+
+    // Check yt-dlp
+    let yt_dlp_status = Command::new("yt-dlp")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if yt_dlp_status.map(|s| !s.success()).unwrap_or(true) {
+        missing.push("yt-dlp is not installed or not accessible.".to_string());
+    }
+
+    // Check ffmpeg
+    let ffmpeg_status = Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if ffmpeg_status.map(|s| !s.success()).unwrap_or(true) {
+        missing.push("ffmpeg is not installed or not accessible.".to_string());
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing)
+    }
+}
+
 fn process_queue(state: AppState, args: Args) {
     if state.queue.lock().unwrap().is_empty() {
         *state.completed.lock().unwrap() = true;
@@ -423,21 +455,39 @@ fn run_tui(state: AppState, args: Args) -> Result<()> {
                         let mut paused = state.paused.lock().unwrap();
 
                         if !*started {
-                            // Reset all states
-                            *shutdown = false;
-                            *paused = false;
-                            *started = true;
-                            *state.completed.lock().unwrap() = false;
-                            *state.progress.lock().unwrap() = 0.0;
-                            *state.completed_tasks.lock().unwrap() = 0;
-                            let queue_len = state.queue.lock().unwrap().len();
-                            *state.total_tasks.lock().unwrap() = queue_len;
-                            *state.notification_sent.lock().unwrap() = false;
+                            // Check dependencies before proceeding
+                            match check_dependencies() {
+                                Ok(()) => {
+                                    // Proceed with starting downloads
+                                    *shutdown = false;
+                                    *paused = false;
+                                    *started = true;
+                                    *state.completed.lock().unwrap() = false;
+                                    *state.progress.lock().unwrap() = 0.0;
+                                    *state.completed_tasks.lock().unwrap() = 0;
+                                    let queue_len = state.queue.lock().unwrap().len();
+                                    *state.total_tasks.lock().unwrap() = queue_len;
+                                    *state.notification_sent.lock().unwrap() = false;
 
-                            // Launch new worker threads
-                            let state_clone = state.clone();
-                            let args_clone = args.clone();
-                            thread::spawn(move || process_queue(state_clone, args_clone));
+                                    // Launch new worker threads
+                                    let state_clone = state.clone();
+                                    let args_clone = args.clone();
+                                    thread::spawn(move || process_queue(state_clone, args_clone));
+                                }
+                                Err(errors) => {
+                                    let mut logs = state.logs.lock().unwrap();
+                                    for error in errors {
+                                        logs.push(error.clone());
+                                        // Provide installation links
+                                        if error.contains("yt-dlp") {
+                                            logs.push("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
+                                        }
+                                        if error.contains("ffmpeg") {
+                                            logs.push("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             // Stop ongoing downloads
                             *shutdown = true;
@@ -558,7 +608,24 @@ fn main() -> Result<()> {
     load_links(&state)?;
 
     if args.auto {
-        process_queue(state.clone(), args.clone());
+        // Check dependencies before processing in auto mode
+        match check_dependencies() {
+            Ok(()) => process_queue(state.clone(), args.clone()),
+            Err(errors) => {
+                for error in errors {
+                    eprintln!("Error: {}", error);
+                    if error.contains("yt-dlp") {
+                        eprintln!("Please download the latest version of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases");
+                    }
+                    if error.contains("ffmpeg") {
+                        eprintln!(
+                            "Please download ffmpeg from: https://www.ffmpeg.org/download.html"
+                        );
+                    }
+                }
+                std::process::exit(1);
+            }
+        }
     } else {
         run_tui(state.clone(), args.clone())?;
     }
