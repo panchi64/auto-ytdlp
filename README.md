@@ -44,9 +44,12 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 
 ## Installation
 
-### Using [Pre-built Binaries](https://github.com/panchi64/auto-ytdlp/releases/new)
+> [!WARNING]
+> You need [FFMPEG](https://www.ffmpeg.org/download.html) and [yt-dlp](https://github.com/yt-dlp/yt-dlp/releases) installed in your system for the script to work appropriately.
 
-1. Go to the [Releases page](https://github.com/panchi64/auto-ytdlp/releases/new)
+### Using [Pre-built Binaries](https://github.com/panchi64/auto-ytdlp/releases)
+
+1. Go to the [Releases page](https://github.com/panchi64/auto-ytdlp/releases)
 2. Download the appropriate binary for your system:
 
    - Windows: `auto-ytdlp-[version]-windows.exe`
@@ -96,9 +99,6 @@ auto-ytdlp
    ```bash
    cargo run --release
    ```
-
-> [!WARNING]
-> You need FFMPEG and yt-dlp installed in your system for the script to work appropriately.
 
 ## Usage
 

@@ -8,7 +8,13 @@ license = "GPL-3.0"
 repository = "https://github.com/panchi64/auto-ytdlp"
 readme = "README.md"
 keywords = ["youtube", "download", "tui", "yt-dlp", "video"]
-categories = ["command-line-utilities", "multimedia"]
+categories = [
+    "command-line-utilities", 
+    "multimedia::video", 
+    "concurrency", 
+    "network-programming", 
+    "filesystem"
+]
 
 [dependencies]
 anyhow = "1.0"
