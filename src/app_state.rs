@@ -96,10 +96,6 @@ impl AppState {
                         stats.total_tasks += 1;
                         stats.initial_total_tasks += 1;
                     }
-                    StateMessage::RemoveFromQueue(url) => {
-                        let mut queues = self.queues.lock().unwrap();
-                        queues.queue.retain(|u| u != &url);
-                    }
                     StateMessage::AddActiveDownload(url) => {
                         let mut queues = self.queues.lock().unwrap();
                         queues.active_downloads.insert(url);
