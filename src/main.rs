@@ -317,13 +317,6 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     let initial_total = *state.initial_total_tasks.lock().unwrap();
     let concurrent = *state.concurrent.lock().unwrap();
 
-    let pending_title = format!("Pending Downloads - {}/{}", queue.len(), initial_total);
-    let active_title = format!(
-        "Active Downloads - {}/{}",
-        active_downloads.len(),
-        concurrent
-    );
-
     let main_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints(
@@ -337,14 +330,56 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         )
         .split(frame.size());
 
-    // Progress bar
+    // ----- Status indicators -----
+    let status_indicator = if *state.completed.lock().unwrap() {
+        "✅ COMPLETED"
+    } else if *state.paused.lock().unwrap() {
+        "⏸️ PAUSED"
+    } else if started {
+        "▶️ RUNNING"
+    } else {
+        "⏹️ STOPPED"
+    };
+
+    // Count failed downloads based on log entries
+    let failed_count = logs
+        .iter()
+        .filter(|line| line.starts_with("Failed:"))
+        .count();
+
+    // ----- Progress bar with status -----
+    let progress_title = format!(
+        "{} - Progress: {:.1}% ({}/{}){}",
+        status_indicator,
+        progress,
+        *state.completed_tasks.lock().unwrap(),
+        *state.total_tasks.lock().unwrap(),
+        if failed_count > 0 {
+            format!(" - ❌ {} Failed", failed_count)
+        } else {
+            String::new()
+        }
+    );
+
     let gauge = Gauge::default()
-        .block(Block::default().title("Progress").borders(Borders::ALL))
-        .gauge_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green))
+        .block(Block::default().title(progress_title).borders(Borders::ALL))
+        .gauge_style(
+            ratatui::style::Style::default().fg(if *state.paused.lock().unwrap() {
+                ratatui::style::Color::Yellow
+            } else if *state.completed.lock().unwrap() {
+                ratatui::style::Color::Green
+            } else if failed_count > 0 {
+                ratatui::style::Color::Red
+            } else if started {
+                ratatui::style::Color::Blue
+            } else {
+                ratatui::style::Color::Gray
+            }),
+        )
         .percent(progress as u16);
     frame.render_widget(gauge, main_layout[0]);
 
-    // Downloads area (Pending + Active)
+    // ----- Downloads area (Pending + Active) -----
     let downloads_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Horizontal)
         .constraints([
@@ -353,13 +388,35 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         ])
         .split(main_layout[1]);
 
-    // Pending downloads list
+    // Pending downloads list with status icon
+    let pending_title = format!(
+        "{} Pending Downloads - {}/{}",
+        if queue.is_empty() { "✅" } else { "📋" },
+        queue.len(),
+        initial_total
+    );
+
     let pending_items: Vec<ListItem> = queue.iter().map(|i| ListItem::new(i.as_str())).collect();
     let pending_list =
         List::new(pending_items).block(Block::default().title(pending_title).borders(Borders::ALL));
     frame.render_widget(pending_list, downloads_layout[0]);
 
-    // Active downloads list
+    // Active downloads list with status icon
+    let active_title = format!(
+        "{} Active Downloads - {}/{}",
+        if active_downloads.is_empty() {
+            if started {
+                "⏸️"
+            } else {
+                "⏹️"
+            }
+        } else {
+            "🔄"
+        },
+        active_downloads.len(),
+        concurrent
+    );
+
     let active_items: Vec<ListItem> = active_downloads
         .iter()
         .map(|i| ListItem::new(i.as_str()))
@@ -368,7 +425,7 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         List::new(active_items).block(Block::default().title(active_title).borders(Borders::ALL));
     frame.render_widget(active_list, downloads_layout[1]);
 
-    // Logs display
+    // ----- Logs display with color coding -----
     let colored_logs: Vec<Line> = logs
         .iter()
         .map(|line| {
@@ -400,7 +457,7 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         .scroll((scroll, 0));
     frame.render_widget(logs_widget, main_layout[2]);
 
-    // Help text
+    // ----- Help text (keyboard shortcuts) -----
     let help_text = if *state.completed.lock().unwrap() {
         "Keys: [S]tart New | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
     } else if !started {
