@@ -4,27 +4,19 @@ use std::{
 };
 
 use crate::{
-    app_state::{update_progress, AppState},
+    app_state::{AppState, StateMessage},
     args::Args,
     utils::file::remove_link_from_file,
 };
 
 pub fn download_worker(url: String, state: AppState, args: Args) {
-    if *state.force_quit.lock().unwrap() {
+    if state.is_force_quit() {
         return;
     }
 
-    // Add to active downloads
-    {
-        let mut active = state.active_downloads.lock().unwrap();
-        active.insert(url.clone());
-    }
+    state.send(StateMessage::AddActiveDownload(url.clone()));
 
-    // Add log entry when download starts
-    {
-        let mut logs = state.logs.lock().unwrap();
-        logs.push(format!("Starting download: {}", url));
-    }
+    state.add_log(format!("Starting download: {}", url));
 
     let output_template = args
         .download_dir
@@ -47,16 +39,18 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         .spawn()
         .expect("Failed to start yt-dlp");
 
+    // Set up to read the command output
     let stdout = cmd.stdout.take().unwrap();
     let reader = BufReader::new(stdout);
 
-    // Use map_while to handle potential read errors properly
+    // Process the output lines
     for line in reader.lines().map_while(Result::ok) {
-        if *state.force_quit.lock().unwrap() {
-            cmd.kill().ok();
+        if state.is_force_quit() {
+            let _ = cmd.kill();
             break;
         }
 
+        // Filter and log relevant output lines
         let log_line = if line.contains("ERROR") {
             format!("Error: {}", line)
         } else if line.contains("Destination") || line.contains("[download]") {
@@ -65,23 +59,24 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             continue;
         };
 
-        state.logs.lock().unwrap().push(log_line);
+        state.add_log(log_line);
     }
 
     let status = cmd.wait().expect("Failed to wait on yt-dlp");
 
-    // Remove from active downloads
-    state.active_downloads.lock().unwrap().remove(&url);
+    state.send(StateMessage::RemoveActiveDownload(url.clone()));
 
-    // Update logs and remove from links.txt
-    let result_msg = if status.success() {
-        remove_link_from_file(&url).unwrap();
-        *state.completed_tasks.lock().unwrap() += 1;
-        format!("Completed: {}", url)
+    if status.success() {
+        let _ = remove_link_from_file(&url);
+
+        state.send(StateMessage::IncrementCompleted);
+
+        state.add_log(format!("Completed: {}", url));
     } else {
-        format!("Failed: {}", url)
-    };
+        state.add_log(format!("Failed: {}", url));
+    }
 
-    state.logs.lock().unwrap().push(result_msg);
-    update_progress(&state);
+    if state.get_queue().is_empty() && state.get_active_downloads().is_empty() {
+        state.send(StateMessage::SetCompleted(true));
+    }
 }
