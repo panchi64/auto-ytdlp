@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::{
-    collections::HashSet,
     thread,
     time::{Duration, Instant},
 };
@@ -22,23 +21,27 @@ use ratatui::{
 use std::io;
 
 use crate::{
-    app_state::AppState,
+    app_state::{AppState, StateMessage},
     args::Args,
     downloader::queue::process_queue,
     utils::{
         dependencies::check_dependencies,
-        file::{load_links, save_links},
+        file::{add_links_from_clipboard, load_links},
     },
 };
 
 pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
-    let progress = *state.progress.lock().unwrap();
-    let queue = state.queue.lock().unwrap().clone();
-    let active_downloads = state.active_downloads.lock().unwrap().clone();
-    let started = *state.started.lock().unwrap();
-    let logs = state.logs.lock().unwrap().clone();
-    let initial_total = *state.initial_total_tasks.lock().unwrap();
-    let concurrent = *state.concurrent.lock().unwrap();
+    let progress = state.get_progress();
+    let queue = state.get_queue();
+    let active_downloads = state.get_active_downloads();
+    let started = state.is_started();
+    let logs = state.get_logs();
+    let initial_total = state.get_initial_total_tasks();
+    let concurrent = state.get_concurrent();
+    let is_paused = state.is_paused();
+    let is_completed = state.is_completed();
+    let completed_tasks = state.get_completed_tasks();
+    let total_tasks = state.get_total_tasks();
 
     let main_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
@@ -54,9 +57,9 @@ pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         .split(frame.size());
 
     // ----- Status indicators -----
-    let status_indicator = if *state.completed.lock().unwrap() {
+    let status_indicator = if is_completed {
         "✅ COMPLETED"
-    } else if *state.paused.lock().unwrap() {
+    } else if is_paused {
         "⏸️ PAUSED"
     } else if started {
         "▶️ RUNNING"
@@ -75,8 +78,8 @@ pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
         "{} - Progress: {:.1}% ({}/{}){}",
         status_indicator,
         progress,
-        *state.completed_tasks.lock().unwrap(),
-        *state.total_tasks.lock().unwrap(),
+        completed_tasks,
+        total_tasks,
         if failed_count > 0 {
             format!(" - ❌ {} Failed", failed_count)
         } else {
@@ -86,19 +89,17 @@ pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
 
     let gauge = Gauge::default()
         .block(Block::default().title(progress_title).borders(Borders::ALL))
-        .gauge_style(
-            ratatui::style::Style::default().fg(if *state.paused.lock().unwrap() {
-                ratatui::style::Color::Yellow
-            } else if *state.completed.lock().unwrap() {
-                ratatui::style::Color::Green
-            } else if failed_count > 0 {
-                ratatui::style::Color::Red
-            } else if started {
-                ratatui::style::Color::Blue
-            } else {
-                ratatui::style::Color::Gray
-            }),
-        )
+        .gauge_style(ratatui::style::Style::default().fg(if is_paused {
+            ratatui::style::Color::Yellow
+        } else if is_completed {
+            ratatui::style::Color::Green
+        } else if failed_count > 0 {
+            ratatui::style::Color::Red
+        } else if started {
+            ratatui::style::Color::Blue
+        } else {
+            ratatui::style::Color::Gray
+        }))
         .percent(progress as u16);
     frame.render_widget(gauge, main_layout[0]);
 
@@ -134,7 +135,7 @@ pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
                 "⏹️"
             }
         } else {
-            "🔄"
+            "⏳"
         },
         active_downloads.len(),
         concurrent
@@ -181,11 +182,11 @@ pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     frame.render_widget(logs_widget, main_layout[2]);
 
     // ----- Help text (keyboard shortcuts) -----
-    let help_text = if *state.completed.lock().unwrap() {
+    let help_text = if is_completed {
         "Keys: [S]tart New | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
     } else if !started {
         "Keys: [S]tart | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
-    } else if *state.paused.lock().unwrap() {
+    } else if is_paused {
         "Keys: [P]Resume | [S]top | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
     } else {
         "Keys: [P]ause | [S]top | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
@@ -210,22 +211,17 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
 
     let tick_rate = Duration::from_millis(250);
     let mut last_tick = Instant::now();
+    let mut notification_sent = false;
 
     loop {
         terminal.draw(|f| ui(f, &state))?;
 
-        // Check for completed downloads and show notification
-        {
-            let completed = *state.completed.lock().unwrap();
-            let mut notification_sent = state.notification_sent.lock().unwrap();
-
-            if completed && !*notification_sent {
-                Notification::new()
-                    .summary("Download Complete")
-                    .body("All downloads finished")
-                    .show()?;
-                *notification_sent = true;
-            }
+        if state.is_completed() && !notification_sent {
+            Notification::new()
+                .summary("Download Complete")
+                .body("All downloads finished")
+                .show()?;
+            notification_sent = true;
         }
 
         let timeout = tick_rate
@@ -237,135 +233,71 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                 match key.code {
                     KeyCode::Char('q') => {
                         if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            *state.force_quit.lock().unwrap() = true;
-                            *state.shutdown.lock().unwrap() = true;
+                            state.send(StateMessage::SetForceQuit(true));
+                            state.send(StateMessage::SetShutdown(true));
                             break;
                         } else {
-                            *state.shutdown.lock().unwrap() = true;
+                            state.send(StateMessage::SetShutdown(true));
                             break;
                         }
                     }
                     KeyCode::Char('s') => {
-                        let mut started = state.started.lock().unwrap();
-                        let mut shutdown = state.shutdown.lock().unwrap();
-                        let mut paused = state.paused.lock().unwrap();
-
-                        if !*started {
-                            // Check dependencies before proceeding
+                        if !state.is_started() {
                             match check_dependencies() {
                                 Ok(()) => {
-                                    // Proceed with starting downloads
-                                    *shutdown = false;
-                                    *paused = false;
-                                    *started = true;
-                                    *state.completed.lock().unwrap() = false;
-                                    *state.progress.lock().unwrap() = 0.0;
-                                    *state.completed_tasks.lock().unwrap() = 0;
-                                    let queue_len = state.queue.lock().unwrap().len();
-                                    *state.total_tasks.lock().unwrap() = queue_len;
-                                    *state.notification_sent.lock().unwrap() = false;
+                                    state.reset_for_new_run();
+                                    notification_sent = false;
 
-                                    // Launch new worker threads
                                     let state_clone = state.clone();
                                     let args_clone = args.clone();
                                     thread::spawn(move || process_queue(state_clone, args_clone));
                                 }
                                 Err(errors) => {
-                                    let mut logs = state.logs.lock().unwrap();
                                     for error in errors {
-                                        logs.push(error.clone());
-                                        // Provide installation links
+                                        state.add_log(error.clone());
                                         if error.contains("yt-dlp") {
-                                            logs.push("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
+                                            state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
                                         }
                                         if error.contains("ffmpeg") {
-                                            logs.push("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
+                                            state.add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
                                         }
                                     }
                                 }
                             }
                         } else {
-                            // Stop ongoing downloads
-                            *shutdown = true;
-                            *started = false;
-                            *paused = false;
+                            state.send(StateMessage::SetShutdown(true));
+                            state.send(StateMessage::SetStarted(false));
+                            state.send(StateMessage::SetPaused(false));
                         }
                     }
                     KeyCode::Char('p') => {
-                        if *state.started.lock().unwrap() {
-                            let mut paused = state.paused.lock().unwrap();
-                            *paused = !*paused;
-                            // Force UI refresh
+                        if state.is_started() {
+                            state.send(StateMessage::SetPaused(!state.is_paused()));
                             last_tick = Instant::now() - tick_rate;
                         }
                     }
                     KeyCode::Char('r') => {
                         if let Err(e) = load_links(&state) {
-                            state
-                                .logs
-                                .lock()
-                                .unwrap()
-                                .push(format!("Error reloading links: {}", e));
+                            state.add_log(format!("Error reloading links: {}", e));
                         } else {
-                            let queue_len = state.queue.lock().unwrap().len();
-                            *state.initial_total_tasks.lock().unwrap() = queue_len;
-
-                            if !*state.started.lock().unwrap() {
-                                *state.total_tasks.lock().unwrap() = queue_len;
-                            }
-                            state
-                                .logs
-                                .lock()
-                                .unwrap()
-                                .push("Links refreshed from file".to_string());
+                            state.add_log("Links refreshed from file".to_string());
                         }
                         last_tick = Instant::now() - tick_rate;
                     }
                     KeyCode::Char('a') => {
-                        let started = *state.started.lock().unwrap();
-                        let paused = *state.paused.lock().unwrap();
-                        let completed = *state.completed.lock().unwrap();
-
-                        if !started || paused || completed {
+                        // Only allow adding links when not actively downloading
+                        if !state.is_started() || state.is_paused() || state.is_completed() {
                             let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
                             if let Ok(contents) = ctx.get_contents() {
-                                let links: Vec<String> = contents
-                                    .lines()
-                                    .map(|l| l.trim().to_string())
-                                    .filter(|l| !l.is_empty())
-                                    .filter(|l| url::Url::parse(l).is_ok())
-                                    .collect();
-
-                                let links_added = {
-                                    let mut queue = state.queue.lock().unwrap();
-                                    let existing: HashSet<_> = queue.iter().collect();
-                                    let new_links = links
-                                        .into_iter()
-                                        .filter(|link| !existing.contains(link))
-                                        .collect::<Vec<_>>();
-                                    queue.extend(new_links.iter().cloned());
-                                    new_links.len()
-                                };
+                                let links_added = add_links_from_clipboard(&state, &contents);
 
                                 if links_added > 0 {
-                                    // Update both current and initial totals
-                                    *state.total_tasks.lock().unwrap() += links_added;
-                                    *state.initial_total_tasks.lock().unwrap() += links_added;
-                                    *state.completed.lock().unwrap() = false;
-                                    save_links(&state)?;
-                                    state
-                                        .logs
-                                        .lock()
-                                        .unwrap()
-                                        .push(format!("Added {} URLs", links_added));
+                                    state.send(StateMessage::SetCompleted(false));
+                                    state.add_log(format!("Added {} URLs", links_added));
                                 }
                             }
                         } else {
-                            state
-                                .logs
-                                .lock()
-                                .unwrap()
-                                .push("Cannot add links during active downloads".to_string());
+                            state.add_log("Cannot add links during active downloads".to_string());
                         }
                     }
                     _ => {}

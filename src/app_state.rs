@@ -28,7 +28,6 @@ struct AppFlags {
 
 pub enum StateMessage {
     AddToQueue(String),
-    RemoveFromQueue(String),
     AddActiveDownload(String),
     RemoveActiveDownload(String),
     IncrementCompleted,
