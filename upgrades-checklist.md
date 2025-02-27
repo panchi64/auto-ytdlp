@@ -6,9 +6,9 @@ Based on your feedback, here's a checklist of improvements to implement:
 
 - [ ] **Interface Improvements**
 
-  - [ ] Improve the keyboard shortcuts area in the current TUI
+  - [x] Improve the keyboard shortcuts area in the current TUI
   - [ ] Show available space in the drive that the downloads will be placed in within the bottom-right of the screen
-  - [ ] Add color-coding for log messages (errors in red, warnings in yellow, etc.)
+  - [x] Add color-coding for log messages (errors in red, warnings in yellow, etc.)
   - [ ] Automatically clear logs when downloads complete or are stopped
   - [ ] Add visual indicators for paused/active/failed downloads on the title bar
 

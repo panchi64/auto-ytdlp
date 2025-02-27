@@ -7,6 +7,8 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use notify_rust::Notification;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span, Text};
 use ratatui::{
     backend::CrosstermBackend,
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
@@ -367,12 +369,33 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     frame.render_widget(active_list, downloads_layout[1]);
 
     // Logs display
-    let log_text = logs.join("\n");
+    let colored_logs: Vec<Line> = logs
+        .iter()
+        .map(|line| {
+            let style = if line.contains("Error") || line.contains("ERROR") {
+                Style::default().fg(Color::Red)
+            } else if line.contains("Warning") || line.contains("WARN") {
+                Style::default().fg(Color::Yellow)
+            } else if line.contains("Completed") {
+                Style::default().fg(Color::Green)
+            } else if line.contains("Starting download") {
+                Style::default().fg(Color::Cyan)
+            } else if line.contains("Links refreshed") || line.contains("Added") {
+                Style::default().fg(Color::LightGreen)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            Line::from(vec![Span::styled(line.clone(), style)])
+        })
+        .collect();
+
+    let text_content = Text::from(colored_logs);
     let text_height = logs.len() as u16;
     let area_height = main_layout[2].height;
     let scroll = text_height.saturating_sub(area_height);
 
-    let logs_widget = Paragraph::new(log_text)
+    let logs_widget = Paragraph::new(text_content)
         .block(Block::default().title("Logs").borders(Borders::ALL))
         .scroll((scroll, 0));
     frame.render_widget(logs_widget, main_layout[2]);
