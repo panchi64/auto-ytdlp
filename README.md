@@ -53,8 +53,8 @@ And hey, if you think of some cool feature to add, the code's right there for yo
    - macOS: `auto-ytdlp-[version]-macos`
    - Linux: `auto-ytdlp-[version]-linux`
 
-
 3. Make the binary executable (macOS/Linux only):
+
    ```bash
    chmod +x auto-ytdlp-[version]-[platform]
    ```
@@ -63,19 +63,31 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 
    - Windows: Move to `C:\Windows\` or add the binary location to your `PATH`
    - macOS/Linux:
-      ```bash
-      sudo mv auto-ytdlp-[version]-[platform] /usr/local/bin/auto-ytdlp
-      ```
+     ```bash
+     sudo mv auto-ytdlp-[version]-[platform] /usr/local/bin/auto-ytdlp
+     ```
+
+### Installation via Cargo
+
+```bash
+# Install directly from crates.io
+cargo install auto-ytdlp-rs
+
+# Then run with:
+auto-ytdlp
+```
 
 ### Building from source
 
 1. Clone this repository:
+
    ```bash
    git clone https://github.com/panchi64/auto-ytdlp.git
    cd auto-ytdlp
    ```
 
 2. Build the project:
+
    ```bash
    cargo build --release
    ```
@@ -83,7 +95,8 @@ And hey, if you think of some cool feature to add, the code's right there for yo
 3. Run the application:
    ```bash
    cargo run --release
-   ```   
+   ```
+
 > [!WARNING]
 > You need FFMPEG and yt-dlp installed in your system for the script to work appropriately.
 
@@ -93,10 +106,11 @@ The application can be run in two modes:
 
 > [!NOTE]
 > The following commands assume you've renamed the downloaded binary file from:
-> 
+>
 > `auto-ytdlp-[version]-[platform]` to `auto-ytdlp`
 
 ### TUI Mode (Default):
+
 ```bash
 # Using pre-built binary
 ./auto-ytdlp
@@ -109,6 +123,7 @@ auto-ytdlp
 ```
 
 #### Interface Controls
+
 - `S`: Start/Stop downloads
 - `P`: Pause active downloads
 - `R`: Refresh downloads from links list file
@@ -120,6 +135,7 @@ auto-ytdlp
 > All quit options will wait for the currently active downloads to finish, even the **Force Quit**
 
 ### Automated Mode (no TUI):
+
 ```bash
 # Using pre-built binary:
 ./auto-ytdlp --auto
@@ -129,6 +145,7 @@ auto-ytdlp --auto
 ```
 
 #### Command Line options
+
 ```
 -a, --auto                         Run in automated mode without TUI
 -c, --concurrent <CONCURRENT>      Max concurrent downloads [default: 4]
@@ -139,6 +156,7 @@ auto-ytdlp --auto
 ```
 
 ## File Management
+
 The application handles several important files:
 
 - `links.txt`: Contains your download queue
@@ -153,6 +171,7 @@ The application handles several important files:
 4. Make sure you have write permissions in the download directory
 
 If you get the "auto-ytdlp-[version]-macos not opened" message on Apple devices. Use the following command to remove it from quarantine:
+
 ```
 xattr -dr com.apple.quarantine <path to file>/auto-ytdlp-[version]-macos
 ```
