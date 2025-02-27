@@ -378,30 +378,23 @@ fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     frame.render_widget(logs_widget, main_layout[2]);
 
     // Help text
-    let (line1, line2) = if *state.completed.lock().unwrap() {
-        (
-            "Keys: [S]tart New  [A]dd  [R]efresh",
-            "      [Q]uit  [Shift+Q] Force Quit",
-        )
+    let help_text = if *state.completed.lock().unwrap() {
+        "Keys: [S]tart New | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
     } else if !started {
-        (
-            "Keys: [S]tart  [A]dd  [R]efresh",
-            "      [Q]uit  [Shift+Q] Force Quit",
-        )
+        "Keys: [S]tart | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
     } else if *state.paused.lock().unwrap() {
-        (
-            "Keys: [P] Unpause  [S]top  [A]dd  [R]efresh",
-            "      [Q]uit  [Shift+Q] Force Quit",
-        )
+        "Keys: [P]Resume | [S]top | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
     } else {
-        (
-            "Keys: [P]ause  [S]top  [R]efresh",
-            "      [Q]uit  [Shift+Q] Force Quit",
-        )
+        "Keys: [P]ause | [S]top | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
     };
 
-    let help_text = format!("{}\n{}", line1, line2);
-    let help = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
+    let help = Paragraph::new(help_text)
+        .block(
+            Block::default()
+                .title("Keyboard Controls")
+                .borders(Borders::ALL),
+        )
+        .alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(help, main_layout[3]);
 }
 
