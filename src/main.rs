@@ -14,7 +14,7 @@ use std::{
     path::Path,
 };
 use ui::tui::run_tui;
-use utils::{dependencies::check_dependencies, file::load_links};
+use utils::dependencies::check_dependencies;
 
 fn main() -> Result<()> {
     let args = Args::parse();
