@@ -30,6 +30,21 @@ use crate::{
     },
 };
 
+/// Renders the Terminal User Interface (TUI) using the current application state.
+///
+/// This function is responsible for drawing all UI elements including the progress bar,
+/// download queues, active downloads, logs, and keyboard control instructions.
+///
+/// # Parameters
+///
+/// * `frame` - A mutable reference to the terminal frame to render elements into
+/// * `state` - A reference to the current application state
+///
+/// # Example
+///
+/// ```
+/// terminal.draw(|f| ui(f, &state))?;
+/// ```
 pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     let progress = state.get_progress();
     let queue = state.get_queue();
@@ -202,6 +217,36 @@ pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
     frame.render_widget(help, main_layout[3]);
 }
 
+/// Runs the Terminal User Interface main loop.
+///
+/// Sets up the terminal in raw mode with an alternate screen, handles user input events,
+/// and manages the rendering loop until the user exits. Also handles displaying
+/// notifications when downloads complete.
+///
+/// # Parameters
+///
+/// * `state` - The application state to display and modify
+/// * `args` - Command line arguments for the application
+///
+/// # Returns
+///
+/// * `Result<()>` - Ok if the TUI ran and exited successfully, or an Error
+///
+/// # Errors
+///
+/// Returns an error if terminal operations fail, such as:
+/// - Setting up raw mode
+/// - Entering/leaving the alternate screen
+/// - Drawing to the terminal
+/// - Processing input events
+///
+/// # Example
+///
+/// ```
+/// let state = AppState::new();
+/// let args = Args::parse();
+/// run_tui(state, args)?;
+/// ```
 pub fn run_tui(state: AppState, args: Args) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
