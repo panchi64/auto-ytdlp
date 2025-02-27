@@ -2,6 +2,13 @@
 name = "auto-ytdlp-rs"
 version = "1.0.51"
 edition = "2021"
+description = "Download videos with yt-dlp automatically. You can even download multiple videos at the same time!"
+authors = ["Francisco Casiano <contact@franciscocasiano.com>"]
+license = "GPL-3.0"
+repository = "https://github.com/panchi64/auto-ytdlp"
+readme = "README.md"
+keywords = ["youtube", "download", "tui", "yt-dlp", "video"]
+categories = ["command-line-utilities", "multimedia"]
 
 [dependencies]
 anyhow = "1.0"
@@ -12,3 +19,7 @@ notify-rust = "4.8"
 ratatui = "0.23"
 tempfile = "3.16.0"
 url = "2.5.4"
+
+[[bin]]
+name = "auto-ytdlp"
+path = "src/main.rs"
