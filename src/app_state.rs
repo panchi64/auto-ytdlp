@@ -36,6 +36,7 @@ pub enum StateMessage {
     SetStarted(bool),
     SetShutdown(bool),
     SetForceQuit(bool),
+    SetCompleted(bool),
     UpdateProgress,
     LoadLinks(Vec<String>),
 }
@@ -132,6 +133,10 @@ impl AppState {
                     StateMessage::SetForceQuit(value) => {
                         let mut flags = self.flags.lock().unwrap();
                         flags.force_quit = value;
+                    }
+                    StateMessage::SetCompleted(value) => {
+                        let mut flags = self.flags.lock().unwrap();
+                        flags.completed = value;
                     }
                     StateMessage::LoadLinks(links) => {
                         let mut queues = self.queues.lock().unwrap();
