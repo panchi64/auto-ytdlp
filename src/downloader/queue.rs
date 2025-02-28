@@ -7,6 +7,39 @@ use crate::{
 
 use super::worker::download_worker;
 
+/// Processes the download queue using multiple worker threads.
+///
+/// This function is the main orchestrator of the download process. It:
+/// 1. Checks if the queue is empty and marks as completed if so
+/// 2. Resets application state for a new download run
+/// 3. Spawns multiple worker threads (based on configured concurrent downloads)
+/// 4. Each worker thread pulls URLs from the queue and processes them
+/// 5. Handles pausing, shutdown, and force quit conditions
+/// 6. Waits for all worker threads to complete
+/// 7. Updates application state and logs completion status
+///
+/// # Parameters
+///
+/// * `state` - The application state containing the download queue
+/// * `args` - Command line arguments with download configuration
+///
+/// # Example
+///
+/// ```
+/// // Start processing the download queue in a separate thread
+/// let state_clone = state.clone();
+/// let args_clone = args.clone();
+/// thread::spawn(move || process_queue(state_clone, args_clone));
+/// ```
+///
+/// # Notes
+///
+/// Each worker thread will continue running until one of these conditions is met:
+/// - The queue is empty AND there are no active downloads
+/// - The application is shutting down
+/// - A force quit is requested
+///
+/// Workers will pause processing (but not exit) when the pause flag is set.
 pub fn process_queue(state: AppState, args: Args) {
     if state.get_queue().is_empty() {
         state.send(StateMessage::SetCompleted(true));
