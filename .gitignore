@@ -18,6 +18,9 @@ links.txt
 download_archive.txt
 yt_dlp_downloads/
 
+# Personal tasklist of upgrades
+upgrades-checklist.md
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
