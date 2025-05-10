@@ -1,11 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
+    Frame,
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 
 use crate::{
@@ -177,6 +177,8 @@ impl SettingsMenu {
     /// Adjust option index to valid range based on current setting
     fn adjust_option_index(&mut self) {
         if let Some(i) = self.list_state.selected() {
+            let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
+
             match i {
                 0 => {
                     // Format preset options
@@ -184,10 +186,22 @@ impl SettingsMenu {
                 }
                 1 => {
                     // Output format options
-                    self.option_index = self.option_index.min(4); // 5 options
+                    if is_audio_only {
+                        self.option_index = self.option_index.min(1); // 2 options for audio-only
+                    } else {
+                        self.option_index = self.option_index.min(4); // 5 options for video
+                    }
                 }
-                2..=4 => {
-                    // Boolean options
+                2 => {
+                    // Subtitles options
+                    if is_audio_only {
+                        self.option_index = 0; // Only "No" option for audio-only
+                    } else {
+                        self.option_index = self.option_index.min(1); // 2 options for video
+                    }
+                }
+                3..=4 => {
+                    // Thumbnail and metadata options
                     self.option_index = self.option_index.min(1); // 2 options (true/false)
                 }
                 5 => {
@@ -205,7 +219,7 @@ impl SettingsMenu {
             match i {
                 0 => {
                     // Format preset
-                    self.settings.format_preset = match self.option_index {
+                    let new_preset = match self.option_index {
                         0 => FormatPreset::Best,
                         1 => FormatPreset::AudioOnly,
                         2 => FormatPreset::HD1080p,
@@ -215,21 +229,50 @@ impl SettingsMenu {
                         6 => FormatPreset::Custom("bestvideo*+bestaudio/best".to_string()),
                         _ => FormatPreset::Best,
                     };
+
+                    // If switching to Audio Only, auto-select MP3 format
+                    if matches!(new_preset, FormatPreset::AudioOnly) {
+                        self.settings.output_format = OutputFormat::MP3;
+                        // Disable subtitles for audio-only
+                        self.settings.write_subtitles = false;
+                    }
+
+                    self.settings.format_preset = new_preset;
                 }
                 1 => {
                     // Output format
-                    self.settings.output_format = match self.option_index {
-                        0 => OutputFormat::Auto,
-                        1 => OutputFormat::MP4,
-                        2 => OutputFormat::Mkv,
-                        3 => OutputFormat::MP3,
-                        4 => OutputFormat::Webm,
-                        _ => OutputFormat::Auto,
-                    };
+                    let is_audio_only =
+                        matches!(self.settings.format_preset, FormatPreset::AudioOnly);
+
+                    if is_audio_only {
+                        // Only allow audio formats when in audio-only mode
+                        self.settings.output_format = match self.option_index {
+                            0 => OutputFormat::Auto,
+                            1 => OutputFormat::MP3,
+                            _ => OutputFormat::Auto,
+                        };
+                    } else {
+                        self.settings.output_format = match self.option_index {
+                            0 => OutputFormat::Auto,
+                            1 => OutputFormat::MP4,
+                            2 => OutputFormat::Mkv,
+                            3 => OutputFormat::MP3,
+                            4 => OutputFormat::Webm,
+                            _ => OutputFormat::Auto,
+                        };
+                    }
                 }
                 2 => {
                     // Write subtitles
-                    self.settings.write_subtitles = self.option_index == 1;
+                    let is_audio_only =
+                        matches!(self.settings.format_preset, FormatPreset::AudioOnly);
+
+                    if !is_audio_only {
+                        self.settings.write_subtitles = self.option_index == 1;
+                    } else {
+                        // Subtitles don't apply to audio-only
+                        self.settings.write_subtitles = false;
+                    }
                 }
                 3 => {
                     // Write thumbnail
@@ -262,7 +305,7 @@ impl SettingsMenu {
     }
 
     /// Renders the settings menu in a popup
-    pub fn render<B: Backend>(&mut self, frame: &mut Frame<B>, area: Rect) {
+    pub fn render<B: Backend>(&mut self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;
         }
@@ -362,13 +405,15 @@ impl SettingsMenu {
     }
 
     /// Render the editing popup for the selected setting
-    fn render_edit_popup<B: Backend>(&mut self, frame: &mut Frame<B>, screen_area: Rect) {
+    fn render_edit_popup<B: Backend>(&mut self, frame: &mut Frame, screen_area: Rect) {
         if let Some(selected) = self.list_state.selected() {
             let popup_width = 50;
             let popup_height = 3;
             let popup_x = (screen_area.width.saturating_sub(popup_width)) / 2;
             let popup_y = (screen_area.height.saturating_sub(popup_height)) / 2;
             let edit_popup_dialog_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+            let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
 
             let (options, title) = match selected {
                 0 => (
@@ -383,12 +428,33 @@ impl SettingsMenu {
                     ],
                     "Select Format Preset",
                 ),
-                1 => (
-                    vec!["Auto", "MP4", "MKV", "MP3", "WEBM"],
-                    "Select Output Format",
-                ),
-                2 => (vec!["No", "Yes"], "Write Subtitles"),
-                3 => (vec!["No", "Yes"], "Write Thumbnail"),
+                1 => {
+                    if is_audio_only {
+                        // Only show audio-compatible formats when Audio Only is selected
+                        (vec!["Auto", "MP3"], "Select Output Format")
+                    } else {
+                        (
+                            vec!["Auto", "MP4", "MKV", "WEBM", "MP3"],
+                            "Select Output Format",
+                        )
+                    }
+                }
+                2 => {
+                    if is_audio_only {
+                        // Subtitles are not applicable for audio-only
+                        (vec!["No"], "Write Subtitles (N/A for Audio)")
+                    } else {
+                        (vec!["No", "Yes"], "Write Subtitles")
+                    }
+                }
+                3 => {
+                    if is_audio_only {
+                        // Thumbnails are less relevant for audio-only
+                        (vec!["No", "Yes"], "Write Thumbnail (Album Art)")
+                    } else {
+                        (vec!["No", "Yes"], "Write Thumbnail")
+                    }
+                }
                 4 => (vec!["No", "Yes"], "Add Metadata"),
                 5 => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
                 _ => (vec![], ""),
@@ -432,7 +498,7 @@ impl SettingsMenu {
     }
 
     /// Render the input popup for custom values
-    fn render_input_popup<B: Backend>(&mut self, frame: &mut Frame<B>, screen_area: Rect) {
+    fn render_input_popup<B: Backend>(&mut self, frame: &mut Frame, screen_area: Rect) {
         let popup_width = 40;
         let popup_height = 3;
         let popup_x = (screen_area.width.saturating_sub(popup_width)) / 2;
