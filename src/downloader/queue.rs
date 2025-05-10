@@ -59,6 +59,13 @@ pub fn process_queue(state: AppState, args: Args) {
 
         loop {
             if state_clone.is_force_quit() || state_clone.is_shutdown() {
+                // If force_quit is set, we want to exit the controller loop immediately.
+                // Worker threads also check this flag and should start terminating.
+                // The download_worker itself is modified to exit quickly on force_quit.
+                if state_clone.is_force_quit() {
+                    state_clone
+                        .add_log("Controller: Force quit detected, exiting main loop.".to_string());
+                }
                 break;
             }
 
@@ -118,28 +125,70 @@ pub fn process_queue(state: AppState, args: Args) {
             thread::sleep(Duration::from_millis(100));
         }
 
-        // Wait for all worker threads to complete
-        for handle in worker_handles {
-            handle.join().unwrap();
+        // After controller loop exits (due to completion, shutdown, or force_quit)
+
+        if state_clone.is_force_quit() {
+            state_clone.add_log(
+                "Controller: Force quit active. Not waiting for worker threads to join."
+                    .to_string(),
+            );
+            // Worker threads are expected to terminate themselves upon detecting is_force_quit().
+            // The download_worker function is also modified to not block on cmd.wait() during a force quit.
+            // Thus, we don't join worker_handles here to ensure a fast exit.
+        } else {
+            // If not a force quit (i.e., normal completion or graceful shutdown), wait for workers.
+            state_clone.add_log("Controller: Waiting for worker threads to complete.".to_string());
+            for handle in worker_handles {
+                if let Err(e) = handle.join() {
+                    state_clone.add_log(format!("Controller: Worker thread panicked: {:?}", e));
+                }
+            }
+            state_clone.add_log("Controller: All worker threads completed.".to_string());
         }
 
         let queue_empty = state_clone.get_queue().is_empty();
-        state_clone.send(StateMessage::SetCompleted(queue_empty));
-        state_clone.send(StateMessage::SetStarted(false));
+        let active_downloads_empty = state_clone.get_active_downloads().is_empty();
 
-        if queue_empty {
-            state_clone.add_log("All downloads completed".to_string());
+        // Update final status based on whether it was a force quit or not
+        if state_clone.is_force_quit() {
+            state_clone.add_log("Download processing forcefully stopped.".to_string());
+            // Do not set SetCompleted(true) on force quit, even if queue became empty by chance.
+            // The state should reflect an interruption.
+        } else if queue_empty && active_downloads_empty {
+            state_clone.send(StateMessage::SetCompleted(true));
+            state_clone.add_log("All downloads completed or queue is empty.".to_string());
         } else {
-            state_clone.add_log("Download processing stopped".to_string());
+            // This case covers normal stop (shutdown flag) where queue might not be empty.
+            state_clone.add_log("Download processing stopped.".to_string());
         }
 
-        // Clear logs after a short delay to allow the completion message to be seen
-        let final_state = state_clone.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_secs(2));
-            final_state.clear_logs();
-        });
+        state_clone.send(StateMessage::SetStarted(false)); // Always mark as not started
+
+        // Clear logs after a short delay, but only if not a force quit.
+        // For force quit, we want to preserve the logs detailing the forceful termination.
+        if !state_clone.is_force_quit() {
+            let final_state_clone = state_clone.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_secs(2));
+                // Check again in case state changed, though unlikely for a detached thread task like this.
+                if !final_state_clone.is_completed() && !final_state_clone.is_shutdown() {
+                    // If not completed and not a normal shutdown, maybe don't clear logs?
+                    // For now, let's stick to original logic: clear logs if not force_quit.
+                    // The original logic was to clear logs anyway after a delay.
+                }
+                final_state_clone.add_log("Clearing logs after completion/stop.".to_string()); // Log before clear
+                final_state_clone.clear_logs();
+            });
+        }
     });
 
-    controller.join().unwrap();
+    // This join is for the controller thread itself.
+    // If force_quit is true, the controller thread should now exit quickly because it
+    // doesn't .join() its own worker_handles.
+    if let Err(e) = controller.join() {
+        // Log controller panic, this might be important especially in --auto mode.
+        // Using eprintln as AppState might not be available or reliable if controller panicked badly.
+        eprintln!("FATAL: Controller thread panicked: {:?}", e);
+        // Optionally, could try to use state.add_log if it's a soft panic.
+    }
 }

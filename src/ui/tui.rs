@@ -267,6 +267,11 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
+    // --- Added for graceful shutdown ---
+    let mut download_thread_handle: Option<std::thread::JoinHandle<()>> = None;
+    let mut await_downloads_on_exit = false;
+    // --- End of addition ---
+
     // Main loop
     loop {
         // Draw UI
@@ -286,25 +291,46 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
 
                 // Then handle normal application keys
                 match key.code {
+                    // Uppercase 'Q' (typically from Shift+q or CapsLock+Q) for Force Quit
+                    KeyCode::Char('Q') => {
+                        state.send(StateMessage::SetForceQuit(true));
+                        state.send(StateMessage::SetShutdown(true));
+                        state.add_log(
+                            "TUI: Force quit (Shift+Q or Q with CapsLock) initiated. Exiting TUI immediately.".to_string(),
+                        );
+                        // await_downloads_on_exit remains false (its default for force quit)
+                        break;
+                    }
+                    // Lowercase 'q' for Graceful Quit
                     KeyCode::Char('q') => {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            state.send(StateMessage::SetForceQuit(true));
-                            state.send(StateMessage::SetShutdown(true));
-                            break;
-                        } else {
-                            state.send(StateMessage::SetShutdown(true));
-                            break;
-                        }
+                        state.send(StateMessage::SetShutdown(true));
+                        // Ensure force_quit is false for a graceful quit.
+                        // AppState's reset_for_new_run typically handles this, but an explicit SetForceQuit(false) could be added if necessary.
+                        // For now, we rely on SetForceQuit(true) only being sent on actual force quit request.
+                        state.add_log(
+                            "TUI: Graceful shutdown (q) initiated. Will wait for downloads to complete.".to_string(),
+                        );
+                        await_downloads_on_exit = true;
+                        break;
                     }
                     KeyCode::Char('s') => {
                         if !state.is_started() {
+                            // Start downloads
                             match validate_dependencies() {
                                 Ok(()) => {
                                     state.reset_for_new_run();
+                                    // Ensure await_downloads_on_exit is reset if we start a new session
+                                    // after a previous graceful quit request that didn't exit the app.
+                                    // (though current logic breaks loop on Q)
+                                    await_downloads_on_exit = false;
 
                                     let state_clone = state.clone();
                                     let args_clone = args.clone();
-                                    thread::spawn(move || process_queue(state_clone, args_clone));
+                                    // --- Modified to store handle ---
+                                    download_thread_handle = Some(thread::spawn(move || {
+                                        process_queue(state_clone, args_clone)
+                                    }));
+                                    // --- End of modification ---
                                 }
                                 Err(error) => {
                                     state.add_log(format!("Error: {}", error));
@@ -318,9 +344,32 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                 }
                             }
                         } else {
+                            // Stop downloads
                             state.send(StateMessage::SetShutdown(true));
                             state.send(StateMessage::SetStarted(false));
                             state.send(StateMessage::SetPaused(false));
+                            state.add_log("TUI: Stop command issued. Waiting for current downloads to complete gracefully.".to_string());
+                            // --- Added to make 'Stop' also wait gracefully ---
+                            // This will make the 'S' (Stop) command also block the TUI until downloads finish.
+                            // If this is not desired, remove this block for 'S' (Stop).
+                            if let Some(handle) = download_thread_handle.take() {
+                                // .take() so it's not joined again on exit
+                                terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Show "waiting" log
+                                eprintln!(
+                                    "Stopping downloads: Waiting for active downloads to complete..."
+                                );
+                                if let Err(e) = handle.join() {
+                                    let err_msg =
+                                        format!("Error joining download thread on stop: {:?}", e);
+                                    state.add_log(err_msg.clone());
+                                    eprintln!("{}", err_msg);
+                                } else {
+                                    state.add_log("Downloads stopped gracefully.".to_string());
+                                    eprintln!("Downloads stopped gracefully.");
+                                }
+                                terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Redraw after join
+                            }
+                            // --- End of addition for 'Stop' ---
 
                             // Clear logs after a short delay when manually stopping downloads
                             let state_clone = state.clone();
@@ -404,10 +453,31 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                         .summary("Auto-YTDlp Downloads Completed")
                         .body("All downloads have been completed!")
                         .show();
+                    // If we want to ensure notification is sent only once per completion cycle,
+                    // a flag like `notification_sent` in AppState would be needed and managed.
+                    // For example: state.send(StateMessage::SetNotificationSent(true));
+                    // And AppState.notification_sent would be reset in reset_for_new_run().
                 }
             }
         }
+    } // End of main TUI loop
+
+    // --- Added for graceful shutdown wait ---
+    if await_downloads_on_exit {
+        if let Some(handle) = download_thread_handle {
+            // Don't .take() if 'S' (Stop) might have already taken it
+            // Add a log message to state if TUI were still drawing. For console, use eprintln.
+            eprintln!("Graceful shutdown: Ensuring all downloads complete before exiting...");
+            if let Err(e) = handle.join() {
+                eprintln!("Error during final graceful shutdown wait: {:?}", e);
+            }
+            eprintln!("All downloads completed. Exiting application.");
+        } else if await_downloads_on_exit {
+            // Handle was already taken (e.g. by 'S' stop) but we still intended to wait
+            eprintln!("Graceful shutdown: Download process already handled. Exiting application.");
+        }
     }
+    // --- End of addition ---
 
     // Restore terminal
     disable_raw_mode()?;

@@ -128,11 +128,11 @@ auto-ytdlp
 - `P`: Pause active downloads
 - `R`: Refresh downloads from links list file
 - `A`: Add URLs from clipboard
-- `Q`: Graceful shutdown
-- `Shift+Q`: Force quit
+- `Q`: Graceful shutdown (allows current downloads to finish, then exits)
+- `Shift+Q`: Force quit (attempts to immediately terminate all downloads and exit quickly)
 
-> [!NOTE]
-> All quit options will wait for the currently active downloads to finish, even the **Force Quit**
+> [!NOTE] > **Graceful Shutdown (`Q`)**: Waits for any currently active downloads to complete before exiting.
+> **Force Quit (`Shift+Q`)**: Attempts to terminate all ongoing `yt-dlp` processes immediately and exit the application as quickly as possible. This is useful if downloads are stuck or you need to stop everything without waiting.
 
 ### Automated Mode (no TUI):
 

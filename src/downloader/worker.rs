@@ -46,10 +46,8 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     }
 
     state.send(StateMessage::AddActiveDownload(url.clone()));
-
     state.add_log(format!("Starting download: {}", url));
 
-    // Get settings to check if retry is enabled
     let settings = state.get_settings();
     let max_retries = if settings.network_retry { 3 } else { 0 };
     let retry_delay = settings.retry_delay;
@@ -57,36 +55,68 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     let mut success = false;
 
     while retry_count <= max_retries {
+        if state.is_force_quit() {
+            state.add_log(format!("Force quit: Aborting download task for {}.", url));
+            break;
+        }
+
         if retry_count > 0 {
             state.add_log(format!("Retry attempt {} for: {}", retry_count, url));
         }
 
-        // Build command using the common function
         let cmd_args = build_ytdlp_command_args(&args, &url);
-
-        // Start the command
-        let mut cmd = Command::new("yt-dlp")
+        let mut cmd = match Command::new("yt-dlp")
             .args(&cmd_args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("Failed to start yt-dlp");
+        {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                state.add_log(format!(
+                    "Error spawning yt-dlp for {}: {}. Aborting this URL.",
+                    url, e
+                ));
+                break;
+            }
+        };
 
-        // Set up to read the command output
-        let stdout = cmd.stdout.take().unwrap();
+        if state.is_force_quit() {
+            state.add_log(format!(
+                "Force quit: Killing spawned process for {} and aborting.",
+                url
+            ));
+            let _ = cmd.kill();
+            break;
+        }
+
+        let stdout = match cmd.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                state.add_log(format!(
+                    "Error: Could not take stdout for {}. Aborting this attempt.",
+                    url
+                ));
+                if !state.is_force_quit() {
+                    let _ = cmd.kill();
+                    let _ = cmd.wait();
+                }
+                break;
+            }
+        };
         let reader = BufReader::new(stdout);
-
-        // Track if this failure is a network error that should be retried
         let mut is_network_error = false;
 
-        // Process the output lines
         for line in reader.lines().map_while(Result::ok) {
             if state.is_force_quit() {
+                state.add_log(format!(
+                    "Force quit: Killing process during output reading for {}.",
+                    url
+                ));
                 let _ = cmd.kill();
                 break;
             }
 
-            // Detect network errors
             if line.contains("ERROR")
                 && (line.contains("Unable to download webpage")
                     || line.contains("HTTP Error")
@@ -98,7 +128,6 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                 is_network_error = true;
             }
 
-            // Filter and log relevant output lines
             let log_line = if line.contains("ERROR") {
                 format!("Error: {}", line)
             } else if line.contains("Destination") || line.contains("[download]") {
@@ -106,22 +135,50 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             } else {
                 continue;
             };
-
             state.add_log(log_line);
         }
 
-        let status = cmd.wait().expect("Failed to wait on yt-dlp");
-
-        if status.success() {
-            success = true;
-            break;
-        } else if !settings.network_retry || !is_network_error || retry_count >= max_retries {
-            // Don't retry if: retries disabled, not a network error, or max retries reached
+        if state.is_force_quit() {
+            state.add_log(format!(
+                "Force quit: Detected after output processing for {}. Ensuring kill.",
+                url
+            ));
+            let _ = cmd.kill();
             break;
         }
 
+        match cmd.wait() {
+            Ok(status) => {
+                if status.success() {
+                    success = true;
+                    break;
+                } else {
+                    state.add_log(format!("yt-dlp exited with error for {}: {}", url, status));
+                    if !settings.network_retry || !is_network_error || retry_count >= max_retries {
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                state.add_log(format!(
+                    "Error waiting for yt-dlp process for {}: {}. Aborting this URL.",
+                    url, e
+                ));
+                break;
+            }
+        }
+
         retry_count += 1;
-        std::thread::sleep(std::time::Duration::from_secs(retry_delay)); // Use the custom retry delay
+        if state.is_force_quit() {
+            state.add_log(format!(
+                "Force quit: Detected before retry sleep for {}.",
+                url
+            ));
+            break;
+        }
+        if retry_count <= max_retries {
+            std::thread::sleep(std::time::Duration::from_secs(retry_delay));
+        }
     }
 
     state.send(StateMessage::RemoveActiveDownload(url.clone()));
@@ -132,6 +189,8 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         state.send(StateMessage::IncrementCompleted);
 
         state.add_log(format!("Completed: {}", url));
+    } else if state.is_force_quit() {
+        state.add_log(format!("Download aborted due to force quit: {}", url));
     } else if retry_count > 0 {
         state.add_log(format!("Failed after {} retries: {}", retry_count, url));
     } else {
@@ -139,6 +198,8 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     }
 
     if state.get_queue().is_empty() && state.get_active_downloads().is_empty() {
-        state.send(StateMessage::SetCompleted(true));
+        if !state.is_force_quit() {
+            state.send(StateMessage::SetCompleted(true));
+        }
     }
 }
