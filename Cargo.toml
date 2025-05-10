@@ -21,8 +21,11 @@ anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 clipboard = "0.5"
 crossterm = "0.27"
+dirs = "5.0"
 notify-rust = "4.8"
 ratatui = "0.23"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tempfile = "3.16.0"
 url = "2.5.4"
 

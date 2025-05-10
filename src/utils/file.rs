@@ -2,85 +2,24 @@ use crate::app_state::{AppState, StateMessage};
 use anyhow::Result;
 use std::{collections::HashSet, fs};
 
-/// Loads URLs from the 'links.txt' file into the application state.
+/// Loads URLs from the 'links.txt' file without requiring an AppState.
 ///
-/// Reads all lines from the links.txt file and updates the application state's
-/// download queue with these URLs. Creates an empty file if it doesn't exist.
-///
-/// # Parameters
-///
-/// * `state` - Reference to the application state to update
+/// Reads all lines from the links.txt file into a vector of strings.
+/// Creates an empty file if it doesn't exist.
 ///
 /// # Returns
 ///
-/// * `Result<()>` - Ok if links were loaded successfully, or an Error
-///
-/// # Errors
-///
-/// This function handles file not found by using an empty default string,
-/// but may return errors from other file operations.
+/// * `Vec<String>` - Vector containing all URLs from the file
 ///
 /// # Example
 ///
 /// ```
-/// if let Err(e) = load_links(&state) {
-///     state.add_log(format!("Error loading links: {}", e));
-/// }
+/// let links = get_links_from_file();
+/// state.send(StateMessage::LoadLinks(links));
 /// ```
-pub fn load_links(state: &AppState) -> Result<()> {
+pub fn get_links_from_file() -> Vec<String> {
     let content = fs::read_to_string("links.txt").unwrap_or_default();
-    let links: Vec<String> = content.lines().map(String::from).collect();
-
-    state.send(StateMessage::LoadLinks(links));
-
-    state.add_log("Links loaded from file".to_string());
-
-    Ok(())
-}
-
-/// Saves the current download queue to the 'links.txt' file.
-///
-/// Writes all unique URLs from the current queue to the links.txt file,
-/// removing any duplicates in the process.
-///
-/// # Parameters
-///
-/// * `state` - Reference to the application state containing the queue to save
-///
-/// # Returns
-///
-/// * `Result<()>` - Ok if links were saved successfully, or an Error
-///
-/// # Errors
-///
-/// May return errors from file operations, such as permission issues
-/// or disk space problems.
-///
-/// # Example
-///
-/// ```
-/// if let Err(e) = save_links(&state) {
-///     state.add_log(format!("Error saving links: {}", e));
-/// }
-/// ```
-pub fn save_links(state: &AppState) -> Result<()> {
-    let queue = state.get_queue();
-
-    // Filter out duplicates
-    let mut seen = HashSet::new();
-    let unique_links: Vec<_> = queue
-        .iter()
-        .filter_map(|link| {
-            let trimmed = link.trim().to_string();
-            seen.insert(trimmed.clone()).then_some(trimmed)
-        })
-        .collect();
-
-    fs::write("links.txt", unique_links.join("\n"))?;
-
-    state.add_log("Links saved to file".to_string());
-
-    Ok(())
+    content.lines().map(String::from).collect()
 }
 
 /// Removes a specific URL from the 'links.txt' file.
@@ -125,11 +64,60 @@ pub fn remove_link_from_file(url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parses URLs from clipboard content and adds them to the download queue.
+/// Parses URLs from clipboard content and adds them to the links.txt file
+/// without requiring an AppState.
 ///
 /// Filters clipboard content for valid URLs, checks for duplicates against
-/// the current queue, adds new URLs to the queue, and saves the updated
-/// queue to the links.txt file.
+/// the current links.txt file content, and saves the updated content to the file.
+///
+/// # Parameters
+///
+/// * `clipboard_content` - String content from the clipboard to parse
+///
+/// # Returns
+///
+/// * `usize` - The number of new URLs that were added
+///
+/// # Example
+///
+/// ```
+/// let ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+/// if let Ok(contents) = ctx.get_contents() {
+///     let links_added = add_clipboard_links_to_file(&contents);
+///     println!("Added {} URLs", links_added);
+/// }
+/// ```
+pub fn add_clipboard_links_to_file(clipboard_content: &str) -> usize {
+    let links: Vec<String> = clipboard_content
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .filter(|l| url::Url::parse(l).is_ok())
+        .collect();
+
+    // Current file content to check for duplicates
+    let current_links = get_links_from_file();
+    let existing: HashSet<_> = current_links.iter().collect();
+
+    // Filter out links that already exist
+    let new_links = links
+        .into_iter()
+        .filter(|link| !existing.contains(link))
+        .collect::<Vec<_>>();
+
+    // If links were added, save to file
+    if !new_links.is_empty() {
+        let all_links = [current_links, new_links.clone()].concat();
+        let _ = fs::write("links.txt", all_links.join("\n"));
+    }
+
+    new_links.len()
+}
+
+/// Parses URLs from clipboard content and adds them to both the links.txt file
+/// and the application state.
+///
+/// This function combines adding links to the file and updating the app state directly.
 ///
 /// # Parameters
 ///
@@ -138,43 +126,28 @@ pub fn remove_link_from_file(url: &str) -> Result<()> {
 ///
 /// # Returns
 ///
-/// * `usize` - The number of new URLs that were added to the queue
+/// * `usize` - The number of new URLs that were added
 ///
 /// # Example
 ///
 /// ```
 /// let ctx: ClipboardContext = ClipboardProvider::new().unwrap();
 /// if let Ok(contents) = ctx.get_contents() {
-///     let links_added = add_links_from_clipboard(&state, &contents);
-///     state.add_log(format!("Added {} URLs", links_added));
+///     let links_added = add_clipboard_links(&state, &contents);
+///     state.add_log(format!("Added {} links", links_added));
 /// }
 /// ```
-pub fn add_links_from_clipboard(state: &AppState, clipboard_content: &str) -> usize {
-    let links: Vec<String> = clipboard_content
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .filter(|l| url::Url::parse(l).is_ok())
-        .collect();
+pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> usize {
+    // First add links to file
+    let n = add_clipboard_links_to_file(clipboard_content);
 
-    // Current queue to check for duplicates
-    let current_queue = state.get_queue();
-    let existing: HashSet<_> = current_queue.iter().collect();
-
-    // Filter out links that already exist in the queue
-    let new_links = links
-        .into_iter()
-        .filter(|link| !existing.contains(link))
-        .collect::<Vec<_>>();
-
-    for link in &new_links {
-        state.send(StateMessage::AddToQueue(link.clone()));
+    if n > 0 {
+        // Then update app state
+        let links = get_links_from_file();
+        for link in &links {
+            state.send(StateMessage::AddToQueue(link.clone()));
+        }
     }
 
-    // If links were added, save to file
-    if !new_links.is_empty() {
-        let _ = save_links(state);
-    }
-
-    new_links.len()
+    n
 }

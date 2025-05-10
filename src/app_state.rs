@@ -2,6 +2,8 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+use crate::utils::settings::Settings;
+
 #[derive(Default)]
 struct DownloadStats {
     total_tasks: usize,
@@ -63,6 +65,9 @@ pub enum StateMessage {
 
     /// Replaces the entire download queue with the provided list.
     LoadLinks(Vec<String>),
+
+    /// Updates the application settings.
+    UpdateSettings(Settings),
 }
 
 /// A thread-safe application state manager for the script.
@@ -77,6 +82,7 @@ pub struct AppState {
     flags: Arc<Mutex<AppFlags>>,
     logs: Arc<Mutex<Vec<String>>>,
     concurrent: Arc<Mutex<usize>>,
+    settings: Arc<Mutex<Settings>>,
 
     // Channel for state updates
     tx: Sender<StateMessage>,
@@ -102,6 +108,9 @@ impl AppState {
     pub fn new() -> Self {
         let (tx, rx) = channel();
 
+        // Load settings or use default if loading fails
+        let settings = Settings::load().unwrap_or_default();
+
         let state = AppState {
             stats: Arc::new(Mutex::new(DownloadStats::default())),
             queues: Arc::new(Mutex::new(DownloadQueues::default())),
@@ -110,7 +119,8 @@ impl AppState {
                 "Welcome! Press 'S' to start downloads".to_string(),
                 "Press 'Q' to quit, 'Shift+Q' to force quit".to_string(),
             ])),
-            concurrent: Arc::new(Mutex::new(4)), // Default value
+            concurrent: Arc::new(Mutex::new(settings.concurrent_downloads)),
+            settings: Arc::new(Mutex::new(settings)),
             tx,
             rx: Arc::new(Mutex::new(rx)),
         };
@@ -188,6 +198,23 @@ impl AppState {
                         let mut stats = self.stats.lock().unwrap();
                         stats.total_tasks = queue_len;
                         stats.initial_total_tasks = queue_len;
+                    }
+                    StateMessage::UpdateSettings(new_settings) => {
+                        // Update settings in memory
+                        let mut settings = self.settings.lock().unwrap();
+                        *settings = new_settings.clone();
+                        drop(settings);
+
+                        // Update concurrent downloads
+                        let mut concurrent = self.concurrent.lock().unwrap();
+                        *concurrent = new_settings.concurrent_downloads;
+
+                        // Save settings to disk
+                        if let Err(err) = new_settings.save() {
+                            self.add_log(format!("Error saving settings: {}", err));
+                        } else {
+                            self.add_log("Settings saved successfully".to_string());
+                        }
                     }
                 }
             } else {
@@ -418,5 +445,15 @@ impl AppState {
         logs.clear();
         logs.push("Welcome! Press 'S' to start downloads".to_string());
         logs.push("Press 'Q' to quit, 'Shift+Q' to force quit".to_string());
+    }
+
+    /// Get the current settings
+    pub fn get_settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
+    }
+
+    /// Update the settings
+    pub fn update_settings(&self, new_settings: Settings) {
+        self.send(StateMessage::UpdateSettings(new_settings));
     }
 }

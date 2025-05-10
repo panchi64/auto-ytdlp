@@ -24,9 +24,10 @@ use crate::{
     app_state::{AppState, StateMessage},
     args::Args,
     downloader::queue::process_queue,
+    ui::settings_menu::SettingsMenu,
     utils::{
         dependencies::check_dependencies,
-        file::{add_links_from_clipboard, load_links},
+        file::{add_clipboard_links, get_links_from_file},
     },
 };
 
@@ -39,242 +40,251 @@ use crate::{
 ///
 /// * `frame` - A mutable reference to the terminal frame to render elements into
 /// * `state` - A reference to the current application state
+/// * `settings_menu` - A mutable reference to the settings menu
 ///
 /// # Example
 ///
 /// ```
-/// terminal.draw(|f| ui(f, &state))?;
+/// terminal.draw(|f| ui(f, &state, &mut settings_menu))?;
 /// ```
-pub fn ui(frame: &mut Frame<CrosstermBackend<io::Stdout>>, state: &AppState) {
-    let progress = state.get_progress();
-    let queue = state.get_queue();
-    let active_downloads = state.get_active_downloads();
-    let started = state.is_started();
-    let logs = state.get_logs();
-    let initial_total = state.get_initial_total_tasks();
-    let concurrent = state.get_concurrent();
-    let is_paused = state.is_paused();
-    let is_completed = state.is_completed();
-    let completed_tasks = state.get_completed_tasks();
-    let total_tasks = state.get_total_tasks();
-
-    let main_layout = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints(
-            [
-                ratatui::layout::Constraint::Length(3),
-                ratatui::layout::Constraint::Percentage(40),
-                ratatui::layout::Constraint::Percentage(40),
-                ratatui::layout::Constraint::Length(4),
-            ]
-            .as_ref(),
-        )
-        .split(frame.size());
-
-    // ----- Status indicators -----
-    let status_indicator = if is_completed {
-        "✅ COMPLETED"
-    } else if is_paused {
-        "⏸️ PAUSED"
-    } else if started {
-        "▶️ RUNNING"
+pub fn ui(
+    frame: &mut Frame<CrosstermBackend<io::Stdout>>,
+    state: &AppState,
+    settings_menu: &mut SettingsMenu,
+) {
+    if settings_menu.is_visible() {
+        settings_menu.render(frame, frame.size());
     } else {
-        "⏹️ STOPPED"
-    };
+        let progress = state.get_progress();
+        let queue = state.get_queue();
+        let active_downloads = state.get_active_downloads();
+        let started = state.is_started();
+        let logs = state.get_logs();
+        let initial_total = state.get_initial_total_tasks();
+        let concurrent = state.get_concurrent();
+        let is_paused = state.is_paused();
+        let is_completed = state.is_completed();
+        let completed_tasks = state.get_completed_tasks();
+        let total_tasks = state.get_total_tasks();
 
-    // Count failed downloads based on log entries
-    let failed_count = logs
-        .iter()
-        .filter(|line| line.starts_with("Failed:"))
-        .count();
+        let main_layout = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints(
+                [
+                    ratatui::layout::Constraint::Length(3),
+                    ratatui::layout::Constraint::Percentage(40),
+                    ratatui::layout::Constraint::Percentage(40),
+                    ratatui::layout::Constraint::Length(4),
+                ]
+                .as_ref(),
+            )
+            .split(frame.size());
 
-    // ----- Progress bar with status -----
-    let progress_title = format!(
-        "{} - Progress: {:.1}% ({}/{}){}",
-        status_indicator,
-        progress,
-        completed_tasks,
-        total_tasks,
-        if failed_count > 0 {
-            format!(" - ❌ {} Failed", failed_count)
-        } else {
-            String::new()
-        }
-    );
-
-    let gauge = Gauge::default()
-        .block(Block::default().title(progress_title).borders(Borders::ALL))
-        .gauge_style(ratatui::style::Style::default().fg(if is_paused {
-            ratatui::style::Color::Yellow
-        } else if is_completed {
-            ratatui::style::Color::Green
-        } else if failed_count > 0 {
-            ratatui::style::Color::Red
+        // ----- Status indicators -----
+        let status_indicator = if is_completed {
+            "✅ COMPLETED"
+        } else if is_paused {
+            "⏸️ PAUSED"
         } else if started {
-            ratatui::style::Color::Blue
+            "▶️ RUNNING"
         } else {
-            ratatui::style::Color::Gray
-        }))
-        .percent(progress as u16);
-    frame.render_widget(gauge, main_layout[0]);
+            "⏹️ STOPPED"
+        };
 
-    // ----- Downloads area (Pending + Active) -----
-    let downloads_layout = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            ratatui::layout::Constraint::Percentage(50),
-            ratatui::layout::Constraint::Percentage(50),
-        ])
-        .split(main_layout[1]);
+        // Count failed downloads based on log entries
+        let failed_count = logs
+            .iter()
+            .filter(|line| line.starts_with("Failed:"))
+            .count();
 
-    // Pending downloads list with status icon
-    let pending_title = format!(
-        "{} Pending Downloads - {}/{}",
-        if queue.is_empty() { "✅" } else { "📋" },
-        queue.len(),
-        initial_total
-    );
-
-    let pending_items: Vec<ListItem> = queue.iter().map(|i| ListItem::new(i.as_str())).collect();
-    let pending_list =
-        List::new(pending_items).block(Block::default().title(pending_title).borders(Borders::ALL));
-    frame.render_widget(pending_list, downloads_layout[0]);
-
-    // Active downloads list with status icon
-    let active_title = format!(
-        "{} Active Downloads - {}/{}",
-        if active_downloads.is_empty() {
-            if started {
-                "⏸️"
+        // ----- Progress bar with status -----
+        let progress_title = format!(
+            "{} - Progress: {:.1}% ({}/{}){}",
+            status_indicator,
+            progress,
+            completed_tasks,
+            total_tasks,
+            if failed_count > 0 {
+                format!(" - ❌ {} Failed", failed_count)
             } else {
-                "⏹️"
+                String::new()
             }
-        } else {
-            "⏳"
-        },
-        active_downloads.len(),
-        concurrent
-    );
+        );
 
-    let active_items: Vec<ListItem> = active_downloads
-        .iter()
-        .map(|i| ListItem::new(i.as_str()))
-        .collect();
-    let active_list =
-        List::new(active_items).block(Block::default().title(active_title).borders(Borders::ALL));
-    frame.render_widget(active_list, downloads_layout[1]);
-
-    // ----- Logs display with color coding -----
-    let colored_logs: Vec<Line> = logs
-        .iter()
-        .map(|line| {
-            let style = if line.contains("Error") || line.contains("ERROR") {
-                Style::default().fg(Color::Red)
-            } else if line.contains("Warning") || line.contains("WARN") {
-                Style::default().fg(Color::Yellow)
-            } else if line.contains("Completed") {
-                Style::default().fg(Color::Green)
-            } else if line.contains("Starting download") {
-                Style::default().fg(Color::Cyan)
-            } else if line.contains("Links refreshed") || line.contains("Added") {
-                Style::default().fg(Color::LightGreen)
+        let gauge = Gauge::default()
+            .block(Block::default().title(progress_title).borders(Borders::ALL))
+            .gauge_style(ratatui::style::Style::default().fg(if is_paused {
+                ratatui::style::Color::Yellow
+            } else if is_completed {
+                ratatui::style::Color::Green
+            } else if failed_count > 0 {
+                ratatui::style::Color::Red
+            } else if started {
+                ratatui::style::Color::Blue
             } else {
-                Style::default().fg(Color::White)
-            };
+                ratatui::style::Color::Gray
+            }))
+            .percent(progress as u16);
+        frame.render_widget(gauge, main_layout[0]);
 
-            Line::from(vec![Span::styled(line.clone(), style)])
-        })
-        .collect();
+        // ----- Downloads area (Pending + Active) -----
+        let downloads_layout = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Percentage(50),
+                ratatui::layout::Constraint::Percentage(50),
+            ])
+            .split(main_layout[1]);
 
-    let text_content = Text::from(colored_logs);
-    let text_height = logs.len() as u16;
-    let area_height = main_layout[2].height;
-    let scroll = text_height.saturating_sub(area_height);
+        // Pending downloads list with status icon
+        let pending_title = format!(
+            "{} Pending Downloads - {}/{}",
+            if queue.is_empty() { "✅" } else { "📋" },
+            queue.len(),
+            initial_total
+        );
 
-    let logs_widget = Paragraph::new(text_content)
-        .block(Block::default().title("Logs").borders(Borders::ALL))
-        .scroll((scroll, 0));
-    frame.render_widget(logs_widget, main_layout[2]);
+        let pending_items: Vec<ListItem> =
+            queue.iter().map(|i| ListItem::new(i.as_str())).collect();
+        let pending_list = List::new(pending_items)
+            .block(Block::default().title(pending_title).borders(Borders::ALL));
+        frame.render_widget(pending_list, downloads_layout[0]);
 
-    // ----- Help text (keyboard shortcuts) -----
-    let help_text = if is_completed {
-        "Keys: [S]tart New | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
-    } else if !started {
-        "Keys: [S]tart | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
-    } else if is_paused {
-        "Keys: [P]Resume | [S]top | [A]dd | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
-    } else {
-        "Keys: [P]ause | [S]top | [R]efresh | [Q]uit | [Shift+Q] Force Quit"
-    };
+        // Active downloads list with status icon
+        let active_title = format!(
+            "{} Active Downloads - {}/{}",
+            if active_downloads.is_empty() {
+                if started {
+                    "⏸️"
+                } else {
+                    "⏹️"
+                }
+            } else {
+                "⏳"
+            },
+            active_downloads.len(),
+            concurrent
+        );
 
-    let help = Paragraph::new(help_text)
-        .block(
-            Block::default()
-                .title("Keyboard Controls")
-                .borders(Borders::ALL),
-        )
-        .alignment(ratatui::layout::Alignment::Center);
-    frame.render_widget(help, main_layout[3]);
+        let active_items: Vec<ListItem> = active_downloads
+            .iter()
+            .map(|i| ListItem::new(i.as_str()))
+            .collect();
+        let active_list = List::new(active_items)
+            .block(Block::default().title(active_title).borders(Borders::ALL));
+        frame.render_widget(active_list, downloads_layout[1]);
+
+        // ----- Logs display with color coding -----
+        let colored_logs: Vec<Line> = logs
+            .iter()
+            .map(|line| {
+                let style = if line.contains("Error") || line.contains("ERROR") {
+                    Style::default().fg(Color::Red)
+                } else if line.contains("Warning") || line.contains("WARN") {
+                    Style::default().fg(Color::Yellow)
+                } else if line.contains("Completed") {
+                    Style::default().fg(Color::Green)
+                } else if line.contains("Starting download") {
+                    Style::default().fg(Color::Cyan)
+                } else if line.contains("Links refreshed") || line.contains("Added") {
+                    Style::default().fg(Color::LightGreen)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                Line::from(vec![Span::styled(line.clone(), style)])
+            })
+            .collect();
+
+        let text_content = Text::from(colored_logs);
+        let text_height = logs.len() as u16;
+        let area_height = main_layout[2].height;
+        let scroll = text_height.saturating_sub(area_height);
+
+        let logs_widget = Paragraph::new(text_content)
+            .block(Block::default().title("Logs").borders(Borders::ALL))
+            .scroll((scroll, 0));
+        frame.render_widget(logs_widget, main_layout[2]);
+
+        // ----- Help text (keyboard shortcuts) -----
+        let help_text = if is_completed {
+            "R: Restart | Q: Quit"
+        } else if started {
+            "P: Pause | S: Stop | R: Refresh | Q: Quit | A: Add URLs | F2: Settings"
+        } else {
+            "S: Start | R: Refresh | Q: Quit | A: Add URLs | F2: Settings"
+        };
+
+        let info_widget = Paragraph::new(help_text)
+            .block(Block::default().title("Controls").borders(Borders::ALL))
+            .style(Style::default().fg(Color::Gray));
+        frame.render_widget(info_widget, main_layout[3]);
+    }
 }
 
-/// Runs the Terminal User Interface main loop.
+/// Runs the Terminal User Interface (TUI) loop.
 ///
-/// Sets up the terminal in raw mode with an alternate screen, handles user input events,
-/// and manages the rendering loop until the user exits. Also handles displaying
-/// notifications when downloads complete.
+/// This function initializes the terminal, sets up the application state,
+/// and handles the main event loop for the TUI including keyboard input
+/// processing and UI rendering.
 ///
 /// # Parameters
 ///
-/// * `state` - The application state to display and modify
-/// * `args` - Command line arguments for the application
+/// * `state` - The application state
+/// * `args` - Command line arguments
 ///
 /// # Returns
 ///
-/// * `Result<()>` - Ok if the TUI ran and exited successfully, or an Error
+/// A Result indicating success or failure
 ///
 /// # Errors
 ///
-/// Returns an error if terminal operations fail, such as:
-/// - Setting up raw mode
-/// - Entering/leaving the alternate screen
-/// - Drawing to the terminal
-/// - Processing input events
-///
-/// # Example
-///
-/// ```
-/// let state = AppState::new();
-/// let args = Args::parse();
-/// run_tui(state, args)?;
-/// ```
+/// Returns an error if there are issues with terminal setup, event handling,
+/// or dependency checks.
 pub fn run_tui(state: AppState, args: Args) -> Result<()> {
+    // Terminal initialization
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let tick_rate = Duration::from_millis(250);
-    let mut last_tick = Instant::now();
-    let mut notification_sent = false;
-
-    loop {
-        terminal.draw(|f| ui(f, &state))?;
-
-        if state.is_completed() && !notification_sent {
-            Notification::new()
-                .summary("Download Complete")
-                .body("All downloads finished")
-                .show()?;
-            notification_sent = true;
+    // Check dependencies before starting
+    if let Err(errors) = check_dependencies() {
+        for error in errors {
+            state.add_log(format!("Error: {}", error));
         }
+    }
+
+    // Load any existing links
+    let links = get_links_from_file();
+    state.send(StateMessage::LoadLinks(links));
+
+    // Create settings menu
+    let mut settings_menu = SettingsMenu::new(&state);
+
+    // UI rendering loop
+    let tick_rate = Duration::from_millis(100);
+    let mut last_tick = Instant::now();
+
+    // Main loop
+    loop {
+        // Draw UI
+        terminal.draw(|f| ui(f, &state, &mut settings_menu))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
 
-        if event::poll(timeout)? {
+        // Handle input events
+        if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
+                // First check if settings menu should handle the key
+                if settings_menu.is_visible() && settings_menu.handle_input(key, &state) {
+                    continue;
+                }
+
+                // Then handle normal application keys
                 match key.code {
                     KeyCode::Char('q') => {
                         if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -291,7 +301,6 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                             match check_dependencies() {
                                 Ok(()) => {
                                     state.reset_for_new_run();
-                                    notification_sent = false;
 
                                     let state_clone = state.clone();
                                     let args_clone = args.clone();
@@ -329,11 +338,9 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                         }
                     }
                     KeyCode::Char('r') => {
-                        if let Err(e) = load_links(&state) {
-                            state.add_log(format!("Error reloading links: {}", e));
-                        } else {
-                            state.add_log("Links refreshed from file".to_string());
-                        }
+                        let links = get_links_from_file();
+                        state.send(StateMessage::LoadLinks(links));
+                        state.add_log("Links refreshed from file".to_string());
                         last_tick = Instant::now() - tick_rate;
                     }
                     KeyCode::Char('a') => {
@@ -341,7 +348,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                         if !state.is_started() || state.is_paused() || state.is_completed() {
                             let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
                             if let Ok(contents) = ctx.get_contents() {
-                                let links_added = add_links_from_clipboard(&state, &contents);
+                                let links_added = add_clipboard_links(&state, &contents);
 
                                 if links_added > 0 {
                                     state.send(StateMessage::SetCompleted(false));
@@ -352,16 +359,35 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                             state.add_log("Cannot add links during active downloads".to_string());
                         }
                     }
+                    KeyCode::F(2) => {
+                        settings_menu = SettingsMenu::new(&state);
+                        settings_menu.toggle();
+                    }
                     _ => {}
                 }
             }
         }
 
+        // Handle timed events
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
+
+            // Check if we should send a notification
+            if state.is_completed() {
+                let flags = state.is_force_quit() || state.is_shutdown();
+
+                // Show notification when all downloads are completed
+                if !flags {
+                    let _ = Notification::new()
+                        .summary("Auto-YTDlp Downloads Completed")
+                        .body("All downloads have been completed!")
+                        .show();
+                }
+            }
         }
     }
 
+    // Restore terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
