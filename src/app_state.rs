@@ -1,5 +1,5 @@
 use std::collections::{HashSet, VecDeque};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use crate::utils::settings::Settings;
@@ -443,6 +443,7 @@ impl AppState {
     pub fn clear_logs(&self) {
         let mut logs = self.logs.lock().unwrap();
         logs.clear();
+        logs.shrink_to_fit(); // Proactively release unused capacity
         logs.push("Welcome! Press 'S' to start downloads".to_string());
         logs.push("Press 'Q' to quit, 'Shift+Q' to force quit".to_string());
     }
