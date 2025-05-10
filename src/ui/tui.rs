@@ -25,7 +25,7 @@ use crate::{
     args::Args,
     downloader::{common::validate_dependencies, queue::process_queue},
     ui::settings_menu::SettingsMenu,
-    utils::file::{add_clipboard_links, get_links_from_file},
+    utils::file::{add_clipboard_links, get_links_from_file, sanitize_links_file},
 };
 
 /// Renders the Terminal User Interface (TUI) using the current application state.
@@ -199,9 +199,9 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu)
         let help_text = if is_completed {
             "R: Restart | Q: Quit"
         } else if started {
-            "P: Pause | S: Stop | R: Refresh | Q: Quit | A: Add URLs | F2: Settings"
+            "P: Pause | S: Stop | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit"
         } else {
-            "S: Start | R: Refresh | Q: Quit | A: Add URLs | F2: Settings"
+            "S: Start | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit"
         };
 
         let info_widget = Paragraph::new(help_text)
@@ -248,6 +248,12 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
         if error.to_string().contains("ffmpeg") {
             state.add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
         }
+    }
+
+    // Sanitize links file and load valid links
+    let removed = sanitize_links_file();
+    if removed > 0 {
+        state.add_log(format!("Removed {} invalid URLs from links.txt", removed));
     }
 
     // Load any existing links
@@ -331,9 +337,32 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                         }
                     }
                     KeyCode::Char('r') => {
+                        if !state.is_started() || state.is_paused() || state.is_completed() {
+                            // Keep 'R' for restarting when completed
+                            state.reset_for_new_run();
+
+                            // Refresh links in the app state
+                            let links = get_links_from_file();
+                            state.send(StateMessage::LoadLinks(links));
+
+                            state.add_log("Links refreshed from file".to_string());
+                            last_tick = Instant::now() - tick_rate;
+                        }
+                    }
+                    KeyCode::Char('f') => {
+                        // First sanitize the links file
+                        let removed = sanitize_links_file();
+                        if removed > 0 {
+                            state.add_log(format!(
+                                "Removed {} invalid URLs from links.txt",
+                                removed
+                            ));
+                        }
+
+                        // Then load links from the file
                         let links = get_links_from_file();
                         state.send(StateMessage::LoadLinks(links));
-                        state.add_log("Links refreshed from file".to_string());
+                        state.add_log("Links loaded from file".to_string());
                         last_tick = Instant::now() - tick_rate;
                     }
                     KeyCode::Char('a') => {

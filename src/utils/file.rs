@@ -6,10 +6,11 @@ use std::{collections::HashSet, fs};
 ///
 /// Reads all lines from the links.txt file into a vector of strings.
 /// Creates an empty file if it doesn't exist.
+/// Filters out any entries that aren't valid URLs.
 ///
 /// # Returns
 ///
-/// * `Vec<String>` - Vector containing all URLs from the file
+/// * `Vec<String>` - Vector containing all valid URLs from the file
 ///
 /// # Example
 ///
@@ -19,7 +20,52 @@ use std::{collections::HashSet, fs};
 /// ```
 pub fn get_links_from_file() -> Vec<String> {
     let content = fs::read_to_string("links.txt").unwrap_or_default();
-    content.lines().map(String::from).collect()
+    content
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .filter(|l| url::Url::parse(l).is_ok())
+        .collect()
+}
+
+/// Sanitizes the links.txt file by removing invalid URLs.
+///
+/// Reads the file, filters out invalid URLs, and writes the sanitized
+/// content back to the file.
+///
+/// # Returns
+///
+/// * `usize` - The number of invalid entries that were removed
+///
+/// # Example
+///
+/// ```
+/// let removed = sanitize_links_file();
+/// println!("Removed {} invalid URLs", removed);
+/// ```
+pub fn sanitize_links_file() -> usize {
+    let file_path = "links.txt";
+    let content = fs::read_to_string(file_path).unwrap_or_default();
+
+    let lines: Vec<String> = content
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let valid_lines: Vec<String> = lines
+        .iter()
+        .filter(|l| url::Url::parse(l).is_ok())
+        .cloned()
+        .collect();
+
+    let removed_count = lines.len() - valid_lines.len();
+
+    if removed_count > 0 {
+        let _ = fs::write(file_path, valid_lines.join("\n"));
+    }
+
+    removed_count
 }
 
 /// Removes a specific URL from the 'links.txt' file.
