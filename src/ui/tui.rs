@@ -8,15 +8,15 @@ use clipboard::{ClipboardContext, ClipboardProvider};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use notify_rust::Notification;
 use ratatui::{
+    Frame, Terminal,
     prelude::CrosstermBackend,
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
-    Frame, Terminal,
 };
 use std::io;
 
@@ -47,13 +47,9 @@ use crate::{
 /// ```
 /// terminal.draw(|f| ui(f, &state, &mut settings_menu))?;
 /// ```
-pub fn ui(
-    frame: &mut Frame<CrosstermBackend<io::Stdout>>,
-    state: &AppState,
-    settings_menu: &mut SettingsMenu,
-) {
+pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu) {
     if settings_menu.is_visible() {
-        settings_menu.render(frame, frame.size());
+        settings_menu.render(frame, frame.area());
     } else {
         let progress = state.get_progress();
         let queue = state.get_queue();
@@ -78,7 +74,7 @@ pub fn ui(
                 ]
                 .as_ref(),
             )
-            .split(frame.size());
+            .split(frame.area());
 
         // ----- Status indicators -----
         let status_indicator = if is_completed {
@@ -154,11 +150,7 @@ pub fn ui(
         let active_title = format!(
             "{} Active Downloads - {}/{}",
             if active_downloads.is_empty() {
-                if started {
-                    "⏸️"
-                } else {
-                    "⏹️"
-                }
+                if started { "⏸️" } else { "⏹️" }
             } else {
                 "⏳"
             },

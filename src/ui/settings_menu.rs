@@ -1,7 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
@@ -305,7 +304,7 @@ impl SettingsMenu {
     }
 
     /// Renders the settings menu in a popup
-    pub fn render<B: Backend>(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;
         }
@@ -405,7 +404,7 @@ impl SettingsMenu {
     }
 
     /// Render the editing popup for the selected setting
-    fn render_edit_popup<B: Backend>(&mut self, frame: &mut Frame, screen_area: Rect) {
+    fn render_edit_popup(&mut self, frame: &mut Frame, screen_area: Rect) {
         if let Some(selected) = self.list_state.selected() {
             let popup_width = 50;
             let popup_height = 3;
@@ -498,7 +497,7 @@ impl SettingsMenu {
     }
 
     /// Render the input popup for custom values
-    fn render_input_popup<B: Backend>(&mut self, frame: &mut Frame, screen_area: Rect) {
+    fn render_input_popup(&mut self, frame: &mut Frame, screen_area: Rect) {
         let popup_width = 40;
         let popup_height = 3;
         let popup_x = (screen_area.width.saturating_sub(popup_width)) / 2;
