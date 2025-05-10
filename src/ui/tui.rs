@@ -23,12 +23,9 @@ use std::io;
 use crate::{
     app_state::{AppState, StateMessage},
     args::Args,
-    downloader::queue::process_queue,
+    downloader::{common::validate_dependencies, queue::process_queue},
     ui::settings_menu::SettingsMenu,
-    utils::{
-        dependencies::check_dependencies,
-        file::{add_clipboard_links, get_links_from_file},
-    },
+    utils::file::{add_clipboard_links, get_links_from_file},
 };
 
 /// Renders the Terminal User Interface (TUI) using the current application state.
@@ -242,9 +239,14 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Check dependencies before starting
-    if let Err(errors) = check_dependencies() {
-        for error in errors {
-            state.add_log(format!("Error: {}", error));
+    if let Err(error) = validate_dependencies() {
+        state.add_log(format!("Error: {}", error));
+
+        if error.to_string().contains("yt-dlp") {
+            state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
+        }
+        if error.to_string().contains("ffmpeg") {
+            state.add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
         }
     }
 
@@ -290,7 +292,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                     }
                     KeyCode::Char('s') => {
                         if !state.is_started() {
-                            match check_dependencies() {
+                            match validate_dependencies() {
                                 Ok(()) => {
                                     state.reset_for_new_run();
 
@@ -298,15 +300,14 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                     let args_clone = args.clone();
                                     thread::spawn(move || process_queue(state_clone, args_clone));
                                 }
-                                Err(errors) => {
-                                    for error in errors {
-                                        state.add_log(error.clone());
-                                        if error.contains("yt-dlp") {
-                                            state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
-                                        }
-                                        if error.contains("ffmpeg") {
-                                            state.add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
-                                        }
+                                Err(error) => {
+                                    state.add_log(format!("Error: {}", error));
+
+                                    if error.to_string().contains("yt-dlp") {
+                                        state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
+                                    }
+                                    if error.to_string().contains("ffmpeg") {
+                                        state.add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
                                     }
                                 }
                             }

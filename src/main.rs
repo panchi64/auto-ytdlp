@@ -8,13 +8,12 @@ use anyhow::Result;
 use app_state::{AppState, StateMessage};
 use args::Args;
 use clap::Parser;
-use downloader::queue::process_queue;
+use downloader::{common::validate_dependencies, queue::process_queue};
 use std::{
     fs::{self, File},
     path::Path,
 };
 use ui::tui::run_tui;
-use utils::dependencies::check_dependencies;
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -37,19 +36,17 @@ fn main() -> Result<()> {
 
     if args.auto {
         // Check dependencies before processing in auto mode
-        match check_dependencies() {
+        match validate_dependencies() {
             Ok(()) => process_queue(state.clone(), args.clone()),
-            Err(errors) => {
-                for error in errors {
-                    eprintln!("Error: {}", error);
-                    if error.contains("yt-dlp") {
-                        eprintln!("Please download the latest version of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases");
-                    }
-                    if error.contains("ffmpeg") {
-                        eprintln!(
-                            "Please download ffmpeg from: https://www.ffmpeg.org/download.html"
-                        );
-                    }
+            Err(error) => {
+                eprintln!("Error: {}", error);
+                if error.to_string().contains("yt-dlp") {
+                    eprintln!(
+                        "Please download the latest version of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases"
+                    );
+                }
+                if error.to_string().contains("ffmpeg") {
+                    eprintln!("Please download ffmpeg from: https://www.ffmpeg.org/download.html");
                 }
                 std::process::exit(1);
             }

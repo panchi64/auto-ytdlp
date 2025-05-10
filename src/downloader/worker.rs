@@ -6,8 +6,10 @@ use std::{
 use crate::{
     app_state::{AppState, StateMessage},
     args::Args,
-    utils::{file::remove_link_from_file, settings::Settings},
+    utils::file::remove_link_from_file,
 };
+
+use super::common::build_ytdlp_command_args;
 
 /// Downloads a single video from the provided URL using yt-dlp.
 ///
@@ -47,27 +49,8 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
 
     state.add_log(format!("Starting download: {}", url));
 
-    // Load user settings, fallback to defaults if loading fails
-    let settings = Settings::load().unwrap_or_default();
-
-    let output_template = args
-        .download_dir
-        .join("%(title)s - [%(id)s].%(ext)s")
-        .to_str()
-        .unwrap()
-        .to_string();
-
-    // Build command using settings
-    let mut cmd_args = vec![
-        "--download-archive".to_string(),
-        args.archive_file.to_string_lossy().to_string(),
-    ];
-
-    // Add settings-based arguments
-    cmd_args.extend(settings.get_ytdlp_args(&output_template));
-
-    // Add the URL to download
-    cmd_args.push(url.clone());
+    // Build command using the common function
+    let cmd_args = build_ytdlp_command_args(&args, &url);
 
     // Start the command
     let mut cmd = Command::new("yt-dlp")
