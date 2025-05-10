@@ -408,4 +408,15 @@ impl AppState {
 
         // Queue length stays the same
     }
+
+    /// Clears all logs except for welcome messages.
+    ///
+    /// This function resets the log history but keeps the welcome messages
+    /// to ensure the user always has basic instructions visible.
+    pub fn clear_logs(&self) {
+        let mut logs = self.logs.lock().unwrap();
+        logs.clear();
+        logs.push("Welcome! Press 'S' to start downloads".to_string());
+        logs.push("Press 'Q' to quit, 'Shift+Q' to force quit".to_string());
+    }
 }

@@ -98,4 +98,11 @@ pub fn process_queue(state: AppState, args: Args) {
     } else {
         state.add_log("Download processing stopped".to_string());
     }
+
+    // Clear logs after a short delay to allow the completion message to be seen
+    let state_clone = state.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(2));
+        state_clone.clear_logs();
+    });
 }

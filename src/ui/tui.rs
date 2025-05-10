@@ -313,6 +313,13 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                             state.send(StateMessage::SetShutdown(true));
                             state.send(StateMessage::SetStarted(false));
                             state.send(StateMessage::SetPaused(false));
+
+                            // Clear logs after a short delay when manually stopping downloads
+                            let state_clone = state.clone();
+                            thread::spawn(move || {
+                                thread::sleep(Duration::from_secs(2));
+                                state_clone.clear_logs();
+                            });
                         }
                     }
                     KeyCode::Char('p') => {
