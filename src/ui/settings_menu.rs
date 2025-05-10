@@ -390,14 +390,6 @@ impl SettingsMenu {
             return;
         }
 
-        // Draw a solid black background to completely cover the entire screen
-        frame.render_widget(
-            Block::default()
-                .style(Style::default().bg(Color::Black))
-                .borders(Borders::NONE),
-            area, // Use the full screen area
-        );
-
         if self.input_mode {
             self.render_input_popup(frame, area); // Pass full screen area
         } else if self.editing {
@@ -467,7 +459,7 @@ impl SettingsMenu {
                         .title_style(Style::default().fg(Color::White))
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::White))
-                        .style(Style::default().bg(Color::Black)),
+                        .style(Style::default()),
                 )
                 .highlight_style(Style::default().fg(Color::Yellow).bg(Color::DarkGray))
                 .highlight_symbol("> ");
@@ -485,7 +477,7 @@ impl SettingsMenu {
                     Block::default()
                         .borders(Borders::TOP)
                         .border_style(Style::default().fg(Color::White))
-                        .style(Style::default().bg(Color::Black)),
+                        .style(Style::default()),
                 )
                 .style(Style::default().fg(Color::Gray));
             frame.render_widget(help, chunks[1]);
@@ -560,7 +552,7 @@ impl SettingsMenu {
                     .title_style(Style::default().fg(Color::White))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::White))
-                    .style(Style::default().bg(Color::Black)),
+                    .style(Style::default()),
             );
             frame.render_widget(options_widget, edit_popup_dialog_area);
 
@@ -594,7 +586,7 @@ impl SettingsMenu {
                     .title_style(Style::default().fg(Color::White))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::White))
-                    .style(Style::default().bg(Color::Black)),
+                    .style(Style::default()),
             )
             .style(Style::default().fg(Color::Yellow));
         frame.render_widget(input_widget, input_popup_dialog_area);
