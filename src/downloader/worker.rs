@@ -52,6 +52,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     // Get settings to check if retry is enabled
     let settings = state.get_settings();
     let max_retries = if settings.network_retry { 3 } else { 0 };
+    let retry_delay = settings.retry_delay;
     let mut retry_count = 0;
     let mut success = false;
 
@@ -120,7 +121,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         }
 
         retry_count += 1;
-        std::thread::sleep(std::time::Duration::from_secs(2)); // Add a delay between retries
+        std::thread::sleep(std::time::Duration::from_secs(retry_delay)); // Use the custom retry delay
     }
 
     state.send(StateMessage::RemoveActiveDownload(url.clone()));

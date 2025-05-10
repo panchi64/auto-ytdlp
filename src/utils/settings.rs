@@ -102,6 +102,8 @@ pub struct Settings {
     pub add_metadata: bool,
     /// Automatically retry failed downloads due to network issues
     pub network_retry: bool,
+    /// Delay in seconds between retry attempts
+    pub retry_delay: u64,
 }
 
 impl Default for Settings {
@@ -114,6 +116,7 @@ impl Default for Settings {
             write_thumbnail: false,
             add_metadata: false,
             network_retry: false,
+            retry_delay: 2,
         }
     }
 }

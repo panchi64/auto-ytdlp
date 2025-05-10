@@ -143,6 +143,16 @@ impl SettingsMenu {
                             // Network Retry
                             self.option_index = if self.settings.network_retry { 1 } else { 0 };
                         }
+                        7 => {
+                            // Retry Delay
+                            self.option_index = match self.settings.retry_delay {
+                                1 => 0,
+                                2 => 1,
+                                5 => 2,
+                                10 => 3,
+                                _ => 4, // Index for "Custom"
+                            };
+                        }
                         _ => {
                             self.option_index = 0; // Default for safety
                         }
@@ -164,8 +174,8 @@ impl SettingsMenu {
             }
             KeyCode::Down => {
                 if let Some(i) = self.list_state.selected() {
-                    if i < 6 {
-                        // Number of settings options - 1 (increased to 6 for network_retry)
+                    if i < 7 {
+                        // Number of settings options - 1 (increased to 7 for retry_delay)
                         self.list_state.select(Some(i + 1));
                     }
                 }
@@ -204,6 +214,16 @@ impl SettingsMenu {
                     }
                 }
 
+                // Special case for custom retry delay
+                if let Some(7) = self.list_state.selected() {
+                    if self.option_index == 4 {
+                        // Custom option
+                        self.custom_input = self.settings.retry_delay.to_string();
+                        self.input_mode = true;
+                        return true;
+                    }
+                }
+
                 // Regular settings update
                 self.update_setting(state);
                 self.editing = false;
@@ -213,7 +233,7 @@ impl SettingsMenu {
         }
     }
 
-    /// Handle custom input for concurrent downloads
+    /// Handle custom input for concurrent downloads or retry delay
     fn handle_custom_input(&mut self, key: KeyEvent, state: &AppState) -> bool {
         match key.code {
             KeyCode::Esc => {
@@ -222,17 +242,33 @@ impl SettingsMenu {
                 true
             }
             KeyCode::Enter => {
-                // Try to parse the input as a number
-                if let Ok(value) = self.custom_input.parse::<usize>() {
-                    if value > 0 {
-                        self.settings.concurrent_downloads = value;
-                        self.input_mode = false;
-                        self.editing = false;
-
-                        // Immediately save the updated settings
-                        state.update_settings(self.settings.clone());
+                if let Some(selected_setting_idx) = self.list_state.selected() {
+                    match selected_setting_idx {
+                        5 => {
+                            // Custom concurrent downloads
+                            if let Ok(value) = self.custom_input.parse::<usize>() {
+                                if value > 0 {
+                                    self.settings.concurrent_downloads = value;
+                                }
+                            }
+                        }
+                        7 => {
+                            // Custom retry delay
+                            if let Ok(value) = self.custom_input.parse::<u64>() {
+                                if value > 0 {
+                                    self.settings.retry_delay = value;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
+
+                self.input_mode = false;
+                self.editing = false;
+
+                // Immediately save the updated settings
+                state.update_settings(self.settings.clone());
                 true
             }
             KeyCode::Backspace => {
@@ -285,6 +321,10 @@ impl SettingsMenu {
                     // Network retry options (true/false)
                     self.option_index = self.option_index.min(1); // 2 options (true/false)
                 }
+                7 => {
+                    // Retry delay options (1, 2, 5, 10 seconds, Custom)
+                    self.option_index = self.option_index.min(4); // 5 options
+                }
                 _ => {}
             }
         }
@@ -292,63 +332,44 @@ impl SettingsMenu {
 
     /// Update the current setting with the selected option
     fn update_setting(&mut self, state: &AppState) {
-        if let Some(i) = self.list_state.selected() {
-            match i {
+        if let Some(selected_setting_idx) = self.list_state.selected() {
+            match selected_setting_idx {
                 0 => {
-                    // Format preset
-                    let new_preset = match self.option_index {
+                    // Format Preset
+                    self.settings.format_preset = match self.option_index {
                         0 => FormatPreset::Best,
                         1 => FormatPreset::AudioOnly,
                         2 => FormatPreset::HD1080p,
                         3 => FormatPreset::HD720p,
                         4 => FormatPreset::SD480p,
                         5 => FormatPreset::SD360p,
-                        _ => FormatPreset::Best, // Default or handle out of bounds
+                        _ => FormatPreset::Best,
                     };
-
-                    // If switching to Audio Only, auto-select MP3 format
-                    if matches!(new_preset, FormatPreset::AudioOnly) {
-                        self.settings.output_format = OutputFormat::MP3;
-                        // Disable subtitles for audio-only
-                        self.settings.write_subtitles = false;
-                    }
-
-                    self.settings.format_preset = new_preset;
                 }
                 1 => {
-                    // Output format
+                    // Output Format
                     let is_audio_only =
                         matches!(self.settings.format_preset, FormatPreset::AudioOnly);
-
-                    if is_audio_only {
-                        // Only allow audio formats when in audio-only mode
-                        self.settings.output_format = match self.option_index {
+                    self.settings.output_format = if is_audio_only {
+                        match self.option_index {
                             0 => OutputFormat::Auto,
                             1 => OutputFormat::MP3,
                             _ => OutputFormat::Auto,
-                        };
+                        }
                     } else {
-                        self.settings.output_format = match self.option_index {
+                        match self.option_index {
                             0 => OutputFormat::Auto,
                             1 => OutputFormat::MP4,
                             2 => OutputFormat::Mkv,
                             3 => OutputFormat::Webm,
                             4 => OutputFormat::MP3,
                             _ => OutputFormat::Auto,
-                        };
-                    }
+                        }
+                    };
                 }
                 2 => {
                     // Write subtitles
-                    let is_audio_only =
-                        matches!(self.settings.format_preset, FormatPreset::AudioOnly);
-
-                    if !is_audio_only {
-                        self.settings.write_subtitles = self.option_index == 1;
-                    } else {
-                        // Subtitles don't apply to audio-only
-                        self.settings.write_subtitles = false;
-                    }
+                    self.settings.write_subtitles = self.option_index == 1;
                 }
                 3 => {
                     // Write thumbnail
@@ -359,19 +380,28 @@ impl SettingsMenu {
                     self.settings.add_metadata = self.option_index == 1;
                 }
                 5 => {
-                    // Concurrent downloads
+                    // Concurrent Downloads
                     self.settings.concurrent_downloads = match self.option_index {
                         0 => 1,
                         1 => 2,
                         2 => 4,
                         3 => 8,
-                        // Custom option is handled separately in handle_custom_input
                         _ => self.settings.concurrent_downloads,
                     };
                 }
                 6 => {
-                    // Network retry settings
+                    // Network Retry
                     self.settings.network_retry = self.option_index == 1;
+                }
+                7 => {
+                    // Retry Delay
+                    self.settings.retry_delay = match self.option_index {
+                        0 => 1,
+                        1 => 2,
+                        2 => 5,
+                        3 => 10,
+                        _ => self.settings.retry_delay,
+                    };
                 }
                 _ => {}
             }
@@ -402,57 +432,90 @@ impl SettingsMenu {
             let dialog_y = (area.height.saturating_sub(popup_height)) / 2;
             let main_dialog_area = Rect::new(dialog_x, dialog_y, popup_width, popup_height);
 
-            let settings_items = [
-                format!(
-                    "Format Preset: {}",
-                    self.format_preset_to_string(&self.settings.format_preset)
-                ),
-                format!(
-                    "Output Format: {}",
-                    self.output_format_to_string(&self.settings.output_format)
-                ),
-                format!(
-                    "Write Subtitles: {}",
-                    if self.settings.write_subtitles {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
-                ),
-                format!(
-                    "Write Thumbnail: {}",
-                    if self.settings.write_thumbnail {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
-                ),
-                format!(
-                    "Add Metadata: {}",
-                    if self.settings.add_metadata {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
-                ),
-                format!(
-                    "Concurrent Downloads: {}",
-                    self.settings.concurrent_downloads
-                ),
-                format!(
-                    "Auto Retry Network Failures: {}",
-                    if self.settings.network_retry {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
-                ),
-            ]
-            .iter()
-            .map(|i| ListItem::new(i.clone()))
-            .collect::<Vec<ListItem>>();
+            let style = Style::default().fg(Color::White);
+            let value_style = Style::default().fg(Color::Yellow);
 
-            let settings_list = List::new(settings_items)
+            let items = vec![
+                ListItem::new(Line::from(vec![
+                    Span::styled("Format Preset", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        self.format_preset_to_string(&self.settings.format_preset),
+                        value_style,
+                    ),
+                ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("Output Format", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        self.output_format_to_string(&self.settings.output_format),
+                        value_style,
+                    ),
+                ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("Write Subtitles", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        if self.settings.write_subtitles {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        value_style,
+                    ),
+                ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("Write Thumbnail", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        if self.settings.write_thumbnail {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        value_style,
+                    ),
+                ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("Add Metadata", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        if self.settings.add_metadata {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        value_style,
+                    ),
+                ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("Concurrent Downloads", style),
+                    Span::raw(": "),
+                    Span::styled(self.settings.concurrent_downloads.to_string(), value_style),
+                ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("Network Retry", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        if self.settings.network_retry {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        value_style,
+                    ),
+                ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("Retry Delay", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        format!("{} seconds", self.settings.retry_delay),
+                        value_style,
+                    ),
+                ])),
+            ];
+
+            let settings_list = List::new(items)
                 .block(
                     Block::default()
                         .title("Settings")
@@ -530,6 +593,7 @@ impl SettingsMenu {
                 4 => (vec!["No", "Yes"], "Add Metadata"),
                 5 => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
                 6 => (vec!["No", "Yes"], "Auto Retry Network Failures"),
+                7 => (vec!["1", "2", "5", "10", "Custom"], "Retry Delay"),
                 _ => (vec![], ""),
             };
 

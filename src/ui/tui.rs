@@ -197,11 +197,11 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu)
 
         // ----- Help text (keyboard shortcuts) -----
         let help_text = if is_completed {
-            "R: Restart | Q: Quit"
+            "R: Restart | Q: Quit | Shift+Q: Force Quit"
         } else if started {
-            "P: Pause | S: Stop | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit"
+            "P: Pause | S: Stop | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit | Shift+Q: Force Quit"
         } else {
-            "S: Start | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit"
+            "S: Start | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit | Shift+Q: Force Quit"
         };
 
         let info_widget = Paragraph::new(help_text)
