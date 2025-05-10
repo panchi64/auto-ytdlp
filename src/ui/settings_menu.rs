@@ -77,6 +77,80 @@ impl SettingsMenu {
                 true
             }
             KeyCode::Enter => {
+                if let Some(selected_setting_idx) = self.list_state.selected() {
+                    match selected_setting_idx {
+                        0 => {
+                            // Format Preset
+                            self.option_index = match self.settings.format_preset {
+                                FormatPreset::Best => 0,
+                                FormatPreset::AudioOnly => 1,
+                                FormatPreset::HD1080p => 2,
+                                FormatPreset::HD720p => 3,
+                                FormatPreset::SD480p => 4,
+                                FormatPreset::SD360p => 5,
+                            };
+                        }
+                        1 => {
+                            // Output Format
+                            let is_audio_only =
+                                matches!(self.settings.format_preset, FormatPreset::AudioOnly);
+                            if is_audio_only {
+                                self.option_index = match self.settings.output_format {
+                                    OutputFormat::Auto => 0,
+                                    OutputFormat::MP3 => 1,
+                                    OutputFormat::MP4 | OutputFormat::Mkv | OutputFormat::Webm => 0,
+                                };
+                            } else {
+                                self.option_index = match self.settings.output_format {
+                                    OutputFormat::Auto => 0,
+                                    OutputFormat::MP4 => 1,
+                                    OutputFormat::Mkv => 2,
+                                    OutputFormat::Webm => 3,
+                                    OutputFormat::MP3 => 4,
+                                };
+                            }
+                        }
+                        2 => {
+                            // Write Subtitles
+                            let is_audio_only =
+                                matches!(self.settings.format_preset, FormatPreset::AudioOnly);
+                            if is_audio_only {
+                                self.option_index = 0; // "No" is the only practical option shown
+                            } else {
+                                self.option_index =
+                                    if self.settings.write_subtitles { 1 } else { 0 };
+                            }
+                        }
+                        3 => {
+                            // Write Thumbnail
+                            self.option_index = if self.settings.write_thumbnail { 1 } else { 0 };
+                        }
+                        4 => {
+                            // Add Metadata
+                            self.option_index = if self.settings.add_metadata { 1 } else { 0 };
+                        }
+                        5 => {
+                            // Concurrent Downloads
+                            self.option_index = match self.settings.concurrent_downloads {
+                                1 => 0,
+                                2 => 1,
+                                4 => 2,
+                                8 => 3,
+                                _ => 4, // Index for "Custom"
+                            };
+                        }
+                        6 => {
+                            // Network Retry
+                            self.option_index = if self.settings.network_retry { 1 } else { 0 };
+                        }
+                        _ => {
+                            self.option_index = 0; // Default for safety
+                        }
+                    }
+                } else {
+                    // Should not happen if a list item is selected, but set a safe default.
+                    self.option_index = 0;
+                }
                 self.editing = true;
                 true
             }
@@ -90,8 +164,8 @@ impl SettingsMenu {
             }
             KeyCode::Down => {
                 if let Some(i) = self.list_state.selected() {
-                    if i < 5 {
-                        // Number of settings options - 1
+                    if i < 6 {
+                        // Number of settings options - 1 (increased to 6 for network_retry)
                         self.list_state.select(Some(i + 1));
                     }
                 }
@@ -181,7 +255,7 @@ impl SettingsMenu {
             match i {
                 0 => {
                     // Format preset options
-                    self.option_index = self.option_index.min(6); // 7 options
+                    self.option_index = self.option_index.min(5); // 6 options now (0-5)
                 }
                 1 => {
                     // Output format options
@@ -207,6 +281,10 @@ impl SettingsMenu {
                     // Concurrent downloads (1, 2, 4, 8, Custom)
                     self.option_index = self.option_index.min(4); // 5 options
                 }
+                6 => {
+                    // Network retry options (true/false)
+                    self.option_index = self.option_index.min(1); // 2 options (true/false)
+                }
                 _ => {}
             }
         }
@@ -225,8 +303,7 @@ impl SettingsMenu {
                         3 => FormatPreset::HD720p,
                         4 => FormatPreset::SD480p,
                         5 => FormatPreset::SD360p,
-                        6 => FormatPreset::Custom("bestvideo*+bestaudio/best".to_string()),
-                        _ => FormatPreset::Best,
+                        _ => FormatPreset::Best, // Default or handle out of bounds
                     };
 
                     // If switching to Audio Only, auto-select MP3 format
@@ -255,8 +332,8 @@ impl SettingsMenu {
                             0 => OutputFormat::Auto,
                             1 => OutputFormat::MP4,
                             2 => OutputFormat::Mkv,
-                            3 => OutputFormat::MP3,
-                            4 => OutputFormat::Webm,
+                            3 => OutputFormat::Webm,
+                            4 => OutputFormat::MP3,
                             _ => OutputFormat::Auto,
                         };
                     }
@@ -291,6 +368,10 @@ impl SettingsMenu {
                         // Custom option is handled separately in handle_custom_input
                         _ => self.settings.concurrent_downloads,
                     };
+                }
+                6 => {
+                    // Network retry settings
+                    self.settings.network_retry = self.option_index == 1;
                 }
                 _ => {}
             }
@@ -366,6 +447,14 @@ impl SettingsMenu {
                     "Concurrent Downloads: {}",
                     self.settings.concurrent_downloads
                 ),
+                format!(
+                    "Auto Retry Network Failures: {}",
+                    if self.settings.network_retry {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                ),
             ]
             .iter()
             .map(|i| ListItem::new(i.clone()))
@@ -416,15 +505,7 @@ impl SettingsMenu {
 
             let (options, title) = match selected {
                 0 => (
-                    vec![
-                        "Best",
-                        "Audio Only",
-                        "1080p",
-                        "720p",
-                        "480p",
-                        "360p",
-                        "Custom",
-                    ],
+                    vec!["Best", "Audio Only", "1080p", "720p", "480p", "360p"],
                     "Select Format Preset",
                 ),
                 1 => {
@@ -433,7 +514,7 @@ impl SettingsMenu {
                         (vec!["Auto", "MP3"], "Select Output Format")
                     } else {
                         (
-                            vec!["Auto", "MP4", "MKV", "WEBM", "MP3"],
+                            vec!["Auto", "MP4", "MKV", "WEBM", "MP3 (audio only)"],
                             "Select Output Format",
                         )
                     }
@@ -456,6 +537,7 @@ impl SettingsMenu {
                 }
                 4 => (vec!["No", "Yes"], "Add Metadata"),
                 5 => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
+                6 => (vec!["No", "Yes"], "Auto Retry Network Failures"),
                 _ => (vec![], ""),
             };
 
@@ -539,7 +621,6 @@ impl SettingsMenu {
             FormatPreset::HD720p => "720p".to_string(),
             FormatPreset::SD480p => "480p".to_string(),
             FormatPreset::SD360p => "360p".to_string(),
-            FormatPreset::Custom(s) => format!("Custom ({})", s),
         }
     }
 
@@ -549,7 +630,13 @@ impl SettingsMenu {
             OutputFormat::Auto => "Auto".to_string(),
             OutputFormat::MP4 => "MP4".to_string(),
             OutputFormat::Mkv => "MKV".to_string(),
-            OutputFormat::MP3 => "MP3 (audio)".to_string(),
+            OutputFormat::MP3 => {
+                if matches!(self.settings.format_preset, FormatPreset::AudioOnly) {
+                    "MP3 (audio)".to_string()
+                } else {
+                    "MP3 (audio only)".to_string()
+                }
+            }
             OutputFormat::Webm => "WEBM".to_string(),
         }
     }

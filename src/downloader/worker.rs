@@ -49,50 +49,90 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
 
     state.add_log(format!("Starting download: {}", url));
 
-    // Build command using the common function
-    let cmd_args = build_ytdlp_command_args(&args, &url);
+    // Get settings to check if retry is enabled
+    let settings = state.get_settings();
+    let max_retries = if settings.network_retry { 3 } else { 0 };
+    let mut retry_count = 0;
+    let mut success = false;
 
-    // Start the command
-    let mut cmd = Command::new("yt-dlp")
-        .args(&cmd_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Failed to start yt-dlp");
+    while retry_count <= max_retries {
+        if retry_count > 0 {
+            state.add_log(format!("Retry attempt {} for: {}", retry_count, url));
+        }
 
-    // Set up to read the command output
-    let stdout = cmd.stdout.take().unwrap();
-    let reader = BufReader::new(stdout);
+        // Build command using the common function
+        let cmd_args = build_ytdlp_command_args(&args, &url);
 
-    // Process the output lines
-    for line in reader.lines().map_while(Result::ok) {
-        if state.is_force_quit() {
-            let _ = cmd.kill();
+        // Start the command
+        let mut cmd = Command::new("yt-dlp")
+            .args(&cmd_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to start yt-dlp");
+
+        // Set up to read the command output
+        let stdout = cmd.stdout.take().unwrap();
+        let reader = BufReader::new(stdout);
+
+        // Track if this failure is a network error that should be retried
+        let mut is_network_error = false;
+
+        // Process the output lines
+        for line in reader.lines().map_while(Result::ok) {
+            if state.is_force_quit() {
+                let _ = cmd.kill();
+                break;
+            }
+
+            // Detect network errors
+            if line.contains("ERROR")
+                && (line.contains("Unable to download webpage")
+                    || line.contains("HTTP Error")
+                    || line.contains("Connection")
+                    || line.contains("Timeout")
+                    || line.contains("Network")
+                    || line.contains("SSL"))
+            {
+                is_network_error = true;
+            }
+
+            // Filter and log relevant output lines
+            let log_line = if line.contains("ERROR") {
+                format!("Error: {}", line)
+            } else if line.contains("Destination") || line.contains("[download]") {
+                line
+            } else {
+                continue;
+            };
+
+            state.add_log(log_line);
+        }
+
+        let status = cmd.wait().expect("Failed to wait on yt-dlp");
+
+        if status.success() {
+            success = true;
+            break;
+        } else if !settings.network_retry || !is_network_error || retry_count >= max_retries {
+            // Don't retry if: retries disabled, not a network error, or max retries reached
             break;
         }
 
-        // Filter and log relevant output lines
-        let log_line = if line.contains("ERROR") {
-            format!("Error: {}", line)
-        } else if line.contains("Destination") || line.contains("[download]") {
-            line
-        } else {
-            continue;
-        };
-
-        state.add_log(log_line);
+        retry_count += 1;
+        std::thread::sleep(std::time::Duration::from_secs(2)); // Add a delay between retries
     }
-
-    let status = cmd.wait().expect("Failed to wait on yt-dlp");
 
     state.send(StateMessage::RemoveActiveDownload(url.clone()));
 
-    if status.success() {
+    if success {
         let _ = remove_link_from_file(&url);
 
         state.send(StateMessage::IncrementCompleted);
 
         state.add_log(format!("Completed: {}", url));
+    } else if retry_count > 0 {
+        state.add_log(format!("Failed after {} retries: {}", retry_count, url));
     } else {
         state.add_log(format!("Failed: {}", url));
     }

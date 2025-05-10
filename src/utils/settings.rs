@@ -21,8 +21,6 @@ pub enum FormatPreset {
     SD480p,
     /// 360p resolution
     SD360p,
-    /// Custom settings using specific format string
-    Custom(String),
 }
 
 impl Default for FormatPreset {
@@ -49,7 +47,6 @@ impl FormatPreset {
             FormatPreset::SD360p => {
                 "bestvideo[height<=360]+bestaudio/best[height<=360]".to_string()
             }
-            FormatPreset::Custom(fmt) => fmt.clone(),
         }
     }
 }
@@ -103,6 +100,8 @@ pub struct Settings {
     pub write_thumbnail: bool,
     /// Add metadata to file if available
     pub add_metadata: bool,
+    /// Automatically retry failed downloads due to network issues
+    pub network_retry: bool,
 }
 
 impl Default for Settings {
@@ -114,6 +113,7 @@ impl Default for Settings {
             concurrent_downloads: 4,
             write_thumbnail: false,
             add_metadata: false,
+            network_retry: false,
         }
     }
 }
