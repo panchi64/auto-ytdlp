@@ -197,9 +197,10 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         state.add_log(format!("Failed: {}", url));
     }
 
-    if state.get_queue().is_empty() && state.get_active_downloads().is_empty() {
-        if !state.is_force_quit() {
-            state.send(StateMessage::SetCompleted(true));
-        }
+    if state.get_queue().is_empty()
+        && state.get_active_downloads().is_empty()
+        && !state.is_force_quit()
+    {
+        state.send(StateMessage::SetCompleted(true));
     }
 }
