@@ -31,7 +31,7 @@ impl SettingsMenu {
 
         Self {
             list_state,
-            settings: state.get_settings(),
+            settings: state.get_settings().unwrap_or_default(),
             visible: false,
             editing: false,
             option_index: 0,
@@ -268,7 +268,7 @@ impl SettingsMenu {
                 self.editing = false;
 
                 // Immediately save the updated settings
-                state.update_settings(self.settings.clone());
+                let _ = state.update_settings(self.settings.clone());
                 true
             }
             KeyCode::Backspace => {
@@ -411,7 +411,7 @@ impl SettingsMenu {
         self.option_index = 0;
 
         // Automatically save settings
-        state.update_settings(self.settings.clone());
+        let _ = state.update_settings(self.settings.clone());
     }
 
     /// Renders the settings menu in a popup

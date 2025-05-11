@@ -2,6 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
+use crate::errors::{AppError, Result};
 use crate::utils::settings::Settings;
 
 #[derive(Default)]
@@ -32,6 +33,11 @@ struct AppFlags {
 ///
 /// This enum defines all possible state changes that can be applied to the
 /// application state through the message passing system.
+///
+/// Note: Some variants may appear unused in the current implementation
+/// but are retained for future extensibility. For example, the `UpdateSettings`
+/// variant is referenced in the error handler of the message processor but
+/// may not be directly constructed elsewhere in the codebase.
 pub enum StateMessage {
     /// Adds a URL to the download queue.
     AddToQueue(String),
@@ -67,6 +73,7 @@ pub enum StateMessage {
     LoadLinks(Vec<String>),
 
     /// Updates the application settings.
+    #[allow(dead_code)]
     UpdateSettings(Settings),
 }
 
@@ -137,324 +144,306 @@ impl AppState {
     // Process incoming state update messages
     fn process_messages(&self) {
         loop {
-            let rx = self.rx.lock().unwrap();
+            let rx = match self.rx.lock() {
+                Ok(rx) => rx,
+                Err(err) => {
+                    eprintln!("Error locking rx: {}", err);
+                    continue;
+                }
+            };
+
             if let Ok(message) = rx.recv() {
                 drop(rx); // Release lock before processing
 
                 match message {
                     StateMessage::AddToQueue(url) => {
-                        let mut queues = self.queues.lock().unwrap();
-                        queues.queue.push_back(url);
-
-                        // Update stats
-                        let mut stats = self.stats.lock().unwrap();
-                        stats.total_tasks += 1;
-                        stats.initial_total_tasks += 1;
+                        if let Err(err) = self.handle_add_to_queue(url) {
+                            eprintln!("Error adding to queue: {}", err);
+                        }
                     }
                     StateMessage::AddActiveDownload(url) => {
-                        let mut queues = self.queues.lock().unwrap();
-                        queues.active_downloads.insert(url);
+                        if let Err(err) = self.handle_add_active_download(url) {
+                            eprintln!("Error adding active download: {}", err);
+                        }
                     }
                     StateMessage::RemoveActiveDownload(url) => {
-                        let mut queues = self.queues.lock().unwrap();
-                        queues.active_downloads.remove(&url);
+                        if let Err(err) = self.handle_remove_active_download(url) {
+                            eprintln!("Error removing active download: {}", err);
+                        }
                     }
                     StateMessage::IncrementCompleted => {
-                        let mut stats = self.stats.lock().unwrap();
-                        stats.completed_tasks += 1;
-                        // Auto-update progress
-                        self.tx.send(StateMessage::UpdateProgress).unwrap();
+                        if let Err(err) = self.handle_increment_completed() {
+                            eprintln!("Error incrementing completed: {}", err);
+                        }
                     }
                     StateMessage::UpdateProgress => {
-                        self.update_progress();
+                        if let Err(err) = self.update_progress() {
+                            eprintln!("Error updating progress: {}", err);
+                        }
                     }
                     StateMessage::SetPaused(value) => {
-                        let mut flags = self.flags.lock().unwrap();
-                        flags.paused = value;
+                        if let Err(err) = self.handle_set_paused(value) {
+                            eprintln!("Error setting paused: {}", err);
+                        }
                     }
                     StateMessage::SetStarted(value) => {
-                        let mut flags = self.flags.lock().unwrap();
-                        flags.started = value;
+                        if let Err(err) = self.handle_set_started(value) {
+                            eprintln!("Error setting started: {}", err);
+                        }
                     }
                     StateMessage::SetShutdown(value) => {
-                        let mut flags = self.flags.lock().unwrap();
-                        flags.shutdown = value;
+                        if let Err(err) = self.handle_set_shutdown(value) {
+                            eprintln!("Error setting shutdown: {}", err);
+                        }
                     }
                     StateMessage::SetForceQuit(value) => {
-                        let mut flags = self.flags.lock().unwrap();
-                        flags.force_quit = value;
+                        if let Err(err) = self.handle_set_force_quit(value) {
+                            eprintln!("Error setting force quit: {}", err);
+                        }
                     }
                     StateMessage::SetCompleted(value) => {
-                        let mut flags = self.flags.lock().unwrap();
-                        flags.completed = value;
+                        if let Err(err) = self.handle_set_completed(value) {
+                            eprintln!("Error setting completed: {}", err);
+                        }
                     }
                     StateMessage::LoadLinks(links) => {
-                        let mut queues = self.queues.lock().unwrap();
-                        queues.queue = VecDeque::from(links);
-
-                        let queue_len = queues.queue.len();
-                        drop(queues);
-
-                        let mut stats = self.stats.lock().unwrap();
-                        stats.total_tasks = queue_len;
-                        stats.initial_total_tasks = queue_len;
+                        if let Err(err) = self.handle_load_links(links) {
+                            eprintln!("Error loading links: {}", err);
+                        }
                     }
-                    StateMessage::UpdateSettings(new_settings) => {
-                        // Update settings in memory
-                        let mut settings = self.settings.lock().unwrap();
-                        *settings = new_settings.clone();
-                        drop(settings);
-
-                        // Update concurrent downloads
-                        let mut concurrent = self.concurrent.lock().unwrap();
-                        *concurrent = new_settings.concurrent_downloads;
-
-                        // Save settings to disk
-                        if let Err(err) = new_settings.save() {
-                            self.add_log(format!("Error saving settings: {}", err));
-                        } else {
-                            self.add_log("Settings saved successfully".to_string());
+                    StateMessage::UpdateSettings(settings) => {
+                        if let Err(err) = self.update_settings(settings) {
+                            eprintln!("Error updating settings: {}", err);
                         }
                     }
                 }
-            } else {
-                // Channel closed
-                break;
             }
         }
     }
 
-    /// Sends a state update message to the background message processing thread.
-    ///
-    /// This is the primary method for modifying the application state in a
-    /// thread-safe manner.
-    ///
-    /// # Parameters
-    ///
-    /// * `message` - The `StateMessage` indicating what state should be updated
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// state.send(StateMessage::SetPaused(true));
-    /// ```
-    pub fn send(&self, message: StateMessage) {
-        self.tx.send(message).unwrap_or_else(|_| {
-            // Handle send error (channel closed)
-            self.add_log("Error: State channel closed".to_string());
-        });
+    // Helper methods for handling individual state messages
+    fn handle_add_to_queue(&self, url: String) -> Result<()> {
+        let mut queues = self.queues.lock()?;
+        queues.queue.push_back(url);
+
+        // Update stats
+        let mut stats = self.stats.lock()?;
+        stats.total_tasks += 1;
+        stats.initial_total_tasks += 1;
+        Ok(())
     }
 
-    /// Adds a log message to the application logs.
-    ///
-    /// # Parameters
-    ///
-    /// * `message` - The log message to add
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// state.add_log("Download started".to_string());
-    /// ```
-    pub fn add_log(&self, message: String) {
-        let mut logs = self.logs.lock().unwrap();
+    fn handle_add_active_download(&self, url: String) -> Result<()> {
+        let mut queues = self.queues.lock()?;
+        queues.active_downloads.insert(url);
+        Ok(())
+    }
+
+    fn handle_remove_active_download(&self, url: String) -> Result<()> {
+        let mut queues = self.queues.lock()?;
+        queues.active_downloads.remove(&url);
+        Ok(())
+    }
+
+    fn handle_increment_completed(&self) -> Result<()> {
+        let mut stats = self.stats.lock()?;
+        stats.completed_tasks += 1;
+        // Auto-update progress
+        self.tx
+            .send(StateMessage::UpdateProgress)
+            .map_err(|e| AppError::Channel(e.to_string()))?;
+        Ok(())
+    }
+
+    fn handle_set_paused(&self, value: bool) -> Result<()> {
+        let mut flags = self.flags.lock()?;
+        flags.paused = value;
+        Ok(())
+    }
+
+    fn handle_set_started(&self, value: bool) -> Result<()> {
+        let mut flags = self.flags.lock()?;
+        flags.started = value;
+        Ok(())
+    }
+
+    fn handle_set_shutdown(&self, value: bool) -> Result<()> {
+        let mut flags = self.flags.lock()?;
+        flags.shutdown = value;
+        Ok(())
+    }
+
+    fn handle_set_force_quit(&self, value: bool) -> Result<()> {
+        let mut flags = self.flags.lock()?;
+        flags.force_quit = value;
+        Ok(())
+    }
+
+    fn handle_set_completed(&self, value: bool) -> Result<()> {
+        let mut flags = self.flags.lock()?;
+        flags.completed = value;
+        Ok(())
+    }
+
+    fn handle_load_links(&self, links: Vec<String>) -> Result<()> {
+        let mut queues = self.queues.lock()?;
+        queues.queue = VecDeque::from(links);
+
+        let queue_len = queues.queue.len();
+        drop(queues);
+
+        let mut stats = self.stats.lock()?;
+        stats.total_tasks = queue_len;
+        stats.initial_total_tasks = queue_len;
+        Ok(())
+    }
+
+    // Public API methods
+    pub fn send(&self, message: StateMessage) -> Result<()> {
+        self.tx
+            .send(message)
+            .map_err(|e| AppError::Channel(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn add_log(&self, message: String) -> Result<()> {
+        let mut logs = self.logs.lock()?;
         logs.push(message);
-    }
-
-    /// Retrieves all log messages as a vector of strings.
-    ///
-    /// # Returns
-    ///
-    /// A clone of the current log messages.
-    pub fn get_logs(&self) -> Vec<String> {
-        self.logs.lock().unwrap().clone()
-    }
-
-    /// Updates the download progress based on completed and total tasks.
-    ///
-    /// Calculates the percentage of completed downloads and updates the
-    /// `completed` flag if all downloads are finished.
-    pub fn update_progress(&self) {
-        let mut stats = self.stats.lock().unwrap();
-        if stats.total_tasks > 0 {
-            let progress = (stats.completed_tasks as f64 / stats.total_tasks as f64) * 100.0;
-            stats.progress = progress.clamp(0.0, 100.0);
-
-            let is_complete = stats.total_tasks > 0 && stats.completed_tasks == stats.total_tasks;
-            drop(stats);
-
-            let mut flags = self.flags.lock().unwrap();
-            flags.completed = is_complete;
+        // Keep only the latest 1000 log messages
+        if logs.len() > 1000 {
+            logs.remove(0);
         }
+        Ok(())
     }
 
-    /// Removes and returns the next URL from the download queue.
-    ///
-    /// # Returns
-    ///
-    /// `Some(String)` containing the next URL to download, or `None` if the queue is empty.
-    pub fn pop_queue(&self) -> Option<String> {
-        self.queues.lock().unwrap().queue.pop_front()
+    pub fn get_logs(&self) -> Result<Vec<String>> {
+        let logs = self.logs.lock()?;
+        Ok(logs.clone())
     }
 
-    /// Returns a copy of the current download queue.
-    ///
-    /// # Returns
-    ///
-    /// A clone of the current download queue.
-    pub fn get_queue(&self) -> VecDeque<String> {
-        self.queues.lock().unwrap().queue.clone()
+    pub fn update_progress(&self) -> Result<()> {
+        let mut stats = self.stats.lock()?;
+        if stats.initial_total_tasks > 0 {
+            stats.progress = stats.completed_tasks as f64 / stats.initial_total_tasks as f64;
+        } else {
+            stats.progress = 0.0;
+        }
+
+        // Check completion
+        let flags = self.flags.lock()?;
+        let is_completed = stats.completed_tasks == stats.initial_total_tasks
+            && stats.initial_total_tasks > 0
+            && flags.started
+            && !flags.completed;
+        drop(flags);
+
+        if is_completed {
+            self.send(StateMessage::SetCompleted(true))?;
+        }
+
+        Ok(())
     }
 
-    /// Returns a copy of the active downloads set.
-    ///
-    /// # Returns
-    ///
-    /// A clone of the set of URLs currently being downloaded.
-    pub fn get_active_downloads(&self) -> HashSet<String> {
-        self.queues.lock().unwrap().active_downloads.clone()
+    pub fn pop_queue(&self) -> Result<Option<String>> {
+        let mut queues = self.queues.lock()?;
+        Ok(queues.queue.pop_front())
     }
 
-    // Getter methods (mainly to abstract away the Mutex complexity)
-
-    /// Checks if the application is in paused state.
-    ///
-    /// # Returns
-    ///
-    /// `true` if downloads are paused, `false` otherwise.
-    pub fn is_paused(&self) -> bool {
-        self.flags.lock().unwrap().paused
+    pub fn get_queue(&self) -> Result<VecDeque<String>> {
+        let queues = self.queues.lock()?;
+        Ok(queues.queue.clone())
     }
 
-    /// Checks if downloads have been started.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the download process has been started, `false` otherwise.
-    pub fn is_started(&self) -> bool {
-        self.flags.lock().unwrap().started
+    pub fn get_active_downloads(&self) -> Result<HashSet<String>> {
+        let queues = self.queues.lock()?;
+        Ok(queues.active_downloads.clone())
     }
 
-    /// Checks if all downloads are completed.
-    ///
-    /// # Returns
-    ///
-    /// `true` if all downloads are completed, `false` otherwise.
-    pub fn is_completed(&self) -> bool {
-        self.flags.lock().unwrap().completed
+    pub fn is_paused(&self) -> Result<bool> {
+        let flags = self.flags.lock()?;
+        Ok(flags.paused)
     }
 
-    /// Checks if the application is shutting down.
-    ///
-    /// # Returns
-    ///
-    /// `true` if a shutdown has been requested, `false` otherwise.
-    pub fn is_shutdown(&self) -> bool {
-        self.flags.lock().unwrap().shutdown
+    pub fn is_started(&self) -> Result<bool> {
+        let flags = self.flags.lock()?;
+        Ok(flags.started)
     }
 
-    /// Checks if a force quit has been requested.
-    ///
-    /// # Returns
-    ///
-    /// `true` if a force quit has been requested, `false` otherwise.
-    pub fn is_force_quit(&self) -> bool {
-        self.flags.lock().unwrap().force_quit
+    pub fn is_completed(&self) -> Result<bool> {
+        let flags = self.flags.lock()?;
+        Ok(flags.completed)
     }
 
-    /// Gets the current download progress as a percentage.
-    ///
-    /// # Returns
-    ///
-    /// A percentage value between 0.0 and 100.0 indicating download progress.
-    pub fn get_progress(&self) -> f64 {
-        self.stats.lock().unwrap().progress
+    pub fn is_shutdown(&self) -> Result<bool> {
+        let flags = self.flags.lock()?;
+        Ok(flags.shutdown)
     }
 
-    /// Gets the number of completed download tasks.
-    ///
-    /// # Returns
-    ///
-    /// The count of completed download tasks.
-    pub fn get_completed_tasks(&self) -> usize {
-        self.stats.lock().unwrap().completed_tasks
+    pub fn is_force_quit(&self) -> Result<bool> {
+        let flags = self.flags.lock()?;
+        Ok(flags.force_quit)
     }
 
-    /// Gets the total number of download tasks.
-    ///
-    /// # Returns
-    ///
-    /// The total count of download tasks.
-    pub fn get_total_tasks(&self) -> usize {
-        self.stats.lock().unwrap().total_tasks
+    pub fn get_progress(&self) -> Result<f64> {
+        let stats = self.stats.lock()?;
+        Ok(stats.progress)
     }
 
-    /// Gets the initial total number of tasks from when downloads began.
-    ///
-    /// # Returns
-    ///
-    /// The initial count of download tasks.
-    pub fn get_initial_total_tasks(&self) -> usize {
-        self.stats.lock().unwrap().initial_total_tasks
+    pub fn get_completed_tasks(&self) -> Result<usize> {
+        let stats = self.stats.lock()?;
+        Ok(stats.completed_tasks)
     }
 
-    /// Gets the maximum number of concurrent downloads.
-    ///
-    /// # Returns
-    ///
-    /// The current limit on concurrent downloads.
-    pub fn get_concurrent(&self) -> usize {
-        *self.concurrent.lock().unwrap()
+    pub fn get_total_tasks(&self) -> Result<usize> {
+        let stats = self.stats.lock()?;
+        Ok(stats.total_tasks)
     }
 
-    /// Sets the maximum number of concurrent downloads.
-    ///
-    /// # Parameters
-    ///
-    /// * `value` - The maximum number of concurrent downloads to allow.
-    pub fn set_concurrent(&self, value: usize) {
-        *self.concurrent.lock().unwrap() = value;
+    pub fn get_initial_total_tasks(&self) -> Result<usize> {
+        let stats = self.stats.lock()?;
+        Ok(stats.initial_total_tasks)
     }
 
-    /// Resets the application state for a new download run.
-    ///
-    /// Resets progress, flags, and counters while preserving the download queue.
-    pub fn reset_for_new_run(&self) {
-        let mut flags = self.flags.lock().unwrap();
-        flags.shutdown = false;
+    pub fn get_concurrent(&self) -> Result<usize> {
+        let concurrent = self.concurrent.lock()?;
+        Ok(*concurrent)
+    }
+
+    pub fn set_concurrent(&self, value: usize) -> Result<()> {
+        let mut concurrent = self.concurrent.lock()?;
+        *concurrent = value;
+        Ok(())
+    }
+
+    pub fn reset_for_new_run(&self) -> Result<()> {
+        let mut flags = self.flags.lock()?;
         flags.paused = false;
-        flags.started = true;
+        flags.started = false;
         flags.completed = false;
         flags.notification_sent = false;
         drop(flags);
 
-        let mut stats = self.stats.lock().unwrap();
-        stats.progress = 0.0;
+        let mut stats = self.stats.lock()?;
         stats.completed_tasks = 0;
-        drop(stats);
-
-        // Queue length stays the same
+        stats.progress = 0.0;
+        Ok(())
     }
 
-    /// Clears all logs except for welcome messages.
-    ///
-    /// This function resets the log history but keeps the welcome messages
-    /// to ensure the user always has basic instructions visible.
-    pub fn clear_logs(&self) {
-        let mut logs = self.logs.lock().unwrap();
+    pub fn clear_logs(&self) -> Result<()> {
+        let mut logs = self.logs.lock()?;
         logs.clear();
-        logs.shrink_to_fit(); // Proactively release unused capacity
-        logs.push("Welcome! Press 'S' to start downloads".to_string());
-        logs.push("Press 'Q' to quit, 'Shift+Q' to force quit".to_string());
+        logs.push("Logs cleared".to_string());
+        Ok(())
     }
 
-    /// Get the current settings
-    pub fn get_settings(&self) -> Settings {
-        self.settings.lock().unwrap().clone()
+    pub fn get_settings(&self) -> Result<Settings> {
+        let settings = self.settings.lock()?;
+        Ok(settings.clone())
     }
 
-    /// Update the settings
-    pub fn update_settings(&self, new_settings: Settings) {
-        self.send(StateMessage::UpdateSettings(new_settings));
+    pub fn update_settings(&self, new_settings: Settings) -> Result<()> {
+        let mut settings = self.settings.lock()?;
+        *settings = new_settings;
+        Ok(())
     }
 }

@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clipboard::{ClipboardContext, ClipboardProvider};
+use clipboard::ClipboardProvider;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -24,6 +24,7 @@ use crate::{
     app_state::{AppState, StateMessage},
     args::Args,
     downloader::{common::validate_dependencies, queue::process_queue},
+    errors::AppError,
     ui::settings_menu::SettingsMenu,
     utils::file::{add_clipboard_links, get_links_from_file, sanitize_links_file},
 };
@@ -48,17 +49,17 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu)
     if settings_menu.is_visible() {
         settings_menu.render(frame, frame.area());
     } else {
-        let progress = state.get_progress();
-        let queue = state.get_queue();
-        let active_downloads = state.get_active_downloads();
-        let started = state.is_started();
-        let logs = state.get_logs();
-        let initial_total = state.get_initial_total_tasks();
-        let concurrent = state.get_concurrent();
-        let is_paused = state.is_paused();
-        let is_completed = state.is_completed();
-        let completed_tasks = state.get_completed_tasks();
-        let total_tasks = state.get_total_tasks();
+        let progress = state.get_progress().unwrap_or(0.0);
+        let queue = state.get_queue().unwrap_or_default();
+        let active_downloads = state.get_active_downloads().unwrap_or_default();
+        let started = state.is_started().unwrap_or(false);
+        let logs = state.get_logs().unwrap_or_default();
+        let initial_total = state.get_initial_total_tasks().unwrap_or(0);
+        let concurrent = state.get_concurrent().unwrap_or(1);
+        let is_paused = state.is_paused().unwrap_or(false);
+        let is_completed = state.is_completed().unwrap_or(false);
+        let completed_tasks = state.get_completed_tasks().unwrap_or(0);
+        let total_tasks = state.get_total_tasks().unwrap_or(0);
 
         let main_layout = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
@@ -240,25 +241,55 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
 
     // Check dependencies before starting
     if let Err(error) = validate_dependencies() {
-        state.add_log(format!("Error: {}", error));
+        if let Err(e) = state.add_log(format!("Error: {}", error)) {
+            eprintln!("Error adding log: {}", e);
+        }
 
         if error.to_string().contains("yt-dlp") {
-            state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
+            if let Err(e) = state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string()) {
+                eprintln!("Error adding log: {}", e);
+            }
         }
         if error.to_string().contains("ffmpeg") {
-            state.add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
+            if let Err(e) = state
+                .add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string())
+            {
+                eprintln!("Error adding log: {}", e);
+            }
         }
     }
 
     // Sanitize links file and load valid links
-    let removed = sanitize_links_file();
-    if removed > 0 {
-        state.add_log(format!("Removed {} invalid URLs from links.txt", removed));
+    match sanitize_links_file() {
+        Ok(removed) => {
+            if removed > 0 {
+                if let Err(e) =
+                    state.add_log(format!("Removed {} invalid URLs from links.txt", removed))
+                {
+                    eprintln!("Error adding log: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            if let Err(log_err) = state.add_log(format!("Error sanitizing links file: {}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+        }
     }
 
     // Load any existing links
-    let links = get_links_from_file();
-    state.send(StateMessage::LoadLinks(links));
+    match get_links_from_file() {
+        Ok(links) => {
+            if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
+                eprintln!("Error sending links: {}", e);
+            }
+        }
+        Err(e) => {
+            if let Err(log_err) = state.add_log(format!("Error loading links: {}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+        }
+    }
 
     // Create settings menu
     let mut settings_menu = SettingsMenu::new(&state);
@@ -293,141 +324,282 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                 match key.code {
                     // Uppercase 'Q' (typically from Shift+q or CapsLock+Q) for Force Quit
                     KeyCode::Char('Q') => {
-                        state.send(StateMessage::SetForceQuit(true));
-                        state.send(StateMessage::SetShutdown(true));
-                        state.add_log(
+                        if let Err(e) = state.send(StateMessage::SetForceQuit(true)) {
+                            eprintln!("Error setting force quit: {}", e);
+                        }
+                        if let Err(e) = state.send(StateMessage::SetShutdown(true)) {
+                            eprintln!("Error setting shutdown: {}", e);
+                        }
+                        if let Err(e) = state.add_log(
                             "TUI: Force quit (Shift+Q or Q with CapsLock) initiated. Exiting TUI immediately.".to_string(),
-                        );
+                        ) {
+                            eprintln!("Error adding log: {}", e);
+                        }
                         // await_downloads_on_exit remains false (its default for force quit)
                         break;
                     }
                     // Lowercase 'q' for Graceful Quit
                     KeyCode::Char('q') => {
-                        state.send(StateMessage::SetShutdown(true));
-                        // Ensure force_quit is false for a graceful quit.
-                        // AppState's reset_for_new_run typically handles this, but an explicit SetForceQuit(false) could be added if necessary.
-                        // For now, we rely on SetForceQuit(true) only being sent on actual force quit request.
-                        state.add_log(
+                        if let Err(e) = state.send(StateMessage::SetShutdown(true)) {
+                            eprintln!("Error setting shutdown: {}", e);
+                        }
+                        if let Err(e) = state.add_log(
                             "TUI: Graceful shutdown (q) initiated. Will wait for downloads to complete.".to_string(),
-                        );
+                        ) {
+                            eprintln!("Error adding log: {}", e);
+                        }
                         await_downloads_on_exit = true;
                         break;
                     }
                     KeyCode::Char('s') => {
-                        if !state.is_started() {
-                            // Start downloads
-                            match validate_dependencies() {
-                                Ok(()) => {
-                                    state.reset_for_new_run();
-                                    // Ensure await_downloads_on_exit is reset if we start a new session
-                                    // after a previous graceful quit request that didn't exit the app.
-                                    // (though current logic breaks loop on Q)
-                                    await_downloads_on_exit = false;
+                        if let Ok(is_started) = state.is_started() {
+                            if !is_started {
+                                // Start downloads
+                                match validate_dependencies() {
+                                    Ok(()) => {
+                                        if let Err(e) = state.reset_for_new_run() {
+                                            eprintln!("Error resetting state: {}", e);
+                                        }
+                                        // Ensure await_downloads_on_exit is reset if we start a new session
+                                        // after a previous graceful quit request that didn't exit the app.
+                                        // (though current logic breaks loop on Q)
+                                        await_downloads_on_exit = false;
 
-                                    let state_clone = state.clone();
-                                    let args_clone = args.clone();
-                                    // --- Modified to store handle ---
-                                    download_thread_handle = Some(thread::spawn(move || {
-                                        process_queue(state_clone, args_clone)
-                                    }));
-                                    // --- End of modification ---
-                                }
-                                Err(error) => {
-                                    state.add_log(format!("Error: {}", error));
-
-                                    if error.to_string().contains("yt-dlp") {
-                                        state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string());
+                                        let state_clone = state.clone();
+                                        let args_clone = args.clone();
+                                        // --- Modified to store handle ---
+                                        download_thread_handle = Some(thread::spawn(move || {
+                                            process_queue(state_clone, args_clone)
+                                        }));
+                                        // --- End of modification ---
                                     }
-                                    if error.to_string().contains("ffmpeg") {
-                                        state.add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string());
+                                    Err(error) => {
+                                        if let Err(e) = state.add_log(format!("Error: {}", error)) {
+                                            eprintln!("Error adding log: {}", e);
+                                        }
+
+                                        if error.to_string().contains("yt-dlp") {
+                                            if let Err(e) = state.add_log(
+                                                "Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string()
+                                            ) {
+                                                eprintln!("Error adding log: {}", e);
+                                            }
+                                        }
+                                        if error.to_string().contains("ffmpeg") {
+                                            if let Err(e) = state.add_log(
+                                                "Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string()
+                                            ) {
+                                                eprintln!("Error adding log: {}", e);
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        } else {
-                            // Stop downloads
-                            state.send(StateMessage::SetShutdown(true));
-                            state.send(StateMessage::SetStarted(false));
-                            state.send(StateMessage::SetPaused(false));
-                            state.add_log("TUI: Stop command issued. Waiting for current downloads to complete gracefully.".to_string());
-                            // --- Added to make 'Stop' also wait gracefully ---
-                            // This will make the 'S' (Stop) command also block the TUI until downloads finish.
-                            // If this is not desired, remove this block for 'S' (Stop).
-                            if let Some(handle) = download_thread_handle.take() {
-                                // .take() so it's not joined again on exit
-                                terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Show "waiting" log
-                                eprintln!(
-                                    "Stopping downloads: Waiting for active downloads to complete..."
-                                );
-                                if let Err(e) = handle.join() {
-                                    let err_msg =
-                                        format!("Error joining download thread on stop: {:?}", e);
-                                    state.add_log(err_msg.clone());
-                                    eprintln!("{}", err_msg);
-                                } else {
-                                    state.add_log("Downloads stopped gracefully.".to_string());
-                                    eprintln!("Downloads stopped gracefully.");
+                            } else {
+                                // Stop downloads
+                                if let Err(e) = state.send(StateMessage::SetShutdown(true)) {
+                                    eprintln!("Error setting shutdown: {}", e);
                                 }
-                                terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Redraw after join
-                            }
-                            // --- End of addition for 'Stop' ---
+                                if let Err(e) = state.send(StateMessage::SetStarted(false)) {
+                                    eprintln!("Error setting started: {}", e);
+                                }
+                                if let Err(e) = state.send(StateMessage::SetPaused(false)) {
+                                    eprintln!("Error setting paused: {}", e);
+                                }
+                                if let Err(e) = state.add_log(
+                                    "TUI: Stop command issued. Waiting for current downloads to complete gracefully.".to_string()
+                                ) {
+                                    eprintln!("Error adding log: {}", e);
+                                }
+                                // --- Added to make 'Stop' also wait gracefully ---
+                                // This will make the 'S' (Stop) command also block the TUI until downloads finish.
+                                // If this is not desired, remove this block for 'S' (Stop).
+                                if let Some(handle) = download_thread_handle.take() {
+                                    // .take() so it's not joined again on exit
+                                    terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Show "waiting" log
+                                    eprintln!(
+                                        "Stopping downloads: Waiting for active downloads to complete..."
+                                    );
+                                    if let Err(e) = handle.join() {
+                                        let err_msg = format!(
+                                            "Error joining download thread on stop: {:?}",
+                                            e
+                                        );
+                                        if let Err(log_err) = state.add_log(err_msg.clone()) {
+                                            eprintln!("Error adding log: {}", log_err);
+                                        }
+                                        eprintln!("{}", err_msg);
+                                    } else {
+                                        if let Err(e) = state
+                                            .add_log("Downloads stopped gracefully.".to_string())
+                                        {
+                                            eprintln!("Error adding log: {}", e);
+                                        }
+                                        eprintln!("Downloads stopped gracefully.");
+                                    }
+                                    terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Redraw after join
+                                }
+                                // --- End of addition for 'Stop' ---
 
-                            // Clear logs after a short delay when manually stopping downloads
-                            let state_clone = state.clone();
-                            thread::spawn(move || {
-                                thread::sleep(Duration::from_secs(2));
-                                state_clone.clear_logs();
-                            });
+                                // Clear logs after a short delay when manually stopping downloads
+                                let state_clone = state.clone();
+                                thread::spawn(move || {
+                                    thread::sleep(Duration::from_secs(2));
+                                    if let Err(e) = state_clone.clear_logs() {
+                                        eprintln!("Error clearing logs: {}", e);
+                                    }
+                                });
+                            }
                         }
                     }
                     KeyCode::Char('p') => {
-                        if state.is_started() {
-                            state.send(StateMessage::SetPaused(!state.is_paused()));
-                            last_tick = Instant::now() - tick_rate;
+                        if let Ok(is_started) = state.is_started() {
+                            if is_started {
+                                // Get current paused state and toggle it
+                                let current_paused = state.is_paused().unwrap_or(false);
+                                if let Err(e) = state.send(StateMessage::SetPaused(!current_paused))
+                                {
+                                    eprintln!("Error setting paused: {}", e);
+                                }
+                                last_tick = Instant::now() - tick_rate;
+                            }
                         }
                     }
                     KeyCode::Char('r') => {
-                        if !state.is_started() || state.is_paused() || state.is_completed() {
+                        let is_started = state.is_started().unwrap_or(false);
+                        let is_paused = state.is_paused().unwrap_or(false);
+                        let is_completed = state.is_completed().unwrap_or(false);
+
+                        if !is_started || is_paused || is_completed {
                             // Keep 'R' for restarting when completed
-                            state.reset_for_new_run();
+                            if let Err(e) = state.reset_for_new_run() {
+                                eprintln!("Error resetting state: {}", e);
+                            }
 
                             // Refresh links in the app state
-                            let links = get_links_from_file();
-                            state.send(StateMessage::LoadLinks(links));
+                            match get_links_from_file() {
+                                Ok(links) => {
+                                    if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
+                                        eprintln!("Error sending links: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Error loading links: {}", e);
+                                }
+                            }
 
-                            state.add_log("Links refreshed from file".to_string());
+                            if let Err(e) = state.add_log("Links refreshed from file".to_string()) {
+                                eprintln!("Error adding log: {}", e);
+                            }
                             last_tick = Instant::now() - tick_rate;
                         }
                     }
                     KeyCode::Char('f') => {
                         // First sanitize the links file
-                        let removed = sanitize_links_file();
-                        if removed > 0 {
-                            state.add_log(format!(
-                                "Removed {} invalid URLs from links.txt",
-                                removed
-                            ));
+                        match sanitize_links_file() {
+                            Ok(removed) => {
+                                if removed > 0 {
+                                    if let Err(e) = state.add_log(format!(
+                                        "Removed {} invalid URLs from links.txt",
+                                        removed
+                                    )) {
+                                        eprintln!("Error adding log: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if let Err(log_err) =
+                                    state.add_log(format!("Error sanitizing links file: {}", e))
+                                {
+                                    eprintln!("Error adding log: {}", log_err);
+                                }
+                            }
                         }
 
                         // Then load links from the file
-                        let links = get_links_from_file();
-                        state.send(StateMessage::LoadLinks(links));
-                        state.add_log("Links loaded from file".to_string());
+                        match get_links_from_file() {
+                            Ok(links) => {
+                                if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
+                                    eprintln!("Error sending links: {}", e);
+                                }
+                                if let Err(e) = state.add_log("Links loaded from file".to_string())
+                                {
+                                    eprintln!("Error adding log: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                if let Err(log_err) =
+                                    state.add_log(format!("Error loading links: {}", e))
+                                {
+                                    eprintln!("Error adding log: {}", log_err);
+                                }
+                            }
+                        }
                         last_tick = Instant::now() - tick_rate;
                     }
                     KeyCode::Char('a') => {
                         // Only allow adding links when not actively downloading
-                        if !state.is_started() || state.is_paused() || state.is_completed() {
-                            let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-                            if let Ok(contents) = ctx.get_contents() {
-                                let links_added = add_clipboard_links(&state, &contents);
+                        if !state.is_started().unwrap_or(false)
+                            || state.is_paused().unwrap_or(false)
+                            || state.is_completed().unwrap_or(false)
+                        {
+                            let ctx: Result<
+                                clipboard::ClipboardContext,
+                                Box<dyn std::error::Error>,
+                            > = ClipboardProvider::new().map_err(|e| {
+                                Box::new(AppError::Clipboard(e.to_string()))
+                                    as Box<dyn std::error::Error>
+                            });
 
-                                if links_added > 0 {
-                                    state.send(StateMessage::SetCompleted(false));
-                                    state.add_log(format!("Added {} URLs", links_added));
+                            match ctx {
+                                Ok(mut ctx) => match ctx.get_contents() {
+                                    Ok(contents) => match add_clipboard_links(&state, &contents) {
+                                        Ok(links_added) => {
+                                            if links_added > 0 {
+                                                if let Err(e) =
+                                                    state.send(StateMessage::SetCompleted(false))
+                                                {
+                                                    eprintln!(
+                                                        "Error setting completed flag: {}",
+                                                        e
+                                                    );
+                                                }
+                                                if let Err(e) = state
+                                                    .add_log(format!("Added {} URLs", links_added))
+                                                {
+                                                    eprintln!("Error adding log: {}", e);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            if let Err(log_err) = state.add_log(format!(
+                                                "Error adding clipboard links: {}",
+                                                e
+                                            )) {
+                                                eprintln!("Error adding log: {}", log_err);
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        if let Err(log_err) = state.add_log(format!(
+                                            "Error getting clipboard contents: {}",
+                                            e
+                                        )) {
+                                            eprintln!("Error adding log: {}", log_err);
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    if let Err(log_err) = state
+                                        .add_log(format!("Error initializing clipboard: {}", e))
+                                    {
+                                        eprintln!("Error adding log: {}", log_err);
+                                    }
                                 }
                             }
-                        } else {
-                            state.add_log("Cannot add links during active downloads".to_string());
+                        } else if let Err(e) =
+                            state.add_log("Cannot add links during active downloads".to_string())
+                        {
+                            eprintln!("Error adding log: {}", e);
                         }
                     }
                     KeyCode::F(2) => {
@@ -444,19 +616,23 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
             last_tick = Instant::now();
 
             // Check if we should send a notification
-            if state.is_completed() {
-                let flags = state.is_force_quit() || state.is_shutdown();
+            if let Ok(is_completed) = state.is_completed() {
+                if is_completed {
+                    let is_force_quit = state.is_force_quit().unwrap_or(false);
+                    let is_shutdown = state.is_shutdown().unwrap_or(false);
+                    let flags = is_force_quit || is_shutdown;
 
-                // Show notification when all downloads are completed
-                if !flags {
-                    let _ = Notification::new()
-                        .summary("Auto-YTDlp Downloads Completed")
-                        .body("All downloads have been completed!")
-                        .show();
-                    // If we want to ensure notification is sent only once per completion cycle,
-                    // a flag like `notification_sent` in AppState would be needed and managed.
-                    // For example: state.send(StateMessage::SetNotificationSent(true));
-                    // And AppState.notification_sent would be reset in reset_for_new_run().
+                    // Show notification when all downloads are completed
+                    if !flags {
+                        let _ = Notification::new()
+                            .summary("Auto-YTDlp Downloads Completed")
+                            .body("All downloads have been completed!")
+                            .show();
+                        // If we want to ensure notification is sent only once per completion cycle,
+                        // a flag like `notification_sent` in AppState would be needed and managed.
+                        // For example: state.send(StateMessage::SetNotificationSent(true));
+                        // And AppState.notification_sent would be reset in reset_for_new_run().
+                    }
                 }
             }
         }

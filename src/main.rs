@@ -1,14 +1,15 @@
 mod app_state;
 mod args;
 mod downloader;
+mod errors;
 mod ui;
 mod utils;
 
-use anyhow::Result;
 use app_state::{AppState, StateMessage};
 use args::Args;
 use clap::Parser;
 use downloader::{common::validate_dependencies, queue::process_queue};
+use errors::Result;
 use std::{
     fs::{self, File},
     path::Path,
@@ -19,7 +20,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let state = AppState::new();
 
-    state.set_concurrent(args.concurrent);
+    state.set_concurrent(args.concurrent)?;
 
     fs::create_dir_all(&args.download_dir)?;
 
@@ -32,7 +33,7 @@ fn main() -> Result<()> {
         .lines()
         .map(String::from)
         .collect::<Vec<_>>();
-    state.send(StateMessage::LoadLinks(links));
+    state.send(StateMessage::LoadLinks(links))?;
 
     if args.auto {
         // Check dependencies before processing in auto mode

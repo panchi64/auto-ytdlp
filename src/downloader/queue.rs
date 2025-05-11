@@ -42,12 +42,16 @@ use super::worker::download_worker;
 ///
 /// Workers will pause processing (but not exit) when the pause flag is set.
 pub fn process_queue(state: AppState, args: Args) {
-    if state.get_queue().is_empty() {
-        state.send(StateMessage::SetCompleted(true));
+    if state.get_queue().unwrap_or_default().is_empty() {
+        if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
+            eprintln!("Error setting completed: {}", e);
+        }
         return;
     }
 
-    state.reset_for_new_run();
+    if let Err(e) = state.reset_for_new_run() {
+        eprintln!("Error resetting state: {}", e);
+    }
 
     // Create a single controller thread instead of immediately creating all worker threads
     let state_clone = state.clone();
@@ -58,26 +62,31 @@ pub fn process_queue(state: AppState, args: Args) {
         let mut workers_created = false;
 
         loop {
-            if state_clone.is_force_quit() || state_clone.is_shutdown() {
+            if state_clone.is_force_quit().unwrap_or(false)
+                || state_clone.is_shutdown().unwrap_or(false)
+            {
                 // If force_quit is set, we want to exit the controller loop immediately.
                 // Worker threads also check this flag and should start terminating.
                 // The download_worker itself is modified to exit quickly on force_quit.
-                if state_clone.is_force_quit() {
-                    state_clone
-                        .add_log("Controller: Force quit detected, exiting main loop.".to_string());
+                if state_clone.is_force_quit().unwrap_or(false) {
+                    if let Err(e) = state_clone
+                        .add_log("Controller: Force quit detected, exiting main loop.".to_string())
+                    {
+                        eprintln!("Error adding log: {}", e);
+                    }
                 }
                 break;
             }
 
-            if state_clone.is_paused() {
+            if state_clone.is_paused().unwrap_or(false) {
                 thread::sleep(Duration::from_millis(100));
                 continue;
             }
 
             // Check if we need to start processing and haven't created workers yet
-            if !workers_created && !state_clone.get_queue().is_empty() {
+            if !workers_created && !state_clone.get_queue().unwrap_or_default().is_empty() {
                 // Create worker threads only when we're about to start processing
-                let concurrent_count = state_clone.get_concurrent();
+                let concurrent_count = state_clone.get_concurrent().unwrap_or(1);
                 workers_created = true;
 
                 for _ in 0..concurrent_count {
@@ -86,23 +95,28 @@ pub fn process_queue(state: AppState, args: Args) {
 
                     let handle = thread::spawn(move || {
                         loop {
-                            if worker_state.is_force_quit() || worker_state.is_shutdown() {
+                            if worker_state.is_force_quit().unwrap_or(false)
+                                || worker_state.is_shutdown().unwrap_or(false)
+                            {
                                 break;
                             }
 
-                            if worker_state.is_paused() {
+                            if worker_state.is_paused().unwrap_or(false) {
                                 thread::sleep(Duration::from_millis(100));
                                 continue;
                             }
 
                             // Get next URL from queue
-                            if let Some(url) = worker_state.pop_queue() {
+                            if let Ok(Some(url)) = worker_state.pop_queue() {
                                 download_worker(url, worker_state.clone(), worker_args.clone());
                             } else {
                                 thread::sleep(Duration::from_millis(100));
 
-                                if worker_state.get_queue().is_empty()
-                                    && worker_state.get_active_downloads().is_empty()
+                                if worker_state.get_queue().unwrap_or_default().is_empty()
+                                    && worker_state
+                                        .get_active_downloads()
+                                        .unwrap_or_default()
+                                        .is_empty()
                                 {
                                     // Only break if we're truly done and not just between tasks
                                     break;
@@ -116,8 +130,11 @@ pub fn process_queue(state: AppState, args: Args) {
 
             // Check if we're done
             if workers_created
-                && state_clone.get_queue().is_empty()
-                && state_clone.get_active_downloads().is_empty()
+                && state_clone.get_queue().unwrap_or_default().is_empty()
+                && state_clone
+                    .get_active_downloads()
+                    .unwrap_or_default()
+                    .is_empty()
             {
                 break;
             }
@@ -127,68 +144,109 @@ pub fn process_queue(state: AppState, args: Args) {
 
         // After controller loop exits (due to completion, shutdown, or force_quit)
 
-        if state_clone.is_force_quit() {
-            state_clone.add_log(
+        if state_clone.is_force_quit().unwrap_or(false) {
+            if let Err(e) = state_clone.add_log(
                 "Controller: Force quit active. Not waiting for worker threads to join."
                     .to_string(),
-            );
+            ) {
+                eprintln!("Error adding log: {}", e);
+            }
             // Worker threads are expected to terminate themselves upon detecting is_force_quit().
             // The download_worker function is also modified to not block on cmd.wait() during a force quit.
             // Thus, we don't join worker_handles here to ensure a fast exit.
         } else {
             // If not a force quit (i.e., normal completion or graceful shutdown), wait for workers.
-            state_clone.add_log("Controller: Waiting for worker threads to complete.".to_string());
+            if let Err(e) = state_clone
+                .add_log("Controller: Waiting for worker threads to complete.".to_string())
+            {
+                eprintln!("Error adding log: {}", e);
+            }
             for handle in worker_handles {
                 if let Err(e) = handle.join() {
-                    state_clone.add_log(format!("Controller: Worker thread panicked: {:?}", e));
+                    if let Err(log_err) =
+                        state_clone.add_log(format!("Controller: Worker thread panicked: {:?}", e))
+                    {
+                        eprintln!("Error adding log: {}", log_err);
+                    }
                 }
             }
-            state_clone.add_log("Controller: All worker threads completed.".to_string());
+            if let Err(e) =
+                state_clone.add_log("Controller: All worker threads completed.".to_string())
+            {
+                eprintln!("Error adding log: {}", e);
+            }
         }
 
-        let queue_empty = state_clone.get_queue().is_empty();
-        let active_downloads_empty = state_clone.get_active_downloads().is_empty();
+        let queue_empty = state_clone.get_queue().unwrap_or_default().is_empty();
+        let active_downloads_empty = state_clone
+            .get_active_downloads()
+            .unwrap_or_default()
+            .is_empty();
 
         // Update final status based on whether it was a force quit or not
-        if state_clone.is_force_quit() {
-            state_clone.add_log("Download processing forcefully stopped.".to_string());
+        if state_clone.is_force_quit().unwrap_or(false) {
+            if let Err(e) =
+                state_clone.add_log("Download processing forcefully stopped.".to_string())
+            {
+                eprintln!("Error adding log: {}", e);
+            }
             // Do not set SetCompleted(true) on force quit, even if queue became empty by chance.
             // The state should reflect an interruption.
         } else if queue_empty && active_downloads_empty {
-            state_clone.send(StateMessage::SetCompleted(true));
-            state_clone.add_log("All downloads completed or queue is empty.".to_string());
+            if let Err(e) = state_clone.send(StateMessage::SetCompleted(true)) {
+                eprintln!("Error setting completed: {}", e);
+            }
+            if let Err(e) =
+                state_clone.add_log("All downloads completed or queue is empty.".to_string())
+            {
+                eprintln!("Error adding log: {}", e);
+            }
         } else {
             // This case covers normal stop (shutdown flag) where queue might not be empty.
-            state_clone.add_log("Download processing stopped.".to_string());
+            if let Err(e) = state_clone.add_log("Download processing stopped.".to_string()) {
+                eprintln!("Error adding log: {}", e);
+            }
         }
 
-        state_clone.send(StateMessage::SetStarted(false)); // Always mark as not started
+        if let Err(e) = state_clone.send(StateMessage::SetStarted(false)) {
+            eprintln!("Error setting started: {}", e);
+        } // Always mark as not started
 
         // Clear logs after a short delay, but only if not a force quit.
         // For force quit, we want to preserve the logs detailing the forceful termination.
         let mut log_clear_handle: Option<thread::JoinHandle<()>> = None;
 
-        if !state_clone.is_force_quit() {
+        if !state_clone.is_force_quit().unwrap_or(false) {
             let final_state_clone = state_clone.clone();
             log_clear_handle = Some(thread::spawn(move || {
                 thread::sleep(Duration::from_secs(2));
                 // Check again in case state changed, though unlikely for a detached thread task like this.
-                if !final_state_clone.is_completed() && !final_state_clone.is_shutdown() {
+                if !final_state_clone.is_completed().unwrap_or(false)
+                    && !final_state_clone.is_shutdown().unwrap_or(false)
+                {
                     // If not completed and not a normal shutdown, maybe don't clear logs?
                     // For now, let's stick to original logic: clear logs if not force_quit.
                     // The original logic was to clear logs anyway after a delay.
                 }
-                final_state_clone.add_log("Clearing logs after completion/stop.".to_string()); // Log before clear
-                final_state_clone.clear_logs();
+                if let Err(e) =
+                    final_state_clone.add_log("Clearing logs after completion/stop.".to_string())
+                {
+                    eprintln!("Error adding log: {}", e);
+                } // Log before clear
+                if let Err(e) = final_state_clone.clear_logs() {
+                    eprintln!("Error clearing logs: {}", e);
+                }
             }));
         }
 
         if let Some(handle) = log_clear_handle {
             if let Err(e) = handle.join() {
-                state_clone.add_log(format!(
+                if let Err(log_err) = state_clone.add_log(format!(
                     "Log clearing thread panicked: {:?}. Logs may not be cleared.",
                     e
-                ));
+                )) {
+                    eprintln!("Error adding log: {}", log_err);
+                }
             }
         }
     });
@@ -198,8 +256,6 @@ pub fn process_queue(state: AppState, args: Args) {
     // doesn't .join() its own worker_handles.
     if let Err(e) = controller.join() {
         // Log controller panic, this might be important especially in --auto mode.
-        // Using eprintln as AppState might not be available or reliable if controller panicked badly.
-        eprintln!("FATAL: Controller thread panicked: {:?}", e);
-        // Optionally, could try to use state.add_log if it's a soft panic.
+        eprintln!("Controller thread panicked: {:?}", e);
     }
 }

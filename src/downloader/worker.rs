@@ -41,27 +41,38 @@ use super::common::build_ytdlp_command_args;
 /// This function will exit early if `force_quit` is set in the application state.
 /// It updates the progress and completed status in the app state after completion.
 pub fn download_worker(url: String, state: AppState, args: Args) {
-    if state.is_force_quit() {
+    if state.is_force_quit().unwrap_or(false) {
         return;
     }
 
-    state.send(StateMessage::AddActiveDownload(url.clone()));
-    state.add_log(format!("Starting download: {}", url));
+    if let Err(e) = state.send(StateMessage::AddActiveDownload(url.clone())) {
+        eprintln!("Error adding active download: {}", e);
+    }
 
-    let settings = state.get_settings();
+    if let Err(e) = state.add_log(format!("Starting download: {}", url)) {
+        eprintln!("Error adding log: {}", e);
+    }
+
+    let settings = state.get_settings().unwrap_or_default();
     let max_retries = if settings.network_retry { 3 } else { 0 };
     let retry_delay = settings.retry_delay;
     let mut retry_count = 0;
     let mut success = false;
 
     while retry_count <= max_retries {
-        if state.is_force_quit() {
-            state.add_log(format!("Force quit: Aborting download task for {}.", url));
+        if state.is_force_quit().unwrap_or(false) {
+            if let Err(e) =
+                state.add_log(format!("Force quit: Aborting download task for {}.", url))
+            {
+                eprintln!("Error adding log: {}", e);
+            }
             break;
         }
 
         if retry_count > 0 {
-            state.add_log(format!("Retry attempt {} for: {}", retry_count, url));
+            if let Err(e) = state.add_log(format!("Retry attempt {} for: {}", retry_count, url)) {
+                eprintln!("Error adding log: {}", e);
+            }
         }
 
         let cmd_args = build_ytdlp_command_args(&args, &url);
@@ -73,19 +84,23 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         {
             Ok(cmd) => cmd,
             Err(e) => {
-                state.add_log(format!(
+                if let Err(log_err) = state.add_log(format!(
                     "Error spawning yt-dlp for {}: {}. Aborting this URL.",
                     url, e
-                ));
+                )) {
+                    eprintln!("Error adding log: {}", log_err);
+                }
                 break;
             }
         };
 
-        if state.is_force_quit() {
-            state.add_log(format!(
+        if state.is_force_quit().unwrap_or(false) {
+            if let Err(e) = state.add_log(format!(
                 "Force quit: Killing spawned process for {} and aborting.",
                 url
-            ));
+            )) {
+                eprintln!("Error adding log: {}", e);
+            }
             let _ = cmd.kill();
             break;
         }
@@ -93,11 +108,13 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         let stdout = match cmd.stdout.take() {
             Some(stdout) => stdout,
             None => {
-                state.add_log(format!(
+                if let Err(e) = state.add_log(format!(
                     "Error: Could not take stdout for {}. Aborting this attempt.",
                     url
-                ));
-                if !state.is_force_quit() {
+                )) {
+                    eprintln!("Error adding log: {}", e);
+                }
+                if !state.is_force_quit().unwrap_or(false) {
                     let _ = cmd.kill();
                     let _ = cmd.wait();
                 }
@@ -108,11 +125,13 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         let mut is_network_error = false;
 
         for line in reader.lines().map_while(Result::ok) {
-            if state.is_force_quit() {
-                state.add_log(format!(
+            if state.is_force_quit().unwrap_or(false) {
+                if let Err(e) = state.add_log(format!(
                     "Force quit: Killing process during output reading for {}.",
                     url
-                ));
+                )) {
+                    eprintln!("Error adding log: {}", e);
+                }
                 let _ = cmd.kill();
                 break;
             }
@@ -135,14 +154,18 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             } else {
                 continue;
             };
-            state.add_log(log_line);
+            if let Err(e) = state.add_log(log_line) {
+                eprintln!("Error adding log: {}", e);
+            }
         }
 
-        if state.is_force_quit() {
-            state.add_log(format!(
+        if state.is_force_quit().unwrap_or(false) {
+            if let Err(e) = state.add_log(format!(
                 "Force quit: Detected after output processing for {}. Ensuring kill.",
                 url
-            ));
+            )) {
+                eprintln!("Error adding log: {}", e);
+            }
             let _ = cmd.kill();
             break;
         }
@@ -153,27 +176,35 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                     success = true;
                     break;
                 } else {
-                    state.add_log(format!("yt-dlp exited with error for {}: {}", url, status));
+                    if let Err(e) =
+                        state.add_log(format!("yt-dlp exited with error for {}: {}", url, status))
+                    {
+                        eprintln!("Error adding log: {}", e);
+                    }
                     if !settings.network_retry || !is_network_error || retry_count >= max_retries {
                         break;
                     }
                 }
             }
             Err(e) => {
-                state.add_log(format!(
+                if let Err(log_err) = state.add_log(format!(
                     "Error waiting for yt-dlp process for {}: {}. Aborting this URL.",
                     url, e
-                ));
+                )) {
+                    eprintln!("Error adding log: {}", log_err);
+                }
                 break;
             }
         }
 
         retry_count += 1;
-        if state.is_force_quit() {
-            state.add_log(format!(
+        if state.is_force_quit().unwrap_or(false) {
+            if let Err(e) = state.add_log(format!(
                 "Force quit: Detected before retry sleep for {}.",
                 url
-            ));
+            )) {
+                eprintln!("Error adding log: {}", e);
+            }
             break;
         }
         if retry_count <= max_retries {
@@ -181,26 +212,40 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         }
     }
 
-    state.send(StateMessage::RemoveActiveDownload(url.clone()));
-
-    if success {
-        let _ = remove_link_from_file(&url);
-
-        state.send(StateMessage::IncrementCompleted);
-
-        state.add_log(format!("Completed: {}", url));
-    } else if state.is_force_quit() {
-        state.add_log(format!("Download aborted due to force quit: {}", url));
-    } else if retry_count > 0 {
-        state.add_log(format!("Failed after {} retries: {}", retry_count, url));
-    } else {
-        state.add_log(format!("Failed: {}", url));
+    if let Err(e) = state.send(StateMessage::RemoveActiveDownload(url.clone())) {
+        eprintln!("Error removing active download: {}", e);
     }
 
-    if state.get_queue().is_empty()
-        && state.get_active_downloads().is_empty()
-        && !state.is_force_quit()
+    if success {
+        if let Err(e) = remove_link_from_file(&url) {
+            eprintln!("Error removing link from file: {}", e);
+        }
+
+        if let Err(e) = state.send(StateMessage::IncrementCompleted) {
+            eprintln!("Error incrementing completed: {}", e);
+        }
+
+        if let Err(e) = state.add_log(format!("Completed: {}", url)) {
+            eprintln!("Error adding log: {}", e);
+        }
+    } else if state.is_force_quit().unwrap_or(false) {
+        if let Err(e) = state.add_log(format!("Download aborted due to force quit: {}", url)) {
+            eprintln!("Error adding log: {}", e);
+        }
+    } else if retry_count > 0 {
+        if let Err(e) = state.add_log(format!("Failed after {} retries: {}", retry_count, url)) {
+            eprintln!("Error adding log: {}", e);
+        }
+    } else if let Err(e) = state.add_log(format!("Failed: {}", url)) {
+        eprintln!("Error adding log: {}", e);
+    }
+
+    if state.get_queue().unwrap_or_default().is_empty()
+        && state.get_active_downloads().unwrap_or_default().is_empty()
+        && !state.is_force_quit().unwrap_or(false)
     {
-        state.send(StateMessage::SetCompleted(true));
+        if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
+            eprintln!("Error setting completed: {}", e);
+        }
     }
 }

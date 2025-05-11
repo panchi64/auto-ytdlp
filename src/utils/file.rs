@@ -1,5 +1,5 @@
 use crate::app_state::{AppState, StateMessage};
-use anyhow::Result;
+use crate::errors::{AppError, Result};
 use std::{collections::HashSet, fs};
 
 /// Loads URLs from the 'links.txt' file without requiring an AppState.
@@ -10,22 +10,23 @@ use std::{collections::HashSet, fs};
 ///
 /// # Returns
 ///
-/// * `Vec<String>` - Vector containing all valid URLs from the file
+/// * `Result<Vec<String>>` - Vector containing all valid URLs from the file or an error
 ///
 /// # Example
 ///
 /// ```
-/// let links = get_links_from_file();
-/// state.send(StateMessage::LoadLinks(links));
+/// let links = get_links_from_file()?;
+/// state.send(StateMessage::LoadLinks(links))?;
 /// ```
-pub fn get_links_from_file() -> Vec<String> {
-    let content = fs::read_to_string("links.txt").unwrap_or_default();
-    content
+pub fn get_links_from_file() -> Result<Vec<String>> {
+    let content = fs::read_to_string("links.txt").map_err(AppError::Io)?;
+
+    Ok(content
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .filter(|l| url::Url::parse(l).is_ok())
-        .collect()
+        .collect())
 }
 
 /// Sanitizes the links.txt file by removing invalid URLs.
@@ -35,17 +36,17 @@ pub fn get_links_from_file() -> Vec<String> {
 ///
 /// # Returns
 ///
-/// * `usize` - The number of invalid entries that were removed
+/// * `Result<usize>` - The number of invalid entries that were removed, or an error
 ///
 /// # Example
 ///
 /// ```
-/// let removed = sanitize_links_file();
+/// let removed = sanitize_links_file()?;
 /// println!("Removed {} invalid URLs", removed);
 /// ```
-pub fn sanitize_links_file() -> usize {
+pub fn sanitize_links_file() -> Result<usize> {
     let file_path = "links.txt";
-    let content = fs::read_to_string(file_path).unwrap_or_default();
+    let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
 
     let lines: Vec<String> = content
         .lines()
@@ -62,10 +63,10 @@ pub fn sanitize_links_file() -> usize {
     let removed_count = lines.len() - valid_lines.len();
 
     if removed_count > 0 {
-        let _ = fs::write(file_path, valid_lines.join("\n"));
+        fs::write(file_path, valid_lines.join("\n")).map_err(AppError::Io)?;
     }
 
-    removed_count
+    Ok(removed_count)
 }
 
 /// Removes a specific URL from the 'links.txt' file.
@@ -95,7 +96,7 @@ pub fn sanitize_links_file() -> usize {
 /// ```
 pub fn remove_link_from_file(url: &str) -> Result<()> {
     let file_path = "links.txt";
-    let content = fs::read_to_string(file_path).unwrap_or_default();
+    let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
 
     // Use a temporary file for atomic writes
     let temp_path = format!("{}.tmp", file_path);
@@ -104,8 +105,8 @@ pub fn remove_link_from_file(url: &str) -> Result<()> {
         .filter(|line| line.trim() != url.trim())
         .collect();
 
-    fs::write(&temp_path, new_content.join("\n"))?;
-    fs::rename(&temp_path, file_path)?; // Atomic replace
+    fs::write(&temp_path, new_content.join("\n")).map_err(AppError::Io)?;
+    fs::rename(&temp_path, file_path).map_err(AppError::Io)?; // Atomic replace
 
     Ok(())
 }
@@ -122,18 +123,20 @@ pub fn remove_link_from_file(url: &str) -> Result<()> {
 ///
 /// # Returns
 ///
-/// * `usize` - The number of new URLs that were added
+/// * `Result<usize>` - The number of new URLs that were added, or an error
 ///
 /// # Example
 ///
 /// ```
-/// let ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+/// let ctx = ClipboardProvider::new()
+///     .map_err(|e| AppError::Clipboard(e.to_string()))?;
+///
 /// if let Ok(contents) = ctx.get_contents() {
-///     let links_added = add_clipboard_links_to_file(&contents);
+///     let links_added = add_clipboard_links_to_file(&contents)?;
 ///     println!("Added {} URLs", links_added);
 /// }
 /// ```
-pub fn add_clipboard_links_to_file(clipboard_content: &str) -> usize {
+pub fn add_clipboard_links_to_file(clipboard_content: &str) -> Result<usize> {
     let links: Vec<String> = clipboard_content
         .lines()
         .map(|l| l.trim().to_string())
@@ -142,7 +145,7 @@ pub fn add_clipboard_links_to_file(clipboard_content: &str) -> usize {
         .collect();
 
     // Current file content to check for duplicates
-    let current_links = get_links_from_file();
+    let current_links = get_links_from_file()?;
     let existing: HashSet<_> = current_links.iter().collect();
 
     // Filter out links that already exist
@@ -154,10 +157,10 @@ pub fn add_clipboard_links_to_file(clipboard_content: &str) -> usize {
     // If links were added, save to file
     if !new_links.is_empty() {
         let all_links = [current_links, new_links.clone()].concat();
-        let _ = fs::write("links.txt", all_links.join("\n"));
+        fs::write("links.txt", all_links.join("\n")).map_err(AppError::Io)?;
     }
 
-    new_links.len()
+    Ok(new_links.len())
 }
 
 /// Parses URLs from clipboard content and adds them to both the links.txt file
@@ -172,28 +175,30 @@ pub fn add_clipboard_links_to_file(clipboard_content: &str) -> usize {
 ///
 /// # Returns
 ///
-/// * `usize` - The number of new URLs that were added
+/// * `Result<usize>` - The number of new URLs that were added, or an error
 ///
 /// # Example
 ///
 /// ```
-/// let ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+/// let ctx = ClipboardProvider::new()
+///     .map_err(|e| AppError::Clipboard(e.to_string()))?;
+///
 /// if let Ok(contents) = ctx.get_contents() {
-///     let links_added = add_clipboard_links(&state, &contents);
-///     state.add_log(format!("Added {} links", links_added));
+///     let links_added = add_clipboard_links(&state, &contents)?;
+///     state.add_log(format!("Added {} links", links_added))?;
 /// }
 /// ```
-pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> usize {
+pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<usize> {
     // First add links to file
-    let n = add_clipboard_links_to_file(clipboard_content);
+    let n = add_clipboard_links_to_file(clipboard_content)?;
 
     if n > 0 {
         // Then update app state
-        let links = get_links_from_file();
+        let links = get_links_from_file()?;
         for link in &links {
-            state.send(StateMessage::AddToQueue(link.clone()));
+            state.send(StateMessage::AddToQueue(link.clone()))?;
         }
     }
 
-    n
+    Ok(n)
 }
