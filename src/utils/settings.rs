@@ -148,12 +148,22 @@ impl Settings {
         serde_json::from_reader(reader).with_context(|| "Failed to parse settings file".to_string())
     }
 
-    /// Save settings to disk
+    /// Save settings to disk using atomic write (write to temp file, then rename).
+    ///
+    /// This prevents corrupted settings files if the application crashes mid-write.
     pub fn save(&self) -> Result<()> {
         let settings_path = Self::get_settings_path();
+        let temp_path = settings_path.with_extension("json.tmp");
+
         let settings_json = serde_json::to_string_pretty(self)?;
-        fs::write(&settings_path, settings_json)
-            .with_context(|| format!("Failed to write settings file: {:?}", settings_path))
+
+        // Write to temporary file first
+        fs::write(&temp_path, &settings_json)
+            .with_context(|| format!("Failed to write temp settings file: {:?}", temp_path))?;
+
+        // Atomic rename - this operation is atomic on most filesystems
+        fs::rename(&temp_path, &settings_path)
+            .with_context(|| format!("Failed to rename temp settings to: {:?}", settings_path))
     }
 
     /// Build the yt-dlp command arguments based on current settings

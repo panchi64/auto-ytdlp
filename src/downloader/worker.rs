@@ -6,7 +6,7 @@ use std::{
 use crate::{
     app_state::{AppState, StateMessage},
     args::Args,
-    utils::file::remove_link_from_file,
+    utils::file::remove_link_from_file_sync,
 };
 
 use super::common::build_ytdlp_command_args;
@@ -102,6 +102,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                 eprintln!("Error adding log: {}", e);
             }
             let _ = cmd.kill();
+            let _ = cmd.wait(); // Reap the child process to avoid zombies
             break;
         }
 
@@ -133,6 +134,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                     eprintln!("Error adding log: {}", e);
                 }
                 let _ = cmd.kill();
+                let _ = cmd.wait(); // Reap the child process to avoid zombies
                 break;
             }
 
@@ -167,6 +169,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                 eprintln!("Error adding log: {}", e);
             }
             let _ = cmd.kill();
+            let _ = cmd.wait(); // Reap the child process to avoid zombies
             break;
         }
 
@@ -217,8 +220,12 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     }
 
     if success {
-        if let Err(e) = remove_link_from_file(&url) {
-            eprintln!("Error removing link from file: {}", e);
+        if let Err(e) = remove_link_from_file_sync(&state, &url) {
+            // Log to TUI so user knows the URL wasn't removed from links.txt
+            let _ = state.log_error(
+                &format!("Failed to remove {} from links.txt", url),
+                &e,
+            );
         }
 
         if let Err(e) = state.send(StateMessage::IncrementCompleted) {

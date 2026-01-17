@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex};
 use crate::errors::{AppError, Result};
 use crate::utils::settings::Settings;
 
+/// Guard type for file operations lock
+pub type FileLockGuard<'a> = std::sync::MutexGuard<'a, ()>;
+
 #[derive(Default)]
 struct DownloadStats {
     total_tasks: usize,
@@ -87,9 +90,12 @@ pub struct AppState {
     stats: Arc<Mutex<DownloadStats>>,
     queues: Arc<Mutex<DownloadQueues>>,
     flags: Arc<Mutex<AppFlags>>,
-    logs: Arc<Mutex<Vec<String>>>,
+    logs: Arc<Mutex<VecDeque<String>>>,
     concurrent: Arc<Mutex<usize>>,
     settings: Arc<Mutex<Settings>>,
+
+    /// Lock for serializing file operations to prevent race conditions
+    file_lock: Arc<Mutex<()>>,
 
     // Channel for state updates
     tx: Sender<StateMessage>,
@@ -122,12 +128,13 @@ impl AppState {
             stats: Arc::new(Mutex::new(DownloadStats::default())),
             queues: Arc::new(Mutex::new(DownloadQueues::default())),
             flags: Arc::new(Mutex::new(AppFlags::default())),
-            logs: Arc::new(Mutex::new(vec![
+            logs: Arc::new(Mutex::new(VecDeque::from([
                 "Welcome! Press 'S' to start downloads".to_string(),
                 "Press 'Q' to quit, 'Shift+Q' to force quit".to_string(),
-            ])),
+            ]))),
             concurrent: Arc::new(Mutex::new(settings.concurrent_downloads)),
             settings: Arc::new(Mutex::new(settings)),
+            file_lock: Arc::new(Mutex::new(())),
             tx,
             rx: Arc::new(Mutex::new(rx)),
         };
@@ -147,15 +154,24 @@ impl AppState {
             let rx = match self.rx.lock() {
                 Ok(rx) => rx,
                 Err(err) => {
-                    eprintln!("Error locking rx: {}", err);
-                    continue;
+                    // Mutex poisoned - another thread panicked while holding the lock
+                    // Exit the processor since state is potentially inconsistent
+                    eprintln!("Message processor: mutex poisoned, exiting: {}", err);
+                    break;
                 }
             };
 
-            if let Ok(message) = rx.recv() {
-                drop(rx); // Release lock before processing
+            let message = match rx.recv() {
+                Ok(msg) => msg,
+                Err(_) => {
+                    // Channel closed (all senders dropped), exit gracefully
+                    break;
+                }
+            };
 
-                match message {
+            drop(rx); // Release lock before processing
+
+            match message {
                     StateMessage::AddToQueue(url) => {
                         if let Err(err) = self.handle_add_to_queue(url) {
                             eprintln!("Error adding to queue: {}", err);
@@ -217,7 +233,6 @@ impl AppState {
                         }
                     }
                 }
-            }
         }
     }
 
@@ -308,17 +323,25 @@ impl AppState {
 
     pub fn add_log(&self, message: String) -> Result<()> {
         let mut logs = self.logs.lock()?;
-        logs.push(message);
-        // Keep only the latest 1000 log messages
-        if logs.len() > 1000 {
-            logs.remove(0);
+        logs.push_back(message);
+        // Keep only the latest 1000 log messages (O(1) operation with VecDeque)
+        while logs.len() > 1000 {
+            logs.pop_front();
         }
         Ok(())
     }
 
+    /// Logs an error message to the TUI logs with context.
+    ///
+    /// This method formats the error with context and adds it to the visible logs,
+    /// making errors visible in the TUI rather than just printing to stderr.
+    pub fn log_error(&self, context: &str, error: impl std::fmt::Display) -> Result<()> {
+        self.add_log(format!("[ERROR] {}: {}", context, error))
+    }
+
     pub fn get_logs(&self) -> Result<Vec<String>> {
         let logs = self.logs.lock()?;
-        Ok(logs.clone())
+        Ok(logs.iter().cloned().collect())
     }
 
     pub fn update_progress(&self) -> Result<()> {
@@ -421,6 +444,8 @@ impl AppState {
         flags.started = false;
         flags.completed = false;
         flags.notification_sent = false;
+        flags.shutdown = false;
+        flags.force_quit = false;
         drop(flags);
 
         let mut stats = self.stats.lock()?;
@@ -432,8 +457,21 @@ impl AppState {
     pub fn clear_logs(&self) -> Result<()> {
         let mut logs = self.logs.lock()?;
         logs.clear();
-        logs.push("Logs cleared".to_string());
+        logs.push_back("Logs cleared".to_string());
         Ok(())
+    }
+
+    /// Acquires the file operations lock to ensure exclusive access to links.txt.
+    ///
+    /// Multiple worker threads may try to modify links.txt concurrently. This lock
+    /// serializes those operations to prevent race conditions where concurrent
+    /// read-modify-write operations would lose data.
+    ///
+    /// # Returns
+    ///
+    /// A `MutexGuard` that releases the lock when dropped.
+    pub fn acquire_file_lock(&self) -> Result<FileLockGuard<'_>> {
+        self.file_lock.lock().map_err(AppError::from)
     }
 
     pub fn get_settings(&self) -> Result<Settings> {
