@@ -61,10 +61,12 @@ pub fn parse_ytdlp_line(line: &str) -> ParsedOutput {
     }
 
     // Try parsing custom progress template first
-    if line.contains(PROGRESS_MARKER_START) && line.contains(PROGRESS_MARKER_END)
-        && let Some(progress) = parse_progress_template(line) {
-            return ParsedOutput::Progress(progress);
-        }
+    if line.contains(PROGRESS_MARKER_START)
+        && line.contains(PROGRESS_MARKER_END)
+        && let Some(progress) = parse_progress_template(line)
+    {
+        return ParsedOutput::Progress(progress);
+    }
 
     // Parse traditional yt-dlp output patterns
     if line.starts_with("[download]") {
@@ -164,9 +166,10 @@ fn parse_download_line(line: &str) -> ParsedOutput {
 
     // Handle fragment downloads
     if (line.contains("Downloading item") || line.contains("fragment"))
-        && let Some(progress) = parse_fragment_progress(line) {
-            return ParsedOutput::Progress(progress);
-        }
+        && let Some(progress) = parse_fragment_progress(line)
+    {
+        return ParsedOutput::Progress(progress);
+    }
 
     // Other download info
     ParsedOutput::Info(line.to_string())
@@ -176,9 +179,7 @@ fn parse_download_line(line: &str) -> ParsedOutput {
 fn parse_traditional_progress(line: &str) -> Option<ProgressInfo> {
     // Pattern: "[download]  XX.X% of YY.YYMiB at ZZ.ZZMiB/s ETA HH:MM:SS"
     let percent_end = line.find('%')?;
-    let percent_start = line[..percent_end]
-        .rfind(|c: char| !c.is_ascii_digit() && c != '.')?
-        + 1;
+    let percent_start = line[..percent_end].rfind(|c: char| !c.is_ascii_digit() && c != '.')? + 1;
 
     let percent_str = &line[percent_start..percent_end];
     let percent: f64 = percent_str.trim().parse().ok()?;
@@ -334,14 +335,12 @@ fn parse_size_string(s: &str) -> Option<u64> {
     Some((num * multiplier) as u64)
 }
 
-/// Converts ProgressInfo to DownloadProgress for a given URL
+/// Converts ProgressInfo to DownloadProgress for display
 pub fn progress_info_to_download_progress(
-    url: &str,
     display_name: &str,
     info: &ProgressInfo,
 ) -> DownloadProgress {
     DownloadProgress {
-        url: url.to_string(),
         display_name: display_name.to_string(),
         phase: info.status.clone(),
         percent: info.percent,
@@ -386,7 +385,8 @@ mod tests {
 
     #[test]
     fn test_parse_progress_template() {
-        let line = "|PROGRESS|downloading|45.2%|1.5MiB/s|00:35|47368421|104857600|None|None|PROGRESS_END|";
+        let line =
+            "|PROGRESS|downloading|45.2%|1.5MiB/s|00:35|47368421|104857600|None|None|PROGRESS_END|";
         match parse_ytdlp_line(line) {
             ParsedOutput::Progress(info) => {
                 assert!((info.percent - 45.2).abs() < 0.1);

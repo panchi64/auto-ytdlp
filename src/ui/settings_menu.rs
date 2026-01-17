@@ -12,6 +12,22 @@ use crate::{
     utils::settings::{FormatPreset, OutputFormat, Settings},
 };
 
+/// Helper function to create a settings list item with consistent styling
+fn create_setting_item<'a>(name: &'a str, value: &'a str) -> ListItem<'a> {
+    let style = Style::default().fg(Color::White);
+    let value_style = Style::default().fg(Color::Yellow);
+    ListItem::new(Line::from(vec![
+        Span::styled(name, style),
+        Span::raw(": "),
+        Span::styled(value, value_style),
+    ]))
+}
+
+/// Helper to convert bool to Yes/No string
+fn bool_to_yes_no(value: bool) -> &'static str {
+    if value { "Yes" } else { "No" }
+}
+
 /// Settings menu state
 pub struct SettingsMenu {
     list_state: ListState,
@@ -155,7 +171,11 @@ impl SettingsMenu {
                         }
                         8 => {
                             // ASCII Indicators
-                            self.option_index = if self.settings.use_ascii_indicators { 1 } else { 0 };
+                            self.option_index = if self.settings.use_ascii_indicators {
+                                1
+                            } else {
+                                0
+                            };
                         }
                         _ => {
                             self.option_index = 0; // Default for safety
@@ -311,52 +331,27 @@ impl SettingsMenu {
 
     /// Adjust option index to valid range based on current setting
     fn adjust_option_index(&mut self) {
-        if let Some(i) = self.list_state.selected() {
+        // Max option indices for each setting (0-indexed)
+        // Settings: Format, Output, Subtitles, Thumbnail, Metadata, Concurrent, Retry, Delay, ASCII
+        const MAX_OPTIONS: [usize; 9] = [5, 4, 1, 1, 1, 4, 1, 4, 1];
+
+        if let Some(i) = self.list_state.selected()
+            && i < MAX_OPTIONS.len()
+        {
             let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
 
-            match i {
-                0 => {
-                    // Format preset options
-                    self.option_index = self.option_index.min(5); // 6 options now (0-5)
-                }
-                1 => {
-                    // Output format options
-                    if is_audio_only {
-                        self.option_index = self.option_index.min(1); // 2 options for audio-only
-                    } else {
-                        self.option_index = self.option_index.min(4); // 5 options for video
-                    }
-                }
-                2 => {
-                    // Subtitles options
-                    if is_audio_only {
-                        self.option_index = 0; // Only "No" option for audio-only
-                    } else {
-                        self.option_index = self.option_index.min(1); // 2 options for video
-                    }
-                }
-                3..=4 => {
-                    // Thumbnail and metadata options
-                    self.option_index = self.option_index.min(1); // 2 options (true/false)
-                }
-                5 => {
-                    // Concurrent downloads (1, 2, 4, 8, Custom)
-                    self.option_index = self.option_index.min(4); // 5 options
-                }
-                6 => {
-                    // Network retry options (true/false)
-                    self.option_index = self.option_index.min(1); // 2 options (true/false)
-                }
-                7 => {
-                    // Retry delay options (1, 2, 5, 10 seconds, Custom)
-                    self.option_index = self.option_index.min(4); // 5 options
-                }
-                8 => {
-                    // ASCII indicators options (true/false)
-                    self.option_index = self.option_index.min(1); // 2 options (true/false)
-                }
-                _ => {}
-            }
+            // Handle audio-only special cases
+            let max = match (i, is_audio_only) {
+                (1, true) => 1, // Output format: only Auto/MP3 for audio
+                (2, true) => 0, // Subtitles: disabled for audio-only
+                _ => MAX_OPTIONS[i],
+            };
+
+            self.option_index = if max == 0 {
+                0
+            } else {
+                self.option_index.min(max)
+            };
         }
     }
 
@@ -466,99 +461,35 @@ impl SettingsMenu {
             let dialog_y = (area.height.saturating_sub(popup_height)) / 2;
             let main_dialog_area = Rect::new(dialog_x, dialog_y, popup_width, popup_height);
 
-            let style = Style::default().fg(Color::White);
-            let value_style = Style::default().fg(Color::Yellow);
+            // Pre-compute formatted values that need owned strings
+            let concurrent_str = self.settings.concurrent_downloads.to_string();
+            let retry_delay_str = format!("{} seconds", self.settings.retry_delay);
 
             let items = vec![
-                ListItem::new(Line::from(vec![
-                    Span::styled("Format Preset", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        self.format_preset_to_string(&self.settings.format_preset),
-                        value_style,
-                    ),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("Output Format", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        self.output_format_to_string(&self.settings.output_format),
-                        value_style,
-                    ),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("Write Subtitles", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        if self.settings.write_subtitles {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        value_style,
-                    ),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("Write Thumbnail", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        if self.settings.write_thumbnail {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        value_style,
-                    ),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("Add Metadata", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        if self.settings.add_metadata {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        value_style,
-                    ),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("Concurrent Downloads", style),
-                    Span::raw(": "),
-                    Span::styled(self.settings.concurrent_downloads.to_string(), value_style),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("Network Retry", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        if self.settings.network_retry {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        value_style,
-                    ),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("Retry Delay", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        format!("{} seconds", self.settings.retry_delay),
-                        value_style,
-                    ),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("ASCII Indicators", style),
-                    Span::raw(": "),
-                    Span::styled(
-                        if self.settings.use_ascii_indicators {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                        value_style,
-                    ),
-                ])),
+                create_setting_item(
+                    "Format Preset",
+                    self.format_preset_to_string(&self.settings.format_preset),
+                ),
+                create_setting_item(
+                    "Output Format",
+                    self.output_format_to_string(&self.settings.output_format),
+                ),
+                create_setting_item(
+                    "Write Subtitles",
+                    bool_to_yes_no(self.settings.write_subtitles),
+                ),
+                create_setting_item(
+                    "Write Thumbnail",
+                    bool_to_yes_no(self.settings.write_thumbnail),
+                ),
+                create_setting_item("Add Metadata", bool_to_yes_no(self.settings.add_metadata)),
+                create_setting_item("Concurrent Downloads", &concurrent_str),
+                create_setting_item("Network Retry", bool_to_yes_no(self.settings.network_retry)),
+                create_setting_item("Retry Delay", &retry_delay_str),
+                create_setting_item(
+                    "ASCII Indicators",
+                    bool_to_yes_no(self.settings.use_ascii_indicators),
+                ),
             ];
 
             let settings_list = List::new(items)
@@ -640,7 +571,10 @@ impl SettingsMenu {
                 5 => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
                 6 => (vec!["No", "Yes"], "Auto Retry Network Failures"),
                 7 => (vec!["1", "2", "5", "10", "Custom"], "Retry Delay"),
-                8 => (vec!["No", "Yes"], "ASCII Indicators (for terminal compatibility)"),
+                8 => (
+                    vec!["No", "Yes"],
+                    "ASCII Indicators (for terminal compatibility)",
+                ),
                 _ => (vec![], ""),
             };
 

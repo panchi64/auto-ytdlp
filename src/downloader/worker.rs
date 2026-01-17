@@ -5,18 +5,32 @@ use std::{
 };
 
 use crate::{
-    app_state::{truncate_url_for_display, AppState, DownloadProgress, StateMessage},
+    app_state::{AppState, DownloadProgress, StateMessage},
     args::Args,
+    utils::display::truncate_url_for_display,
     utils::file::remove_link_from_file_sync,
 };
 
 use super::{
     common::build_ytdlp_command_args,
-    progress_parser::{parse_ytdlp_line, progress_info_to_download_progress, ParsedOutput},
+    progress_parser::{ParsedOutput, parse_ytdlp_line, progress_info_to_download_progress},
 };
 
 /// Minimum interval between progress updates to reduce lock contention (250ms)
 const PROGRESS_UPDATE_INTERVAL_MS: u64 = 250;
+
+/// Check if force quit has been requested
+#[inline]
+fn should_abort(state: &AppState) -> bool {
+    state.is_force_quit().unwrap_or(false)
+}
+
+/// Log a message to the TUI, printing to stderr on failure
+fn log_msg(state: &AppState, msg: impl Into<String>) {
+    if let Err(e) = state.add_log(msg.into()) {
+        eprintln!("Error adding log: {}", e);
+    }
+}
 
 /// Downloads a single video from the provided URL using yt-dlp.
 ///
@@ -48,7 +62,7 @@ const PROGRESS_UPDATE_INTERVAL_MS: u64 = 250;
 /// This function will exit early if `force_quit` is set in the application state.
 /// It updates the progress and completed status in the app state after completion.
 pub fn download_worker(url: String, state: AppState, args: Args) {
-    if state.is_force_quit().unwrap_or(false) {
+    if should_abort(&state) {
         return;
     }
 
@@ -56,9 +70,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         eprintln!("Error adding active download: {}", e);
     }
 
-    if let Err(e) = state.add_log(format!("Starting download: {}", url)) {
-        eprintln!("Error adding log: {}", e);
-    }
+    log_msg(&state, format!("Starting download: {}", url));
 
     let settings = state.get_settings().unwrap_or_default();
     let max_retries = if settings.network_retry { 3 } else { 0 };
@@ -67,19 +79,19 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     let mut success = false;
 
     while retry_count <= max_retries {
-        if state.is_force_quit().unwrap_or(false) {
-            if let Err(e) =
-                state.add_log(format!("Force quit: Aborting download task for {}.", url))
-            {
-                eprintln!("Error adding log: {}", e);
-            }
+        if should_abort(&state) {
+            log_msg(
+                &state,
+                format!("Force quit: Aborting download task for {}.", url),
+            );
             break;
         }
 
-        if retry_count > 0
-            && let Err(e) = state.add_log(format!("Retry attempt {} for: {}", retry_count, url))
-        {
-            eprintln!("Error adding log: {}", e);
+        if retry_count > 0 {
+            log_msg(
+                &state,
+                format!("Retry attempt {} for: {}", retry_count, url),
+            );
         }
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, &url);
@@ -91,38 +103,41 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         {
             Ok(cmd) => cmd,
             Err(e) => {
-                if let Err(log_err) = state.add_log(format!(
-                    "Error spawning yt-dlp for {}: {}. Aborting this URL.",
-                    url, e
-                )) {
-                    eprintln!("Error adding log: {}", log_err);
-                }
+                log_msg(
+                    &state,
+                    format!(
+                        "Error spawning yt-dlp for {}: {}. Aborting this URL.",
+                        url, e
+                    ),
+                );
                 break;
             }
         };
 
-        if state.is_force_quit().unwrap_or(false) {
-            if let Err(e) = state.add_log(format!(
-                "Force quit: Killing spawned process for {} and aborting.",
-                url
-            )) {
-                eprintln!("Error adding log: {}", e);
-            }
+        if should_abort(&state) {
+            log_msg(
+                &state,
+                format!(
+                    "Force quit: Killing spawned process for {} and aborting.",
+                    url
+                ),
+            );
             let _ = cmd.kill();
-            let _ = cmd.wait(); // Reap the child process to avoid zombies
+            let _ = cmd.wait();
             break;
         }
 
         let stdout = match cmd.stdout.take() {
             Some(stdout) => stdout,
             None => {
-                if let Err(e) = state.add_log(format!(
-                    "Error: Could not take stdout for {}. Aborting this attempt.",
-                    url
-                )) {
-                    eprintln!("Error adding log: {}", e);
-                }
-                if !state.is_force_quit().unwrap_or(false) {
+                log_msg(
+                    &state,
+                    format!(
+                        "Error: Could not take stdout for {}. Aborting this attempt.",
+                        url
+                    ),
+                );
+                if !should_abort(&state) {
                     let _ = cmd.kill();
                     let _ = cmd.wait();
                 }
@@ -135,15 +150,16 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         let display_name = truncate_url_for_display(&url);
 
         for line in reader.lines().map_while(Result::ok) {
-            if state.is_force_quit().unwrap_or(false) {
-                if let Err(e) = state.add_log(format!(
-                    "Force quit: Killing process during output reading for {}.",
-                    url
-                )) {
-                    eprintln!("Error adding log: {}", e);
-                }
+            if should_abort(&state) {
+                log_msg(
+                    &state,
+                    format!(
+                        "Force quit: Killing process during output reading for {}.",
+                        url
+                    ),
+                );
                 let _ = cmd.kill();
-                let _ = cmd.wait(); // Reap the child process to avoid zombies
+                let _ = cmd.wait();
                 break;
             }
 
@@ -162,8 +178,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                     if elapsed >= PROGRESS_UPDATE_INTERVAL_MS || info.percent >= 100.0 {
                         last_progress_update = Instant::now();
 
-                        let progress =
-                            progress_info_to_download_progress(&url, &display_name, &info);
+                        let progress = progress_info_to_download_progress(&display_name, &info);
                         if let Err(e) = state.send(StateMessage::UpdateDownloadProgress {
                             url: url.clone(),
                             progress,
@@ -176,55 +191,42 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                     // Update phase to processing/merging
                     let mut progress = DownloadProgress::new(&url);
                     progress.phase = "processing".to_string();
-                    progress.percent = 100.0; // Mark as fully downloaded
+                    progress.percent = 100.0;
                     if let Err(e) = state.send(StateMessage::UpdateDownloadProgress {
                         url: url.clone(),
                         progress,
                     }) {
                         eprintln!("Error sending progress update: {}", e);
                     }
-
-                    // Log post-processing with URL prefix
-                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                    log_msg(&state, format!("{} {}", display_name, msg));
                 }
                 ParsedOutput::Destination(msg) => {
-                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                    log_msg(&state, format!("{} {}", display_name, msg));
                 }
                 ParsedOutput::AlreadyDownloaded(msg) => {
-                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                    log_msg(&state, format!("{} {}", display_name, msg));
                 }
                 ParsedOutput::Error(msg) => {
                     is_network_error = check_network_error(&msg);
-                    if let Err(e) = state.add_log(format!("{} Error: {}", display_name, msg)) {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                    log_msg(&state, format!("{} Error: {}", display_name, msg));
                 }
                 ParsedOutput::Info(msg) => {
-                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                    log_msg(&state, format!("{} {}", display_name, msg));
                 }
-                ParsedOutput::Ignore => {
-                    // Skip ignored output
-                }
+                ParsedOutput::Ignore => {}
             }
         }
 
-        if state.is_force_quit().unwrap_or(false) {
-            if let Err(e) = state.add_log(format!(
-                "Force quit: Detected after output processing for {}. Ensuring kill.",
-                url
-            )) {
-                eprintln!("Error adding log: {}", e);
-            }
+        if should_abort(&state) {
+            log_msg(
+                &state,
+                format!(
+                    "Force quit: Detected after output processing for {}. Ensuring kill.",
+                    url
+                ),
+            );
             let _ = cmd.kill();
-            let _ = cmd.wait(); // Reap the child process to avoid zombies
+            let _ = cmd.wait();
             break;
         }
 
@@ -234,39 +236,36 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                     success = true;
                     break;
                 } else {
-                    if let Err(e) =
-                        state.add_log(format!("yt-dlp exited with error for {}: {}", url, status))
-                    {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                    log_msg(
+                        &state,
+                        format!("yt-dlp exited with error for {}: {}", url, status),
+                    );
                     if !settings.network_retry || !is_network_error || retry_count >= max_retries {
                         break;
                     }
                 }
             }
             Err(e) => {
-                if let Err(log_err) = state.add_log(format!(
-                    "Error waiting for yt-dlp process for {}: {}. Aborting this URL.",
-                    url, e
-                )) {
-                    eprintln!("Error adding log: {}", log_err);
-                }
+                log_msg(
+                    &state,
+                    format!(
+                        "Error waiting for yt-dlp process for {}: {}. Aborting this URL.",
+                        url, e
+                    ),
+                );
                 break;
             }
         }
 
         retry_count += 1;
-        if state.is_force_quit().unwrap_or(false) {
-            if let Err(e) = state.add_log(format!(
-                "Force quit: Detected before retry sleep for {}.",
-                url
-            )) {
-                eprintln!("Error adding log: {}", e);
-            }
+        if should_abort(&state) {
+            log_msg(
+                &state,
+                format!("Force quit: Detected before retry sleep for {}.", url),
+            );
             break;
         }
         if retry_count <= max_retries {
-            // Increment the global retry counter for display
             if let Err(e) = state.increment_retries() {
                 eprintln!("Error incrementing retries: {}", e);
             }
@@ -280,35 +279,31 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
 
     if success {
         if let Err(e) = remove_link_from_file_sync(&state, &url) {
-            // Log to TUI so user knows the URL wasn't removed from links.txt
-            let _ = state.log_error(
-                &format!("Failed to remove {} from links.txt", url),
-                &e,
-            );
+            let _ = state.log_error(&format!("Failed to remove {} from links.txt", url), &e);
         }
 
         if let Err(e) = state.send(StateMessage::IncrementCompleted) {
             eprintln!("Error incrementing completed: {}", e);
         }
 
-        if let Err(e) = state.add_log(format!("Completed: {}", url)) {
-            eprintln!("Error adding log: {}", e);
-        }
-    } else if state.is_force_quit().unwrap_or(false) {
-        if let Err(e) = state.add_log(format!("Download aborted due to force quit: {}", url)) {
-            eprintln!("Error adding log: {}", e);
-        }
+        log_msg(&state, format!("Completed: {}", url));
+    } else if should_abort(&state) {
+        log_msg(
+            &state,
+            format!("Download aborted due to force quit: {}", url),
+        );
     } else if retry_count > 0 {
-        if let Err(e) = state.add_log(format!("Failed after {} retries: {}", retry_count, url)) {
-            eprintln!("Error adding log: {}", e);
-        }
-    } else if let Err(e) = state.add_log(format!("Failed: {}", url)) {
-        eprintln!("Error adding log: {}", e);
+        log_msg(
+            &state,
+            format!("Failed after {} retries: {}", retry_count, url),
+        );
+    } else {
+        log_msg(&state, format!("Failed: {}", url));
     }
 
     if state.get_queue().unwrap_or_default().is_empty()
         && state.get_active_downloads().unwrap_or_default().is_empty()
-        && !state.is_force_quit().unwrap_or(false)
+        && !should_abort(&state)
         && let Err(e) = state.send(StateMessage::SetCompleted(true))
     {
         eprintln!("Error setting completed: {}", e);

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::errors::{AppError, Result};
+use crate::utils::display::truncate_url_for_display;
 use crate::utils::settings::Settings;
 
 /// Progress information for a single download.
@@ -12,9 +13,6 @@ use crate::utils::settings::Settings;
 /// per-download progress bars in the TUI.
 #[derive(Clone, Debug)]
 pub struct DownloadProgress {
-    /// The URL being downloaded (used for tracking)
-    #[allow(dead_code)]
-    pub url: String,
     /// Truncated URL or video title for display
     pub display_name: String,
     /// Current phase: "downloading", "processing", "merging", "finished", "error"
@@ -40,7 +38,6 @@ pub struct DownloadProgress {
 impl Default for DownloadProgress {
     fn default() -> Self {
         Self {
-            url: String::new(),
             display_name: String::new(),
             phase: "downloading".to_string(),
             percent: 0.0,
@@ -59,61 +56,10 @@ impl DownloadProgress {
     /// Creates a new DownloadProgress for the given URL
     pub fn new(url: &str) -> Self {
         Self {
-            url: url.to_string(),
             display_name: truncate_url_for_display(url),
             ..Default::default()
         }
     }
-}
-
-/// Truncates a URL for display purposes.
-///
-/// For YouTube URLs, extracts the video ID. For other URLs,
-/// shows the last portion of the URL path.
-pub fn truncate_url_for_display(url: &str) -> String {
-    // Try to extract YouTube video ID
-    if (url.contains("youtube.com") || url.contains("youtu.be"))
-        && let Some(id) = extract_youtube_id(url) {
-            return format!("[{}]", id);
-        }
-
-    // For other URLs, use the last path segment or truncate
-    if let Some(last_segment) = url.rsplit('/').next()
-        && !last_segment.is_empty() && last_segment.len() <= 30 {
-            return last_segment.to_string();
-        }
-
-    // Fallback: truncate the URL
-    if url.len() > 30 {
-        format!("{}...", &url[..27])
-    } else {
-        url.to_string()
-    }
-}
-
-/// Extracts the video ID from a YouTube URL
-fn extract_youtube_id(url: &str) -> Option<String> {
-    // Handle youtu.be/VIDEO_ID format
-    if url.contains("youtu.be/")
-        && let Some(id_start) = url.find("youtu.be/") {
-            let id_portion = &url[id_start + 9..];
-            let id = id_portion.split(&['?', '&', '/'][..]).next()?;
-            if !id.is_empty() {
-                return Some(id.to_string());
-            }
-        }
-
-    // Handle youtube.com/watch?v=VIDEO_ID format
-    if url.contains("v=")
-        && let Some(v_start) = url.find("v=") {
-            let id_portion = &url[v_start + 2..];
-            let id = id_portion.split(&['?', '&', '/'][..]).next()?;
-            if !id.is_empty() {
-                return Some(id.to_string());
-            }
-        }
-
-    None
 }
 
 /// A snapshot of UI-relevant state, captured with minimal locking.
@@ -321,72 +267,72 @@ impl AppState {
             drop(rx); // Release lock before processing
 
             match message {
-                    StateMessage::AddToQueue(url) => {
-                        if let Err(err) = self.handle_add_to_queue(url) {
-                            eprintln!("Error adding to queue: {}", err);
-                        }
-                    }
-                    StateMessage::AddActiveDownload(url) => {
-                        if let Err(err) = self.handle_add_active_download(url) {
-                            eprintln!("Error adding active download: {}", err);
-                        }
-                    }
-                    StateMessage::RemoveActiveDownload(url) => {
-                        if let Err(err) = self.handle_remove_active_download(&url) {
-                            eprintln!("Error removing active download: {}", err);
-                        }
-                    }
-                    StateMessage::UpdateDownloadProgress { url, progress } => {
-                        if let Err(err) = self.handle_update_download_progress(&url, progress) {
-                            eprintln!("Error updating download progress: {}", err);
-                        }
-                    }
-                    StateMessage::IncrementCompleted => {
-                        if let Err(err) = self.handle_increment_completed() {
-                            eprintln!("Error incrementing completed: {}", err);
-                        }
-                    }
-                    StateMessage::UpdateProgress => {
-                        if let Err(err) = self.update_progress() {
-                            eprintln!("Error updating progress: {}", err);
-                        }
-                    }
-                    StateMessage::SetPaused(value) => {
-                        if let Err(err) = self.handle_set_paused(value) {
-                            eprintln!("Error setting paused: {}", err);
-                        }
-                    }
-                    StateMessage::SetStarted(value) => {
-                        if let Err(err) = self.handle_set_started(value) {
-                            eprintln!("Error setting started: {}", err);
-                        }
-                    }
-                    StateMessage::SetShutdown(value) => {
-                        if let Err(err) = self.handle_set_shutdown(value) {
-                            eprintln!("Error setting shutdown: {}", err);
-                        }
-                    }
-                    StateMessage::SetForceQuit(value) => {
-                        if let Err(err) = self.handle_set_force_quit(value) {
-                            eprintln!("Error setting force quit: {}", err);
-                        }
-                    }
-                    StateMessage::SetCompleted(value) => {
-                        if let Err(err) = self.handle_set_completed(value) {
-                            eprintln!("Error setting completed: {}", err);
-                        }
-                    }
-                    StateMessage::LoadLinks(links) => {
-                        if let Err(err) = self.handle_load_links(links) {
-                            eprintln!("Error loading links: {}", err);
-                        }
-                    }
-                    StateMessage::UpdateSettings(settings) => {
-                        if let Err(err) = self.update_settings(settings) {
-                            eprintln!("Error updating settings: {}", err);
-                        }
+                StateMessage::AddToQueue(url) => {
+                    if let Err(err) = self.handle_add_to_queue(url) {
+                        eprintln!("Error adding to queue: {}", err);
                     }
                 }
+                StateMessage::AddActiveDownload(url) => {
+                    if let Err(err) = self.handle_add_active_download(url) {
+                        eprintln!("Error adding active download: {}", err);
+                    }
+                }
+                StateMessage::RemoveActiveDownload(url) => {
+                    if let Err(err) = self.handle_remove_active_download(&url) {
+                        eprintln!("Error removing active download: {}", err);
+                    }
+                }
+                StateMessage::UpdateDownloadProgress { url, progress } => {
+                    if let Err(err) = self.handle_update_download_progress(&url, progress) {
+                        eprintln!("Error updating download progress: {}", err);
+                    }
+                }
+                StateMessage::IncrementCompleted => {
+                    if let Err(err) = self.handle_increment_completed() {
+                        eprintln!("Error incrementing completed: {}", err);
+                    }
+                }
+                StateMessage::UpdateProgress => {
+                    if let Err(err) = self.update_progress() {
+                        eprintln!("Error updating progress: {}", err);
+                    }
+                }
+                StateMessage::SetPaused(value) => {
+                    if let Err(err) = self.handle_set_paused(value) {
+                        eprintln!("Error setting paused: {}", err);
+                    }
+                }
+                StateMessage::SetStarted(value) => {
+                    if let Err(err) = self.handle_set_started(value) {
+                        eprintln!("Error setting started: {}", err);
+                    }
+                }
+                StateMessage::SetShutdown(value) => {
+                    if let Err(err) = self.handle_set_shutdown(value) {
+                        eprintln!("Error setting shutdown: {}", err);
+                    }
+                }
+                StateMessage::SetForceQuit(value) => {
+                    if let Err(err) = self.handle_set_force_quit(value) {
+                        eprintln!("Error setting force quit: {}", err);
+                    }
+                }
+                StateMessage::SetCompleted(value) => {
+                    if let Err(err) = self.handle_set_completed(value) {
+                        eprintln!("Error setting completed: {}", err);
+                    }
+                }
+                StateMessage::LoadLinks(links) => {
+                    if let Err(err) = self.handle_load_links(links) {
+                        eprintln!("Error loading links: {}", err);
+                    }
+                }
+                StateMessage::UpdateSettings(settings) => {
+                    if let Err(err) = self.update_settings(settings) {
+                        eprintln!("Error updating settings: {}", err);
+                    }
+                }
+            }
         }
     }
 
@@ -502,12 +448,6 @@ impl AppState {
         self.add_log(format!("[ERROR] {}: {}", context, error))
     }
 
-    #[allow(dead_code)]
-    pub fn get_logs(&self) -> Result<Vec<String>> {
-        let logs = self.logs.lock()?;
-        Ok(logs.iter().cloned().collect())
-    }
-
     pub fn update_progress(&self) -> Result<()> {
         let mut stats = self.stats.lock()?;
         if stats.initial_total_tasks > 0 {
@@ -593,30 +533,6 @@ impl AppState {
         Ok(flags.force_quit)
     }
 
-    #[allow(dead_code)]
-    pub fn get_progress(&self) -> Result<f64> {
-        let stats = self.stats.lock()?;
-        Ok(stats.progress)
-    }
-
-    #[allow(dead_code)]
-    pub fn get_completed_tasks(&self) -> Result<usize> {
-        let stats = self.stats.lock()?;
-        Ok(stats.completed_tasks)
-    }
-
-    #[allow(dead_code)]
-    pub fn get_total_tasks(&self) -> Result<usize> {
-        let stats = self.stats.lock()?;
-        Ok(stats.total_tasks)
-    }
-
-    #[allow(dead_code)]
-    pub fn get_initial_total_tasks(&self) -> Result<usize> {
-        let stats = self.stats.lock()?;
-        Ok(stats.initial_total_tasks)
-    }
-
     pub fn get_concurrent(&self) -> Result<usize> {
         let concurrent = self.concurrent.lock()?;
         Ok(*concurrent)
@@ -690,21 +606,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Get the current toast message if it hasn't expired (3 seconds)
-    #[allow(dead_code)]
-    pub fn get_toast(&self) -> Result<Option<String>> {
-        let mut toast = self.toast.lock()?;
-        if let Some((msg, time)) = toast.as_ref() {
-            if time.elapsed().as_secs() < 3 {
-                return Ok(Some(msg.clone()));
-            } else {
-                // Toast expired, clear it
-                *toast = None;
-            }
-        }
-        Ok(None)
-    }
-
     /// Clear any active toast notification
     pub fn clear_toast(&self) -> Result<()> {
         let mut toast = self.toast.lock()?;
@@ -717,13 +618,6 @@ impl AppState {
         let mut retries = self.total_retries.lock()?;
         *retries += 1;
         Ok(())
-    }
-
-    /// Get the total retry count
-    #[allow(dead_code)]
-    pub fn get_total_retries(&self) -> Result<usize> {
-        let retries = self.total_retries.lock()?;
-        Ok(*retries)
     }
 
     /// Reset the retry counter (called when starting a new download session)
@@ -760,7 +654,8 @@ impl AppState {
         let queues = self.queues.lock()?;
         let queue = queues.queue.clone();
         // Convert HashMap values to Vec for UI rendering
-        let active_downloads: Vec<DownloadProgress> = queues.active_downloads.values().cloned().collect();
+        let active_downloads: Vec<DownloadProgress> =
+            queues.active_downloads.values().cloned().collect();
         drop(queues);
 
         let logs = self.logs.lock()?;

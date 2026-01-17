@@ -110,15 +110,14 @@ pub fn process_queue(state: AppState, args: Args) {
                                 // Wrap download_worker in catch_unwind to handle panics gracefully
                                 let url_clone = url.clone();
                                 let state_for_panic = worker_state.clone();
-                                let result = std::panic::catch_unwind(
-                                    std::panic::AssertUnwindSafe(|| {
+                                let result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         download_worker(
                                             url_clone,
                                             worker_state.clone(),
                                             worker_args.clone(),
                                         );
-                                    }),
-                                );
+                                    }));
 
                                 if result.is_err() {
                                     // Ensure cleanup on panic - remove from active downloads
@@ -126,7 +125,10 @@ pub fn process_queue(state: AppState, args: Args) {
                                         .send(StateMessage::RemoveActiveDownload(url.clone()));
                                     let _ = state_for_panic.log_error(
                                         "Worker panic",
-                                        format!("Worker panicked while downloading {}, recovered", url),
+                                        format!(
+                                            "Worker panicked while downloading {}, recovered",
+                                            url
+                                        ),
                                     );
                                 }
                             } else {
