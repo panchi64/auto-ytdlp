@@ -16,7 +16,7 @@ use ratatui::{
     prelude::CrosstermBackend,
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph},
 };
 use std::io;
 
@@ -29,6 +29,17 @@ use crate::{
     utils::file::{add_clipboard_links, get_links_from_file, sanitize_links_file},
 };
 
+/// UI context for additional rendering state
+#[derive(Default)]
+pub struct UiContext {
+    pub queue_edit_mode: bool,
+    pub queue_selected_index: usize,
+    pub show_help: bool,
+    pub toast: Option<String>,
+    pub use_ascii: bool,
+    pub total_retries: usize,
+}
+
 /// Renders the Terminal User Interface (TUI) using the current application state.
 ///
 /// This function is responsible for drawing all UI elements including the progress bar,
@@ -39,13 +50,14 @@ use crate::{
 /// * `frame` - A mutable reference to the terminal frame to render elements into
 /// * `state` - A reference to the current application state
 /// * `settings_menu` - A mutable reference to the settings menu
+/// * `ctx` - UI context with additional state like queue edit mode
 ///
 /// # Example
 ///
 /// ```
-/// terminal.draw(|f| ui(f, &state, &mut settings_menu))?;
+/// terminal.draw(|f| ui(f, &state, &mut settings_menu, &ctx))?;
 /// ```
-pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu) {
+pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu, ctx: &UiContext) {
     if settings_menu.is_visible() {
         settings_menu.render(frame, frame.area());
     } else {
@@ -75,7 +87,17 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu)
             .split(frame.area());
 
         // ----- Status indicators -----
-        let status_indicator = if is_completed {
+        let status_indicator = if ctx.use_ascii {
+            if is_completed {
+                "[DONE] COMPLETED"
+            } else if is_paused {
+                "[PAUSE] PAUSED"
+            } else if started {
+                "[RUN] RUNNING"
+            } else {
+                "[STOP] STOPPED"
+            }
+        } else if is_completed {
             "✅ COMPLETED"
         } else if is_paused {
             "⏸️ PAUSED"
@@ -92,17 +114,32 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu)
             .count();
 
         // ----- Progress bar with status -----
+        let retry_info = if ctx.total_retries > 0 {
+            if ctx.use_ascii {
+                format!(" | [R] {} retries", ctx.total_retries)
+            } else {
+                format!(" | ↻ {} retries", ctx.total_retries)
+            }
+        } else {
+            String::new()
+        };
+
         let progress_title = format!(
-            "{} - Progress: {:.1}% ({}/{}){}",
+            "{} - Progress: {:.1}% ({}/{}){}{}",
             status_indicator,
             progress,
             completed_tasks,
             total_tasks,
             if failed_count > 0 {
-                format!(" - ❌ {} Failed", failed_count)
+                if ctx.use_ascii {
+                    format!(" - [X] {} Failed", failed_count)
+                } else {
+                    format!(" - ❌ {} Failed", failed_count)
+                }
             } else {
                 String::new()
-            }
+            },
+            retry_info
         );
 
         let gauge = Gauge::default()
@@ -131,27 +168,63 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu)
             .split(main_layout[1]);
 
         // Pending downloads list with status icon
-        let pending_title = format!(
-            "{} Pending Downloads - {}/{}",
-            if queue.is_empty() { "✅" } else { "📋" },
-            queue.len(),
-            initial_total
-        );
+        let pending_title = if ctx.queue_edit_mode {
+            if ctx.use_ascii {
+                format!("[EDIT] Edit Queue - {}/{} (Up/Down: Navigate | D: Delete | Esc: Exit)", queue.len(), initial_total)
+            } else {
+                format!("📝 Edit Queue - {}/{} (↑↓: Navigate | D: Delete | Esc: Exit)", queue.len(), initial_total)
+            }
+        } else {
+            let icon = if ctx.use_ascii {
+                if queue.is_empty() { "[OK]" } else { "[Q]" }
+            } else if queue.is_empty() { "✅" } else { "📋" };
+            format!(
+                "{} Pending Downloads - {}/{}",
+                icon,
+                queue.len(),
+                initial_total
+            )
+        };
 
-        let pending_items: Vec<ListItem> =
-            queue.iter().map(|i| ListItem::new(i.as_str())).collect();
-        let pending_list = List::new(pending_items)
-            .block(Block::default().title(pending_title).borders(Borders::ALL));
+        let pending_items: Vec<ListItem> = queue
+            .iter()
+            .enumerate()
+            .map(|(i, url)| {
+                let item = ListItem::new(url.as_str());
+                if ctx.queue_edit_mode && i == ctx.queue_selected_index {
+                    item.style(Style::default().fg(Color::Yellow).bg(Color::DarkGray))
+                } else {
+                    item
+                }
+            })
+            .collect();
+        let pending_list = List::new(pending_items).block(
+            Block::default()
+                .title(pending_title)
+                .borders(Borders::ALL)
+                .border_style(if ctx.queue_edit_mode {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                }),
+        );
         frame.render_widget(pending_list, downloads_layout[0]);
 
         // Active downloads list with status icon
+        let active_icon = if ctx.use_ascii {
+            if active_downloads.is_empty() {
+                if started { "[WAIT]" } else { "[STOP]" }
+            } else {
+                "[DL]"
+            }
+        } else if active_downloads.is_empty() {
+            if started { "⏸️" } else { "⏹️" }
+        } else {
+            "⏳"
+        };
         let active_title = format!(
             "{} Active Downloads - {}/{}",
-            if active_downloads.is_empty() {
-                if started { "⏸️" } else { "⏹️" }
-            } else {
-                "⏳"
-            },
+            active_icon,
             active_downloads.len(),
             concurrent
         );
@@ -197,19 +270,100 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu)
         frame.render_widget(logs_widget, main_layout[2]);
 
         // ----- Help text (keyboard shortcuts) -----
-        let help_text = if is_completed {
-            "R: Restart | Q: Quit | Shift+Q: Force Quit"
+        let help_text = if ctx.queue_edit_mode {
+            "↑↓: Navigate | D: Delete URL | Esc/Enter: Exit edit mode"
+        } else if is_completed {
+            "R: Restart | E: Edit Queue | F1: Help | F2: Settings | Q: Quit | Shift+Q: Force Quit"
+        } else if started && is_paused {
+            "P: Resume | R: Reload | E: Edit Queue | S: Stop | A: Paste URLs | F1: Help | F2: Settings | Q: Quit"
         } else if started {
-            "P: Pause | S: Stop | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit | Shift+Q: Force Quit"
+            "P: Pause | S: Stop | A: Paste URLs | F1: Help | F2: Settings | Q: Quit | Shift+Q: Force Quit"
         } else {
-            "S: Start | F: Load from file | A: Paste URLs | F2: Settings | Q: Quit | Shift+Q: Force Quit"
+            "S: Start | R: Reload | E: Edit Queue | A: Paste URLs | F1: Help | F2: Settings | Q: Quit"
         };
 
         let info_widget = Paragraph::new(help_text)
             .block(Block::default().title("Controls").borders(Borders::ALL))
             .style(Style::default().fg(Color::Gray));
         frame.render_widget(info_widget, main_layout[3]);
+
+        // ----- Help overlay (F1) -----
+        if ctx.show_help {
+            render_help_overlay(frame);
+        }
+
+        // ----- Toast notification -----
+        if let Some(toast_msg) = &ctx.toast {
+            render_toast(frame, toast_msg);
+        }
     }
+}
+
+/// Render a toast notification in the top-right corner
+fn render_toast(frame: &mut Frame, message: &str) {
+    let area = frame.area();
+    let toast_width = (message.len() + 4).min(50) as u16;
+    let toast_height = 3;
+    let toast_x = area.width.saturating_sub(toast_width + 2);
+    let toast_y = 1;
+    let toast_area = ratatui::layout::Rect::new(toast_x, toast_y, toast_width, toast_height);
+
+    // Clear the area behind the toast
+    frame.render_widget(Clear, toast_area);
+
+    let toast_widget = Paragraph::new(message)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .style(Style::default().fg(Color::White));
+
+    frame.render_widget(toast_widget, toast_area);
+}
+
+/// Render the help overlay
+fn render_help_overlay(frame: &mut Frame) {
+    let area = frame.area();
+    let popup_width = 44;
+    let popup_height = 18;
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+    let help_lines = vec![
+        Line::from(Span::styled("DOWNLOAD CONTROLS", Style::default().fg(Color::Yellow))),
+        Line::from("  S     Start / Stop downloads"),
+        Line::from("  P     Pause / Resume"),
+        Line::from("  R     Reload queue from file"),
+        Line::from(""),
+        Line::from(Span::styled("URL MANAGEMENT", Style::default().fg(Color::Yellow))),
+        Line::from("  A     Add URLs from clipboard"),
+        Line::from("  F     Load URLs from links.txt"),
+        Line::from("  E     Edit queue (when stopped)"),
+        Line::from(""),
+        Line::from(Span::styled("APPLICATION", Style::default().fg(Color::Yellow))),
+        Line::from("  F1    Toggle this help"),
+        Line::from("  F2    Open settings"),
+        Line::from("  q     Graceful quit"),
+        Line::from("  Q     Force quit (Shift+Q)"),
+        Line::from(""),
+        Line::from(Span::styled("Press F1 or Esc to close", Style::default().fg(Color::DarkGray))),
+    ];
+
+    let help_widget = Paragraph::new(help_lines)
+        .block(
+            Block::default()
+                .title(" Help ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .style(Style::default().fg(Color::White));
+
+    frame.render_widget(help_widget, popup_area);
 }
 
 /// Runs the Terminal User Interface (TUI) loop.
@@ -303,10 +457,31 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
     let mut await_downloads_on_exit = false;
     // --- End of addition ---
 
+    // --- Force quit confirmation state ---
+    let mut force_quit_pending = false;
+    let mut force_quit_time: Option<Instant> = None;
+
+    // --- Queue edit mode state ---
+    let mut queue_edit_mode = false;
+    let mut queue_selected_index: usize = 0;
+
+    // --- Help overlay state ---
+    let mut show_help = false;
+
     // Main loop
     loop {
+        // Build UI context
+        let ui_ctx = UiContext {
+            queue_edit_mode,
+            queue_selected_index,
+            show_help,
+            toast: state.get_toast().unwrap_or(None),
+            use_ascii: state.get_settings().map(|s| s.use_ascii_indicators).unwrap_or(false),
+            total_retries: state.get_total_retries().unwrap_or(0),
+        };
+
         // Draw UI
-        terminal.draw(|f| ui(f, &state, &mut settings_menu))?;
+        terminal.draw(|f| ui(f, &state, &mut settings_menu, &ui_ctx))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
@@ -320,23 +495,94 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                     continue;
                 }
 
+                // Handle help overlay - F1 or Esc closes it
+                if show_help {
+                    match key.code {
+                        KeyCode::F(1) | KeyCode::Esc => {
+                            show_help = false;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // Handle queue edit mode
+                if queue_edit_mode {
+                    let queue_len = state.get_queue().map(|q| q.len()).unwrap_or(0);
+                    match key.code {
+                        KeyCode::Up => {
+                            queue_selected_index = queue_selected_index.saturating_sub(1);
+                        }
+                        KeyCode::Down => {
+                            if queue_len > 0 && queue_selected_index < queue_len - 1 {
+                                queue_selected_index += 1;
+                            }
+                        }
+                        KeyCode::Char('d') | KeyCode::Delete => {
+                            if queue_len > 0
+                                && let Ok(Some(removed)) = state.remove_from_queue(queue_selected_index)
+                            {
+                                // Show toast notification for removal
+                                let _ = state.show_toast("URL removed from queue");
+                                if let Err(e) = state.add_log(format!("Removed from queue: {}", removed)) {
+                                    eprintln!("Error adding log: {}", e);
+                                }
+                                // Adjust selected index if necessary
+                                let new_len = queue_len - 1;
+                                if new_len == 0 {
+                                    queue_edit_mode = false;
+                                } else if queue_selected_index >= new_len {
+                                    queue_selected_index = new_len.saturating_sub(1);
+                                }
+                            }
+                        }
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('e') => {
+                            queue_edit_mode = false;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // Then handle normal application keys
                 match key.code {
+                    // F1 for help overlay
+                    KeyCode::F(1) => {
+                        show_help = true;
+                    }
                     // Uppercase 'Q' (typically from Shift+q or CapsLock+Q) for Force Quit
                     KeyCode::Char('Q') => {
-                        if let Err(e) = state.send(StateMessage::SetForceQuit(true)) {
-                            eprintln!("Error setting force quit: {}", e);
+                        // Check if we're within the 2-second confirmation window
+                        let should_force_quit = force_quit_pending
+                            && force_quit_time
+                                .map(|t| t.elapsed() < Duration::from_secs(2))
+                                .unwrap_or(false);
+
+                        if should_force_quit {
+                            // Second Q within 2 seconds - execute force quit
+                            if let Err(e) = state.send(StateMessage::SetForceQuit(true)) {
+                                eprintln!("Error setting force quit: {}", e);
+                            }
+                            if let Err(e) = state.send(StateMessage::SetShutdown(true)) {
+                                eprintln!("Error setting shutdown: {}", e);
+                            }
+                            if let Err(e) = state.add_log(
+                                "TUI: Force quit confirmed. Exiting immediately.".to_string(),
+                            ) {
+                                eprintln!("Error adding log: {}", e);
+                            }
+                            // await_downloads_on_exit remains false (its default for force quit)
+                            break;
+                        } else {
+                            // First Q - set pending and show warning
+                            force_quit_pending = true;
+                            force_quit_time = Some(Instant::now());
+                            if let Err(e) = state.add_log(
+                                "Press Shift+Q again within 2 seconds to force quit".to_string(),
+                            ) {
+                                eprintln!("Error adding log: {}", e);
+                            }
                         }
-                        if let Err(e) = state.send(StateMessage::SetShutdown(true)) {
-                            eprintln!("Error setting shutdown: {}", e);
-                        }
-                        if let Err(e) = state.add_log(
-                            "TUI: Force quit (Shift+Q or Q with CapsLock) initiated. Exiting TUI immediately.".to_string(),
-                        ) {
-                            eprintln!("Error adding log: {}", e);
-                        }
-                        // await_downloads_on_exit remains false (its default for force quit)
-                        break;
                     }
                     // Lowercase 'q' for Graceful Quit
                     KeyCode::Char('q') => {
@@ -415,7 +661,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                 // If this is not desired, remove this block for 'S' (Stop).
                                 if let Some(handle) = download_thread_handle.take() {
                                     // .take() so it's not joined again on exit
-                                    terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Show "waiting" log
+                                    terminal.draw(|f| ui(f, &state, &mut settings_menu, &ui_ctx))?; // Show "waiting" log
                                     eprintln!(
                                         "Stopping downloads: Waiting for active downloads to complete..."
                                     );
@@ -436,7 +682,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                         }
                                         eprintln!("Downloads stopped gracefully.");
                                     }
-                                    terminal.draw(|f| ui(f, &state, &mut settings_menu))?; // Redraw after join
+                                    terminal.draw(|f| ui(f, &state, &mut settings_menu, &ui_ctx))?; // Redraw after join
                                 }
                                 // --- End of addition for 'Stop' ---
 
@@ -452,16 +698,22 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                         }
                     }
                     KeyCode::Char('p') => {
-                        if let Ok(is_started) = state.is_started() {
-                            if is_started {
-                                // Get current paused state and toggle it
-                                let current_paused = state.is_paused().unwrap_or(false);
-                                if let Err(e) = state.send(StateMessage::SetPaused(!current_paused))
-                                {
-                                    eprintln!("Error setting paused: {}", e);
-                                }
-                                last_tick = Instant::now() - tick_rate;
+                        if let Ok(true) = state.is_started() {
+                            // Get current paused state and toggle it
+                            let current_paused = state.is_paused().unwrap_or(false);
+                            if let Err(e) = state.send(StateMessage::SetPaused(!current_paused)) {
+                                eprintln!("Error setting paused: {}", e);
                             }
+                            // Log the pause/resume action
+                            let log_message = if current_paused {
+                                "Downloads resumed"
+                            } else {
+                                "Downloads paused. Press P to resume."
+                            };
+                            if let Err(e) = state.add_log(log_message.to_string()) {
+                                eprintln!("Error adding log: {}", e);
+                            }
+                            last_tick = Instant::now() - tick_rate;
                         }
                     }
                     KeyCode::Char('r') => {
@@ -537,51 +789,47 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                         last_tick = Instant::now() - tick_rate;
                     }
                     KeyCode::Char('a') => {
-                        // Only allow adding links when not actively downloading
-                        if !state.is_started().unwrap_or(false)
-                            || state.is_paused().unwrap_or(false)
-                            || state.is_completed().unwrap_or(false)
-                        {
-                            let ctx: Result<
-                                clipboard::ClipboardContext,
-                                Box<dyn std::error::Error>,
-                            > = ClipboardProvider::new().map_err(|e| {
-                                Box::new(AppError::Clipboard(e.to_string()))
-                                    as Box<dyn std::error::Error>
-                            });
+                        // Allow adding links at any time - they will be queued for download
+                        let ctx: Result<
+                            clipboard::ClipboardContext,
+                            Box<dyn std::error::Error>,
+                        > = ClipboardProvider::new().map_err(|e| {
+                            Box::new(AppError::Clipboard(e.to_string()))
+                                as Box<dyn std::error::Error>
+                        });
 
-                            match ctx {
-                                Ok(mut ctx) => match ctx.get_contents() {
-                                    Ok(contents) => match add_clipboard_links(&state, &contents) {
-                                        Ok(links_added) => {
-                                            if links_added > 0 {
-                                                if let Err(e) =
-                                                    state.send(StateMessage::SetCompleted(false))
-                                                {
-                                                    eprintln!(
-                                                        "Error setting completed flag: {}",
-                                                        e
-                                                    );
-                                                }
-                                                if let Err(e) = state
-                                                    .add_log(format!("Added {} URLs", links_added))
-                                                {
-                                                    eprintln!("Error adding log: {}", e);
-                                                }
+                        match ctx {
+                            Ok(mut ctx) => match ctx.get_contents() {
+                                Ok(contents) => match add_clipboard_links(&state, &contents) {
+                                    Ok(links_added) => {
+                                        if links_added > 0 {
+                                            if let Err(e) =
+                                                state.send(StateMessage::SetCompleted(false))
+                                            {
+                                                eprintln!(
+                                                    "Error setting completed flag: {}",
+                                                    e
+                                                );
+                                            }
+                                            // Use "Queued" instead of "Added" when downloads are active
+                                            let is_active = state.is_started().unwrap_or(false)
+                                                && !state.is_paused().unwrap_or(false)
+                                                && !state.is_completed().unwrap_or(false);
+                                            let msg = if is_active {
+                                                format!("Queued {} new URLs", links_added)
+                                            } else {
+                                                format!("Added {} URLs", links_added)
+                                            };
+                                            // Show toast notification
+                                            let _ = state.show_toast(&msg);
+                                            if let Err(e) = state.add_log(msg) {
+                                                eprintln!("Error adding log: {}", e);
                                             }
                                         }
-                                        Err(e) => {
-                                            if let Err(log_err) = state.add_log(format!(
-                                                "Error adding clipboard links: {}",
-                                                e
-                                            )) {
-                                                eprintln!("Error adding log: {}", log_err);
-                                            }
-                                        }
-                                    },
+                                    }
                                     Err(e) => {
                                         if let Err(log_err) = state.add_log(format!(
-                                            "Error getting clipboard contents: {}",
+                                            "Error adding clipboard links: {}",
                                             e
                                         )) {
                                             eprintln!("Error adding log: {}", log_err);
@@ -589,16 +837,40 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                     }
                                 },
                                 Err(e) => {
-                                    if let Err(log_err) = state
-                                        .add_log(format!("Error initializing clipboard: {}", e))
-                                    {
+                                    if let Err(log_err) = state.add_log(format!(
+                                        "Error getting clipboard contents: {}",
+                                        e
+                                    )) {
                                         eprintln!("Error adding log: {}", log_err);
                                     }
                                 }
+                            },
+                            Err(e) => {
+                                if let Err(log_err) = state
+                                    .add_log(format!("Error initializing clipboard: {}", e))
+                                {
+                                    eprintln!("Error adding log: {}", log_err);
+                                }
                             }
-                        } else if let Err(e) =
-                            state.add_log("Cannot add links during active downloads".to_string())
-                        {
+                        }
+                    }
+                    KeyCode::Char('e') => {
+                        // Only allow queue editing when not actively downloading
+                        let is_active = state.is_started().unwrap_or(false)
+                            && !state.is_paused().unwrap_or(false)
+                            && !state.is_completed().unwrap_or(false);
+                        if !is_active {
+                            let queue_len = state.get_queue().map(|q| q.len()).unwrap_or(0);
+                            if queue_len > 0 {
+                                queue_edit_mode = true;
+                                queue_selected_index = 0;
+                                if let Err(e) = state.add_log("Queue edit mode: ↑↓ Navigate | D: Delete | Esc: Exit".to_string()) {
+                                    eprintln!("Error adding log: {}", e);
+                                }
+                            } else if let Err(e) = state.add_log("No URLs in queue to edit".to_string()) {
+                                eprintln!("Error adding log: {}", e);
+                            }
+                        } else if let Err(e) = state.add_log("Cannot edit queue while downloads are active".to_string()) {
                             eprintln!("Error adding log: {}", e);
                         }
                     }
@@ -615,24 +887,28 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
 
-            // Check if we should send a notification
-            if let Ok(is_completed) = state.is_completed() {
-                if is_completed {
-                    let is_force_quit = state.is_force_quit().unwrap_or(false);
-                    let is_shutdown = state.is_shutdown().unwrap_or(false);
-                    let flags = is_force_quit || is_shutdown;
+            // Reset force quit confirmation if timeout expired
+            if force_quit_pending
+                && let Some(time) = force_quit_time
+                && time.elapsed() >= Duration::from_secs(2)
+            {
+                force_quit_pending = false;
+                force_quit_time = None;
+            }
 
-                    // Show notification when all downloads are completed
-                    if !flags {
-                        let _ = Notification::new()
-                            .summary("Auto-YTDlp Downloads Completed")
-                            .body("All downloads have been completed!")
-                            .show();
-                        // If we want to ensure notification is sent only once per completion cycle,
-                        // a flag like `notification_sent` in AppState would be needed and managed.
-                        // For example: state.send(StateMessage::SetNotificationSent(true));
-                        // And AppState.notification_sent would be reset in reset_for_new_run().
-                    }
+            // Check if we should send a notification
+            if let Ok(is_completed) = state.is_completed()
+                && is_completed
+            {
+                let is_force_quit = state.is_force_quit().unwrap_or(false);
+                let is_shutdown = state.is_shutdown().unwrap_or(false);
+
+                // Show notification when all downloads are completed
+                if !is_force_quit && !is_shutdown {
+                    let _ = Notification::new()
+                        .summary("Auto-YTDlp Downloads Completed")
+                        .body("All downloads have been completed!")
+                        .show();
                 }
             }
         }

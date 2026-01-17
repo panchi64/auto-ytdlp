@@ -104,6 +104,9 @@ pub struct Settings {
     pub network_retry: bool,
     /// Delay in seconds between retry attempts
     pub retry_delay: u64,
+    /// Use ASCII indicators instead of emoji (for terminal compatibility)
+    #[serde(default)]
+    pub use_ascii_indicators: bool,
 }
 
 impl Default for Settings {
@@ -117,6 +120,7 @@ impl Default for Settings {
             add_metadata: false,
             network_retry: false,
             retry_delay: 2,
+            use_ascii_indicators: false,
         }
     }
 }

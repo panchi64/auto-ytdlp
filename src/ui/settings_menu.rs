@@ -153,6 +153,10 @@ impl SettingsMenu {
                                 _ => 4, // Index for "Custom"
                             };
                         }
+                        8 => {
+                            // ASCII Indicators
+                            self.option_index = if self.settings.use_ascii_indicators { 1 } else { 0 };
+                        }
                         _ => {
                             self.option_index = 0; // Default for safety
                         }
@@ -174,14 +178,26 @@ impl SettingsMenu {
             }
             KeyCode::Down => {
                 if let Some(i) = self.list_state.selected() {
-                    if i < 7 {
-                        // Number of settings options - 1 (increased to 7 for retry_delay)
+                    if i < 8 {
+                        // Number of settings options - 1 (increased to 8 for ascii_indicators)
                         self.list_state.select(Some(i + 1));
                     }
                 }
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Check if the current setting is a boolean toggle (Yes/No only)
+    fn is_boolean_setting(&self) -> bool {
+        if let Some(selected) = self.list_state.selected() {
+            // Indices 2, 3, 4, 6, 8 are boolean toggles (subtitles, thumbnail, metadata, network_retry, ascii_indicators)
+            // Note: subtitles (2) is NOT a toggle when audio-only mode is selected
+            let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
+            matches!(selected, 2 if !is_audio_only) || matches!(selected, 3 | 4 | 6 | 8)
+        } else {
+            false
         }
     }
 
@@ -196,11 +212,21 @@ impl SettingsMenu {
                 if self.option_index > 0 {
                     self.option_index -= 1;
                 }
+                // Auto-apply for boolean toggles
+                if self.is_boolean_setting() {
+                    self.update_setting(state);
+                    self.editing = false;
+                }
                 true
             }
             KeyCode::Right => {
                 self.option_index += 1;
                 self.adjust_option_index();
+                // Auto-apply for boolean toggles
+                if self.is_boolean_setting() {
+                    self.update_setting(state);
+                    self.editing = false;
+                }
                 true
             }
             KeyCode::Enter => {
@@ -325,6 +351,10 @@ impl SettingsMenu {
                     // Retry delay options (1, 2, 5, 10 seconds, Custom)
                     self.option_index = self.option_index.min(4); // 5 options
                 }
+                8 => {
+                    // ASCII indicators options (true/false)
+                    self.option_index = self.option_index.min(1); // 2 options (true/false)
+                }
                 _ => {}
             }
         }
@@ -403,6 +433,10 @@ impl SettingsMenu {
                         _ => self.settings.retry_delay,
                     };
                 }
+                8 => {
+                    // ASCII Indicators
+                    self.settings.use_ascii_indicators = self.option_index == 1;
+                }
                 _ => {}
             }
         }
@@ -427,7 +461,7 @@ impl SettingsMenu {
         } else {
             // Render the main settings dialog (list of settings)
             let popup_width = 60;
-            let popup_height = 15;
+            let popup_height = 16;
             let dialog_x = (area.width.saturating_sub(popup_width)) / 2;
             let dialog_y = (area.height.saturating_sub(popup_height)) / 2;
             let main_dialog_area = Rect::new(dialog_x, dialog_y, popup_width, popup_height);
@@ -513,6 +547,18 @@ impl SettingsMenu {
                         value_style,
                     ),
                 ])),
+                ListItem::new(Line::from(vec![
+                    Span::styled("ASCII Indicators", style),
+                    Span::raw(": "),
+                    Span::styled(
+                        if self.settings.use_ascii_indicators {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        value_style,
+                    ),
+                ])),
             ];
 
             let settings_list = List::new(items)
@@ -594,6 +640,7 @@ impl SettingsMenu {
                 5 => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
                 6 => (vec!["No", "Yes"], "Auto Retry Network Failures"),
                 7 => (vec!["1", "2", "5", "10", "Custom"], "Retry Delay"),
+                8 => (vec!["No", "Yes"], "ASCII Indicators (for terminal compatibility)"),
                 _ => (vec![], ""),
             };
 
@@ -642,11 +689,18 @@ impl SettingsMenu {
         let popup_y = (screen_area.height.saturating_sub(popup_height)) / 2;
         let input_popup_dialog_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
+        // Dynamic title based on which setting is being edited
+        let title = match self.list_state.selected() {
+            Some(5) => "Enter Concurrent Downloads",
+            Some(7) => "Enter Retry Delay (seconds)",
+            _ => "Enter Value",
+        };
+
         let input_text = format!("{}_", self.custom_input);
         let input_widget = Paragraph::new(Text::from(input_text))
             .block(
                 Block::default()
-                    .title("Enter Concurrent Downloads")
+                    .title(title)
                     .title_style(Style::default().fg(Color::White))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::White))

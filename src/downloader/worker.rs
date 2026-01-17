@@ -211,6 +211,10 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             break;
         }
         if retry_count <= max_retries {
+            // Increment the global retry counter for display
+            if let Err(e) = state.increment_retries() {
+                eprintln!("Error incrementing retries: {}", e);
+            }
             std::thread::sleep(std::time::Duration::from_secs(retry_delay));
         }
     }

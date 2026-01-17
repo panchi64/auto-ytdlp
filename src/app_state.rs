@@ -1,6 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::errors::{AppError, Result};
 use crate::utils::settings::Settings;
@@ -97,6 +98,12 @@ pub struct AppState {
     /// Lock for serializing file operations to prevent race conditions
     file_lock: Arc<Mutex<()>>,
 
+    /// Toast notification (message, timestamp)
+    toast: Arc<Mutex<Option<(String, Instant)>>>,
+
+    /// Retry statistics counter
+    total_retries: Arc<Mutex<usize>>,
+
     // Channel for state updates
     tx: Sender<StateMessage>,
     rx: Arc<Mutex<Receiver<StateMessage>>>,
@@ -135,6 +142,8 @@ impl AppState {
             concurrent: Arc::new(Mutex::new(settings.concurrent_downloads)),
             settings: Arc::new(Mutex::new(settings)),
             file_lock: Arc::new(Mutex::new(())),
+            toast: Arc::new(Mutex::new(None)),
+            total_retries: Arc::new(Mutex::new(0)),
             tx,
             rx: Arc::new(Mutex::new(rx)),
         };
@@ -377,6 +386,27 @@ impl AppState {
         Ok(queues.queue.clone())
     }
 
+    /// Remove a URL from the queue at a specific index
+    pub fn remove_from_queue(&self, index: usize) -> Result<Option<String>> {
+        let mut queues = self.queues.lock()?;
+        if index < queues.queue.len() {
+            let removed = queues.queue.remove(index);
+            // Update stats
+            if removed.is_some() {
+                let mut stats = self.stats.lock()?;
+                if stats.total_tasks > 0 {
+                    stats.total_tasks -= 1;
+                }
+                if stats.initial_total_tasks > 0 {
+                    stats.initial_total_tasks -= 1;
+                }
+            }
+            Ok(removed)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn get_active_downloads(&self) -> Result<HashSet<String>> {
         let queues = self.queues.lock()?;
         Ok(queues.active_downloads.clone())
@@ -451,6 +481,12 @@ impl AppState {
         let mut stats = self.stats.lock()?;
         stats.completed_tasks = 0;
         stats.progress = 0.0;
+        drop(stats);
+
+        // Reset retry counter and clear toast using the public API
+        self.reset_retries()?;
+        self.clear_toast()?;
+
         Ok(())
     }
 
@@ -482,6 +518,56 @@ impl AppState {
     pub fn update_settings(&self, new_settings: Settings) -> Result<()> {
         let mut settings = self.settings.lock()?;
         *settings = new_settings;
+        Ok(())
+    }
+
+    /// Show a toast notification (auto-clears after 3 seconds)
+    ///
+    /// Accepts any type that can be converted into a String (e.g., `&str`, `String`)
+    pub fn show_toast(&self, message: impl Into<String>) -> Result<()> {
+        let mut toast = self.toast.lock()?;
+        *toast = Some((message.into(), Instant::now()));
+        Ok(())
+    }
+
+    /// Get the current toast message if it hasn't expired (3 seconds)
+    pub fn get_toast(&self) -> Result<Option<String>> {
+        let mut toast = self.toast.lock()?;
+        if let Some((msg, time)) = toast.as_ref() {
+            if time.elapsed().as_secs() < 3 {
+                return Ok(Some(msg.clone()));
+            } else {
+                // Toast expired, clear it
+                *toast = None;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Clear any active toast notification
+    pub fn clear_toast(&self) -> Result<()> {
+        let mut toast = self.toast.lock()?;
+        *toast = None;
+        Ok(())
+    }
+
+    /// Increment the retry counter
+    pub fn increment_retries(&self) -> Result<()> {
+        let mut retries = self.total_retries.lock()?;
+        *retries += 1;
+        Ok(())
+    }
+
+    /// Get the total retry count
+    pub fn get_total_retries(&self) -> Result<usize> {
+        let retries = self.total_retries.lock()?;
+        Ok(*retries)
+    }
+
+    /// Reset the retry counter (called when starting a new download session)
+    pub fn reset_retries(&self) -> Result<()> {
+        let mut retries = self.total_retries.lock()?;
+        *retries = 0;
         Ok(())
     }
 }
