@@ -399,29 +399,27 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
             eprintln!("Error adding log: {}", e);
         }
 
-        if error.to_string().contains("yt-dlp") {
-            if let Err(e) = state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string()) {
-                eprintln!("Error adding log: {}", e);
-            }
+        if error.to_string().contains("yt-dlp")
+            && let Err(e) = state.add_log("Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string())
+        {
+            eprintln!("Error adding log: {}", e);
         }
-        if error.to_string().contains("ffmpeg") {
-            if let Err(e) = state
+        if error.to_string().contains("ffmpeg")
+            && let Err(e) = state
                 .add_log("Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string())
-            {
-                eprintln!("Error adding log: {}", e);
-            }
+        {
+            eprintln!("Error adding log: {}", e);
         }
     }
 
     // Sanitize links file and load valid links
     match sanitize_links_file() {
         Ok(removed) => {
-            if removed > 0 {
-                if let Err(e) =
+            if removed > 0
+                && let Err(e) =
                     state.add_log(format!("Removed {} invalid URLs from links.txt", removed))
-                {
-                    eprintln!("Error adding log: {}", e);
-                }
+            {
+                eprintln!("Error adding log: {}", e);
             }
         }
         Err(e) => {
@@ -488,8 +486,9 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
             .unwrap_or_else(|| Duration::from_secs(0));
 
         // Handle input events
-        if crossterm::event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+        if crossterm::event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+        {
                 // First check if settings menu should handle the key
                 if settings_menu.is_visible() && settings_menu.handle_input(key, &state) {
                     continue;
@@ -624,19 +623,19 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                             eprintln!("Error adding log: {}", e);
                                         }
 
-                                        if error.to_string().contains("yt-dlp") {
-                                            if let Err(e) = state.add_log(
+                                        if error.to_string().contains("yt-dlp")
+                                            && let Err(e) = state.add_log(
                                                 "Download the latest release of yt-dlp from: https://github.com/yt-dlp/yt-dlp/releases".to_string()
-                                            ) {
-                                                eprintln!("Error adding log: {}", e);
-                                            }
+                                            )
+                                        {
+                                            eprintln!("Error adding log: {}", e);
                                         }
-                                        if error.to_string().contains("ffmpeg") {
-                                            if let Err(e) = state.add_log(
+                                        if error.to_string().contains("ffmpeg")
+                                            && let Err(e) = state.add_log(
                                                 "Download ffmpeg from: https://www.ffmpeg.org/download.html".to_string()
-                                            ) {
-                                                eprintln!("Error adding log: {}", e);
-                                            }
+                                            )
+                                        {
+                                            eprintln!("Error adding log: {}", e);
                                         }
                                     }
                                 }
@@ -749,13 +748,13 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                         // First sanitize the links file
                         match sanitize_links_file() {
                             Ok(removed) => {
-                                if removed > 0 {
-                                    if let Err(e) = state.add_log(format!(
+                                if removed > 0
+                                    && let Err(e) = state.add_log(format!(
                                         "Removed {} invalid URLs from links.txt",
                                         removed
-                                    )) {
-                                        eprintln!("Error adding log: {}", e);
-                                    }
+                                    ))
+                                {
+                                    eprintln!("Error adding log: {}", e);
                                 }
                             }
                             Err(e) => {
@@ -880,7 +879,6 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                     }
                     _ => {}
                 }
-            }
         }
 
         // Handle timed events

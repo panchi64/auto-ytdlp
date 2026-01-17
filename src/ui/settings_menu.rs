@@ -169,19 +169,19 @@ impl SettingsMenu {
                 true
             }
             KeyCode::Up => {
-                if let Some(i) = self.list_state.selected() {
-                    if i > 0 {
-                        self.list_state.select(Some(i - 1));
-                    }
+                if let Some(i) = self.list_state.selected()
+                    && i > 0
+                {
+                    self.list_state.select(Some(i - 1));
                 }
                 true
             }
             KeyCode::Down => {
-                if let Some(i) = self.list_state.selected() {
-                    if i < 8 {
-                        // Number of settings options - 1 (increased to 8 for ascii_indicators)
-                        self.list_state.select(Some(i + 1));
-                    }
+                if let Some(i) = self.list_state.selected()
+                    && i < 8
+                {
+                    // Number of settings options - 1 (increased to 8 for ascii_indicators)
+                    self.list_state.select(Some(i + 1));
                 }
                 true
             }
@@ -231,23 +231,23 @@ impl SettingsMenu {
             }
             KeyCode::Enter => {
                 // Special case for custom concurrent downloads
-                if let Some(5) = self.list_state.selected() {
-                    if self.option_index == 4 {
-                        // Custom option
-                        self.custom_input = self.settings.concurrent_downloads.to_string();
-                        self.input_mode = true;
-                        return true;
-                    }
+                if let Some(5) = self.list_state.selected()
+                    && self.option_index == 4
+                {
+                    // Custom option
+                    self.custom_input = self.settings.concurrent_downloads.to_string();
+                    self.input_mode = true;
+                    return true;
                 }
 
                 // Special case for custom retry delay
-                if let Some(7) = self.list_state.selected() {
-                    if self.option_index == 4 {
-                        // Custom option
-                        self.custom_input = self.settings.retry_delay.to_string();
-                        self.input_mode = true;
-                        return true;
-                    }
+                if let Some(7) = self.list_state.selected()
+                    && self.option_index == 4
+                {
+                    // Custom option
+                    self.custom_input = self.settings.retry_delay.to_string();
+                    self.input_mode = true;
+                    return true;
                 }
 
                 // Regular settings update
@@ -272,18 +272,18 @@ impl SettingsMenu {
                     match selected_setting_idx {
                         5 => {
                             // Custom concurrent downloads
-                            if let Ok(value) = self.custom_input.parse::<usize>() {
-                                if value > 0 {
-                                    self.settings.concurrent_downloads = value;
-                                }
+                            if let Ok(value) = self.custom_input.parse::<usize>()
+                                && value > 0
+                            {
+                                self.settings.concurrent_downloads = value;
                             }
                         }
                         7 => {
                             // Custom retry delay
-                            if let Ok(value) = self.custom_input.parse::<u64>() {
-                                if value > 0 {
-                                    self.settings.retry_delay = value;
-                                }
+                            if let Ok(value) = self.custom_input.parse::<u64>()
+                                && value > 0
+                            {
+                                self.settings.retry_delay = value;
                             }
                         }
                         _ => {}

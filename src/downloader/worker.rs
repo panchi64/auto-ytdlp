@@ -69,10 +69,10 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             break;
         }
 
-        if retry_count > 0 {
-            if let Err(e) = state.add_log(format!("Retry attempt {} for: {}", retry_count, url)) {
-                eprintln!("Error adding log: {}", e);
-            }
+        if retry_count > 0
+            && let Err(e) = state.add_log(format!("Retry attempt {} for: {}", retry_count, url))
+        {
+            eprintln!("Error adding log: {}", e);
         }
 
         let cmd_args = build_ytdlp_command_args(&args, &url);
@@ -254,9 +254,8 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     if state.get_queue().unwrap_or_default().is_empty()
         && state.get_active_downloads().unwrap_or_default().is_empty()
         && !state.is_force_quit().unwrap_or(false)
+        && let Err(e) = state.send(StateMessage::SetCompleted(true))
     {
-        if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
-            eprintln!("Error setting completed: {}", e);
-        }
+        eprintln!("Error setting completed: {}", e);
     }
 }

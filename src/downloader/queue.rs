@@ -68,12 +68,11 @@ pub fn process_queue(state: AppState, args: Args) {
                 // If force_quit is set, we want to exit the controller loop immediately.
                 // Worker threads also check this flag and should start terminating.
                 // The download_worker itself is modified to exit quickly on force_quit.
-                if state_clone.is_force_quit().unwrap_or(false) {
-                    if let Err(e) = state_clone
+                if state_clone.is_force_quit().unwrap_or(false)
+                    && let Err(e) = state_clone
                         .add_log("Controller: Force quit detected, exiting main loop.".to_string())
-                    {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                {
+                    eprintln!("Error adding log: {}", e);
                 }
                 break;
             }
@@ -183,12 +182,11 @@ pub fn process_queue(state: AppState, args: Args) {
                 eprintln!("Error adding log: {}", e);
             }
             for handle in worker_handles {
-                if let Err(e) = handle.join() {
-                    if let Err(log_err) =
+                if let Err(e) = handle.join()
+                    && let Err(log_err) =
                         state_clone.add_log(format!("Controller: Worker thread panicked: {:?}", e))
-                    {
-                        eprintln!("Error adding log: {}", log_err);
-                    }
+                {
+                    eprintln!("Error adding log: {}", log_err);
                 }
             }
             if let Err(e) =
@@ -260,15 +258,14 @@ pub fn process_queue(state: AppState, args: Args) {
             }));
         }
 
-        if let Some(handle) = log_clear_handle {
-            if let Err(e) = handle.join() {
-                if let Err(log_err) = state_clone.add_log(format!(
-                    "Log clearing thread panicked: {:?}. Logs may not be cleared.",
-                    e
-                )) {
-                    eprintln!("Error adding log: {}", log_err);
-                }
-            }
+        if let Some(handle) = log_clear_handle
+            && let Err(e) = handle.join()
+            && let Err(log_err) = state_clone.add_log(format!(
+                "Log clearing thread panicked: {:?}. Logs may not be cleared.",
+                e
+            ))
+        {
+            eprintln!("Error adding log: {}", log_err);
         }
     });
 

@@ -7,9 +7,10 @@ use std::{
 };
 
 /// Video format preset options
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum FormatPreset {
     /// Best video and audio quality
+    #[default]
     Best,
     /// Audio only
     AudioOnly,
@@ -21,12 +22,6 @@ pub enum FormatPreset {
     SD480p,
     /// 360p resolution
     SD360p,
-}
-
-impl Default for FormatPreset {
-    fn default() -> Self {
-        Self::Best
-    }
 }
 
 impl FormatPreset {
@@ -52,9 +47,10 @@ impl FormatPreset {
 }
 
 /// Output file format options
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum OutputFormat {
     /// Let yt-dlp decide based on source
+    #[default]
     Auto,
     /// MP4 format
     MP4,
@@ -64,12 +60,6 @@ pub enum OutputFormat {
     MP3,
     /// WEBM format
     Webm,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl OutputFormat {
