@@ -26,22 +26,16 @@ pub enum FormatPreset {
 
 impl FormatPreset {
     /// Get the yt-dlp format argument string for this preset
-    pub fn get_format_arg(&self) -> String {
+    ///
+    /// Returns a static string reference to avoid allocations.
+    pub fn get_format_arg(&self) -> &'static str {
         match self {
-            FormatPreset::Best => "bestvideo*+bestaudio/best".to_string(),
-            FormatPreset::AudioOnly => "bestaudio/best".to_string(),
-            FormatPreset::HD1080p => {
-                "bestvideo[height<=1080]+bestaudio/best[height<=1080]".to_string()
-            }
-            FormatPreset::HD720p => {
-                "bestvideo[height<=720]+bestaudio/best[height<=720]".to_string()
-            }
-            FormatPreset::SD480p => {
-                "bestvideo[height<=480]+bestaudio/best[height<=480]".to_string()
-            }
-            FormatPreset::SD360p => {
-                "bestvideo[height<=360]+bestaudio/best[height<=360]".to_string()
-            }
+            FormatPreset::Best => "bestvideo*+bestaudio/best",
+            FormatPreset::AudioOnly => "bestaudio/best",
+            FormatPreset::HD1080p => "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+            FormatPreset::HD720p => "bestvideo[height<=720]+bestaudio/best[height<=720]",
+            FormatPreset::SD480p => "bestvideo[height<=480]+bestaudio/best[height<=480]",
+            FormatPreset::SD360p => "bestvideo[height<=360]+bestaudio/best[height<=360]",
         }
     }
 }
@@ -64,13 +58,15 @@ pub enum OutputFormat {
 
 impl OutputFormat {
     /// Get the yt-dlp output format argument/modifier
-    pub fn get_format_modifier(&self) -> Option<String> {
+    ///
+    /// Returns a static string reference to avoid allocations.
+    pub fn get_format_modifier(&self) -> Option<&'static str> {
         match self {
             OutputFormat::Auto => None,
-            OutputFormat::MP4 => Some("--merge-output-format mp4".to_string()),
-            OutputFormat::Mkv => Some("--merge-output-format mkv".to_string()),
-            OutputFormat::MP3 => Some("--extract-audio --audio-format mp3".to_string()),
-            OutputFormat::Webm => Some("--merge-output-format webm".to_string()),
+            OutputFormat::MP4 => Some("--merge-output-format mp4"),
+            OutputFormat::Mkv => Some("--merge-output-format mkv"),
+            OutputFormat::MP3 => Some("--extract-audio --audio-format mp3"),
+            OutputFormat::Webm => Some("--merge-output-format webm"),
         }
     }
 }
@@ -162,17 +158,27 @@ impl Settings {
 
     /// Build the yt-dlp command arguments based on current settings
     pub fn get_ytdlp_args(&self, output_template: &str) -> Vec<String> {
-        let mut args = vec![
-            "--format".to_string(),
-            self.format_preset.get_format_arg(),
-            "--output".to_string(),
-            output_template.to_string(),
-        ];
+        // Pre-allocate with capacity estimate:
+        // Base: 4 (format, format_arg, output, template)
+        // + 3 (potential format modifiers)
+        // + 4 (potential subtitles: --write-auto-subs --sub-langs all)
+        // + 1 (potential thumbnail)
+        // + 1 (potential metadata)
+        // + 1 (newline)
+        // = ~14 max
+        let mut args = Vec::with_capacity(14);
+
+        args.push("--format".to_string());
+        args.push(self.format_preset.get_format_arg().to_string());
+        args.push("--output".to_string());
+        args.push(output_template.to_string());
 
         // Add output format modifiers if any
         if let Some(format_modifier) = self.output_format.get_format_modifier() {
-            let modifiers: Vec<&str> = format_modifier.split_whitespace().collect();
-            args.extend(modifiers.iter().map(|s| s.to_string()));
+            // Iterate directly without collecting to intermediate Vec
+            for modifier in format_modifier.split_whitespace() {
+                args.push(modifier.to_string());
+            }
         }
 
         // Add optional arguments based on settings

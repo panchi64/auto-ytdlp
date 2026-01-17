@@ -723,31 +723,35 @@ impl SettingsMenu {
     }
 
     /// Convert format preset to display string
-    fn format_preset_to_string(&self, preset: &FormatPreset) -> String {
+    ///
+    /// Returns a static string reference to avoid allocations.
+    fn format_preset_to_string(&self, preset: &FormatPreset) -> &'static str {
         match preset {
-            FormatPreset::Best => "Best".to_string(),
-            FormatPreset::AudioOnly => "Audio Only".to_string(),
-            FormatPreset::HD1080p => "1080p".to_string(),
-            FormatPreset::HD720p => "720p".to_string(),
-            FormatPreset::SD480p => "480p".to_string(),
-            FormatPreset::SD360p => "360p".to_string(),
+            FormatPreset::Best => "Best",
+            FormatPreset::AudioOnly => "Audio Only",
+            FormatPreset::HD1080p => "1080p",
+            FormatPreset::HD720p => "720p",
+            FormatPreset::SD480p => "480p",
+            FormatPreset::SD360p => "360p",
         }
     }
 
     /// Convert output format to display string
-    fn output_format_to_string(&self, format: &OutputFormat) -> String {
+    ///
+    /// Returns a static string reference to avoid allocations.
+    fn output_format_to_string(&self, format: &OutputFormat) -> &'static str {
         match format {
-            OutputFormat::Auto => "Auto".to_string(),
-            OutputFormat::MP4 => "MP4".to_string(),
-            OutputFormat::Mkv => "MKV".to_string(),
+            OutputFormat::Auto => "Auto",
+            OutputFormat::MP4 => "MP4",
+            OutputFormat::Mkv => "MKV",
             OutputFormat::MP3 => {
                 if matches!(self.settings.format_preset, FormatPreset::AudioOnly) {
-                    "MP3 (audio)".to_string()
+                    "MP3 (audio)"
                 } else {
-                    "MP3 (audio only)".to_string()
+                    "MP3 (audio only)"
                 }
             }
-            OutputFormat::Webm => "WEBM".to_string(),
+            OutputFormat::Webm => "WEBM",
         }
     }
 }

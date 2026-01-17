@@ -63,7 +63,9 @@ fn add_clipboard_links_to_file_internal(
 
     // If links were added, save to file
     if !new_links.is_empty() {
-        let all_links = [current_links, new_links.clone()].concat();
+        // Use extend() instead of [a, b].concat() to avoid cloning new_links
+        let mut all_links = current_links;
+        all_links.extend(new_links.iter().cloned());
         fs::write("links.txt", all_links.join("\n")).map_err(AppError::Io)?;
     }
 
@@ -135,19 +137,17 @@ pub fn sanitize_links_file() -> Result<usize> {
     let file_path = "links.txt";
     let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
 
-    let lines: Vec<String> = content
+    // Single pass: count total non-empty lines and collect valid URLs
+    let mut total_non_empty = 0usize;
+    let valid_lines: Vec<&str> = content
         .lines()
-        .map(|l| l.trim().to_string())
+        .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        .collect();
-
-    let valid_lines: Vec<String> = lines
-        .iter()
+        .inspect(|_| total_non_empty += 1)
         .filter(|l| url::Url::parse(l).is_ok())
-        .cloned()
         .collect();
 
-    let removed_count = lines.len() - valid_lines.len();
+    let removed_count = total_non_empty - valid_lines.len();
 
     if removed_count > 0 {
         fs::write(file_path, valid_lines.join("\n")).map_err(AppError::Io)?;

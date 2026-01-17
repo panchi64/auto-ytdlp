@@ -6,6 +6,28 @@ use std::time::Instant;
 use crate::errors::{AppError, Result};
 use crate::utils::settings::Settings;
 
+/// A snapshot of UI-relevant state, captured with minimal locking.
+///
+/// This struct is created once per frame to avoid multiple lock acquisitions
+/// during rendering. All fields are owned values to avoid lifetime issues.
+#[derive(Clone)]
+pub struct UiSnapshot {
+    pub progress: f64,
+    pub completed_tasks: usize,
+    pub total_tasks: usize,
+    pub initial_total_tasks: usize,
+    pub started: bool,
+    pub paused: bool,
+    pub completed: bool,
+    pub queue: VecDeque<String>,
+    pub active_downloads: HashSet<String>,
+    pub logs: Vec<String>,
+    pub concurrent: usize,
+    pub toast: Option<String>,
+    pub use_ascii_indicators: bool,
+    pub total_retries: usize,
+}
+
 /// Guard type for file operations lock
 pub type FileLockGuard<'a> = std::sync::MutexGuard<'a, ()>;
 
@@ -348,6 +370,7 @@ impl AppState {
         self.add_log(format!("[ERROR] {}: {}", context, error))
     }
 
+    #[allow(dead_code)]
     pub fn get_logs(&self) -> Result<Vec<String>> {
         let logs = self.logs.lock()?;
         Ok(logs.iter().cloned().collect())
@@ -437,21 +460,25 @@ impl AppState {
         Ok(flags.force_quit)
     }
 
+    #[allow(dead_code)]
     pub fn get_progress(&self) -> Result<f64> {
         let stats = self.stats.lock()?;
         Ok(stats.progress)
     }
 
+    #[allow(dead_code)]
     pub fn get_completed_tasks(&self) -> Result<usize> {
         let stats = self.stats.lock()?;
         Ok(stats.completed_tasks)
     }
 
+    #[allow(dead_code)]
     pub fn get_total_tasks(&self) -> Result<usize> {
         let stats = self.stats.lock()?;
         Ok(stats.total_tasks)
     }
 
+    #[allow(dead_code)]
     pub fn get_initial_total_tasks(&self) -> Result<usize> {
         let stats = self.stats.lock()?;
         Ok(stats.initial_total_tasks)
@@ -531,6 +558,7 @@ impl AppState {
     }
 
     /// Get the current toast message if it hasn't expired (3 seconds)
+    #[allow(dead_code)]
     pub fn get_toast(&self) -> Result<Option<String>> {
         let mut toast = self.toast.lock()?;
         if let Some((msg, time)) = toast.as_ref() {
@@ -559,6 +587,7 @@ impl AppState {
     }
 
     /// Get the total retry count
+    #[allow(dead_code)]
     pub fn get_total_retries(&self) -> Result<usize> {
         let retries = self.total_retries.lock()?;
         Ok(*retries)
@@ -569,5 +598,79 @@ impl AppState {
         let mut retries = self.total_retries.lock()?;
         *retries = 0;
         Ok(())
+    }
+
+    /// Creates a snapshot of all UI-relevant state with minimal locking.
+    ///
+    /// This method acquires each lock once and captures all necessary state
+    /// for UI rendering in a single pass, avoiding the overhead of multiple
+    /// lock acquisitions per frame.
+    ///
+    /// # Returns
+    ///
+    /// A `UiSnapshot` containing all state needed for UI rendering.
+    pub fn get_ui_snapshot(&self) -> Result<UiSnapshot> {
+        // Acquire each lock once and extract all needed values
+        let stats = self.stats.lock()?;
+        let progress = stats.progress;
+        let completed_tasks = stats.completed_tasks;
+        let total_tasks = stats.total_tasks;
+        let initial_total_tasks = stats.initial_total_tasks;
+        drop(stats);
+
+        let flags = self.flags.lock()?;
+        let started = flags.started;
+        let paused = flags.paused;
+        let completed = flags.completed;
+        drop(flags);
+
+        let queues = self.queues.lock()?;
+        let queue = queues.queue.clone();
+        let active_downloads = queues.active_downloads.clone();
+        drop(queues);
+
+        let logs = self.logs.lock()?;
+        let logs_vec: Vec<String> = logs.iter().cloned().collect();
+        drop(logs);
+
+        let concurrent = *self.concurrent.lock()?;
+
+        // Get toast with expiry check
+        let toast = {
+            let mut toast_guard = self.toast.lock()?;
+            if let Some((msg, time)) = toast_guard.as_ref() {
+                if time.elapsed().as_secs() < 3 {
+                    Some(msg.clone())
+                } else {
+                    *toast_guard = None;
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        let settings = self.settings.lock()?;
+        let use_ascii_indicators = settings.use_ascii_indicators;
+        drop(settings);
+
+        let total_retries = *self.total_retries.lock()?;
+
+        Ok(UiSnapshot {
+            progress,
+            completed_tasks,
+            total_tasks,
+            initial_total_tasks,
+            started,
+            paused,
+            completed,
+            queue,
+            active_downloads,
+            logs: logs_vec,
+            concurrent,
+            toast,
+            use_ascii_indicators,
+            total_retries,
+        })
     }
 }

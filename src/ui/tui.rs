@@ -21,7 +21,7 @@ use ratatui::{
 use std::io;
 
 use crate::{
-    app_state::{AppState, StateMessage},
+    app_state::{AppState, StateMessage, UiSnapshot},
     args::Args,
     downloader::{common::validate_dependencies, queue::process_queue},
     errors::AppError,
@@ -29,18 +29,15 @@ use crate::{
     utils::file::{add_clipboard_links, get_links_from_file, sanitize_links_file},
 };
 
-/// UI context for additional rendering state
+/// UI context for additional rendering state not captured in UiSnapshot
 #[derive(Default)]
 pub struct UiContext {
     pub queue_edit_mode: bool,
     pub queue_selected_index: usize,
     pub show_help: bool,
-    pub toast: Option<String>,
-    pub use_ascii: bool,
-    pub total_retries: usize,
 }
 
-/// Renders the Terminal User Interface (TUI) using the current application state.
+/// Renders the Terminal User Interface (TUI) using a snapshot of the application state.
 ///
 /// This function is responsible for drawing all UI elements including the progress bar,
 /// download queues, active downloads, logs, and keyboard control instructions.
@@ -48,30 +45,34 @@ pub struct UiContext {
 /// # Parameters
 ///
 /// * `frame` - A mutable reference to the terminal frame to render elements into
-/// * `state` - A reference to the current application state
+/// * `snapshot` - A snapshot of the current application state (captured once per frame)
 /// * `settings_menu` - A mutable reference to the settings menu
 /// * `ctx` - UI context with additional state like queue edit mode
 ///
 /// # Example
 ///
 /// ```
-/// terminal.draw(|f| ui(f, &state, &mut settings_menu, &ctx))?;
+/// let snapshot = state.get_ui_snapshot()?;
+/// terminal.draw(|f| ui(f, &snapshot, &mut settings_menu, &ctx))?;
 /// ```
-pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu, ctx: &UiContext) {
+pub fn ui(frame: &mut Frame, snapshot: &UiSnapshot, settings_menu: &mut SettingsMenu, ctx: &UiContext) {
     if settings_menu.is_visible() {
         settings_menu.render(frame, frame.area());
     } else {
-        let progress = state.get_progress().unwrap_or(0.0);
-        let queue = state.get_queue().unwrap_or_default();
-        let active_downloads = state.get_active_downloads().unwrap_or_default();
-        let started = state.is_started().unwrap_or(false);
-        let logs = state.get_logs().unwrap_or_default();
-        let initial_total = state.get_initial_total_tasks().unwrap_or(0);
-        let concurrent = state.get_concurrent().unwrap_or(1);
-        let is_paused = state.is_paused().unwrap_or(false);
-        let is_completed = state.is_completed().unwrap_or(false);
-        let completed_tasks = state.get_completed_tasks().unwrap_or(0);
-        let total_tasks = state.get_total_tasks().unwrap_or(0);
+        // Use pre-captured snapshot data instead of acquiring locks
+        let progress = snapshot.progress;
+        let queue = &snapshot.queue;
+        let active_downloads = &snapshot.active_downloads;
+        let started = snapshot.started;
+        let logs = &snapshot.logs;
+        let initial_total = snapshot.initial_total_tasks;
+        let concurrent = snapshot.concurrent;
+        let is_paused = snapshot.paused;
+        let is_completed = snapshot.completed;
+        let completed_tasks = snapshot.completed_tasks;
+        let total_tasks = snapshot.total_tasks;
+        let use_ascii = snapshot.use_ascii_indicators;
+        let total_retries = snapshot.total_retries;
 
         let main_layout = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
@@ -87,7 +88,7 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu,
             .split(frame.area());
 
         // ----- Status indicators -----
-        let status_indicator = if ctx.use_ascii {
+        let status_indicator = if use_ascii {
             if is_completed {
                 "[DONE] COMPLETED"
             } else if is_paused {
@@ -114,11 +115,11 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu,
             .count();
 
         // ----- Progress bar with status -----
-        let retry_info = if ctx.total_retries > 0 {
-            if ctx.use_ascii {
-                format!(" | [R] {} retries", ctx.total_retries)
+        let retry_info = if total_retries > 0 {
+            if use_ascii {
+                format!(" | [R] {} retries", total_retries)
             } else {
-                format!(" | ↻ {} retries", ctx.total_retries)
+                format!(" | ↻ {} retries", total_retries)
             }
         } else {
             String::new()
@@ -131,7 +132,7 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu,
             completed_tasks,
             total_tasks,
             if failed_count > 0 {
-                if ctx.use_ascii {
+                if use_ascii {
                     format!(" - [X] {} Failed", failed_count)
                 } else {
                     format!(" - ❌ {} Failed", failed_count)
@@ -169,13 +170,13 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu,
 
         // Pending downloads list with status icon
         let pending_title = if ctx.queue_edit_mode {
-            if ctx.use_ascii {
+            if use_ascii {
                 format!("[EDIT] Edit Queue - {}/{} (Up/Down: Navigate | D: Delete | Esc: Exit)", queue.len(), initial_total)
             } else {
                 format!("📝 Edit Queue - {}/{} (↑↓: Navigate | D: Delete | Esc: Exit)", queue.len(), initial_total)
             }
         } else {
-            let icon = if ctx.use_ascii {
+            let icon = if use_ascii {
                 if queue.is_empty() { "[OK]" } else { "[Q]" }
             } else if queue.is_empty() { "✅" } else { "📋" };
             format!(
@@ -211,7 +212,7 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu,
         frame.render_widget(pending_list, downloads_layout[0]);
 
         // Active downloads list with status icon
-        let active_icon = if ctx.use_ascii {
+        let active_icon = if use_ascii {
             if active_downloads.is_empty() {
                 if started { "[WAIT]" } else { "[STOP]" }
             } else {
@@ -293,7 +294,7 @@ pub fn ui(frame: &mut Frame, state: &AppState, settings_menu: &mut SettingsMenu,
         }
 
         // ----- Toast notification -----
-        if let Some(toast_msg) = &ctx.toast {
+        if let Some(toast_msg) = &snapshot.toast {
             render_toast(frame, toast_msg);
         }
     }
@@ -468,18 +469,33 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
 
     // Main loop
     loop {
-        // Build UI context
+        // Build UI context (only local state not in snapshot)
         let ui_ctx = UiContext {
             queue_edit_mode,
             queue_selected_index,
             show_help,
-            toast: state.get_toast().unwrap_or(None),
-            use_ascii: state.get_settings().map(|s| s.use_ascii_indicators).unwrap_or(false),
-            total_retries: state.get_total_retries().unwrap_or(0),
         };
 
-        // Draw UI
-        terminal.draw(|f| ui(f, &state, &mut settings_menu, &ui_ctx))?;
+        // Capture UI state snapshot once per frame (reduces lock acquisitions from 11+ to 1)
+        let snapshot = state.get_ui_snapshot().unwrap_or_else(|_| UiSnapshot {
+            progress: 0.0,
+            completed_tasks: 0,
+            total_tasks: 0,
+            initial_total_tasks: 0,
+            started: false,
+            paused: false,
+            completed: false,
+            queue: std::collections::VecDeque::new(),
+            active_downloads: std::collections::HashSet::new(),
+            logs: Vec::new(),
+            concurrent: 1,
+            toast: None,
+            use_ascii_indicators: false,
+            total_retries: 0,
+        });
+
+        // Draw UI using snapshot
+        terminal.draw(|f| ui(f, &snapshot, &mut settings_menu, &ui_ctx))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
@@ -660,7 +676,10 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                 // If this is not desired, remove this block for 'S' (Stop).
                                 if let Some(handle) = download_thread_handle.take() {
                                     // .take() so it's not joined again on exit
-                                    terminal.draw(|f| ui(f, &state, &mut settings_menu, &ui_ctx))?; // Show "waiting" log
+                                    // Get fresh snapshot for redraw
+                                    if let Ok(fresh_snapshot) = state.get_ui_snapshot() {
+                                        terminal.draw(|f| ui(f, &fresh_snapshot, &mut settings_menu, &ui_ctx))?; // Show "waiting" log
+                                    }
                                     eprintln!(
                                         "Stopping downloads: Waiting for active downloads to complete..."
                                     );
@@ -681,7 +700,10 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                                         }
                                         eprintln!("Downloads stopped gracefully.");
                                     }
-                                    terminal.draw(|f| ui(f, &state, &mut settings_menu, &ui_ctx))?; // Redraw after join
+                                    // Get fresh snapshot for redraw after join
+                                    if let Ok(fresh_snapshot) = state.get_ui_snapshot() {
+                                        terminal.draw(|f| ui(f, &fresh_snapshot, &mut settings_menu, &ui_ctx))?; // Redraw after join
+                                    }
                                 }
                                 // --- End of addition for 'Stop' ---
 

@@ -75,7 +75,7 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             eprintln!("Error adding log: {}", e);
         }
 
-        let cmd_args = build_ytdlp_command_args(&args, &url);
+        let cmd_args = build_ytdlp_command_args(&args, &settings, &url);
         let mut cmd = match Command::new("yt-dlp")
             .args(&cmd_args)
             .stdout(Stdio::piped())
