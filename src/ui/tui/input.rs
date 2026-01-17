@@ -71,6 +71,57 @@ pub fn handle_help_overlay_input(key_code: KeyCode, show_help: &mut bool) -> Inp
     }
 }
 
+/// Handle filter mode input (search/filter queue)
+pub fn handle_filter_mode_input(
+    key_code: KeyCode,
+    state: &AppState,
+    ctx: &mut UiContext,
+) -> InputResult {
+    match key_code {
+        KeyCode::Esc => {
+            // Clear filter and exit filter mode
+            ctx.filter_mode = false;
+            ctx.filter_text.clear();
+            ctx.filtered_indices.clear();
+            InputResult::Continue
+        }
+        KeyCode::Enter => {
+            // Exit filter mode but keep the filter active
+            ctx.filter_mode = false;
+            InputResult::Continue
+        }
+        KeyCode::Backspace => {
+            ctx.filter_text.pop();
+            update_filtered_indices(state, ctx);
+            InputResult::Continue
+        }
+        KeyCode::Char(c) => {
+            ctx.filter_text.push(c);
+            update_filtered_indices(state, ctx);
+            InputResult::Continue
+        }
+        _ => InputResult::Continue,
+    }
+}
+
+/// Update the filtered indices based on the current filter text
+fn update_filtered_indices(state: &AppState, ctx: &mut UiContext) {
+    ctx.filtered_indices.clear();
+
+    if ctx.filter_text.is_empty() {
+        return;
+    }
+
+    if let Ok(queue) = state.get_queue() {
+        let filter_lower = ctx.filter_text.to_lowercase();
+        for (i, url) in queue.iter().enumerate() {
+            if url.to_lowercase().contains(&filter_lower) {
+                ctx.filtered_indices.push(i);
+            }
+        }
+    }
+}
+
 /// Handle queue edit mode input
 pub fn handle_edit_mode_input(
     key_code: KeyCode,
@@ -85,6 +136,25 @@ pub fn handle_edit_mode_input(
         }
         KeyCode::Down => {
             if queue_len > 0 && ctx.queue_selected_index < queue_len - 1 {
+                ctx.queue_selected_index += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Char('K') => {
+            // Move item up (swap with previous)
+            if ctx.queue_selected_index > 0
+                && let Ok(true) =
+                    state.swap_queue_items(ctx.queue_selected_index, ctx.queue_selected_index - 1)
+            {
+                ctx.queue_selected_index -= 1;
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Char('J') => {
+            // Move item down (swap with next)
+            if queue_len > 0
+                && ctx.queue_selected_index < queue_len - 1
+                && let Ok(true) =
+                    state.swap_queue_items(ctx.queue_selected_index, ctx.queue_selected_index + 1)
+            {
                 ctx.queue_selected_index += 1;
             }
         }
@@ -198,6 +268,20 @@ pub fn handle_normal_mode_input(
         }
         KeyCode::Char('e') => {
             handle_edit_mode(state, ctx);
+            InputResult::Continue
+        }
+        KeyCode::Char('/') => {
+            // Enter filter mode for queue search
+            ctx.filter_mode = true;
+            ctx.filter_text.clear();
+            ctx.filtered_indices.clear();
+            InputResult::Continue
+        }
+        KeyCode::Char('x') => {
+            // Dismiss stale download indicators
+            if let Err(e) = state.refresh_all_download_timestamps() {
+                eprintln!("Error refreshing timestamps: {}", e);
+            }
             InputResult::Continue
         }
         KeyCode::F(2) => {
@@ -439,9 +523,9 @@ fn handle_edit_mode(state: &AppState, ctx: &mut UiContext) {
         if queue_len > 0 {
             ctx.queue_edit_mode = true;
             ctx.queue_selected_index = 0;
-            if let Err(e) =
-                state.add_log("Queue edit mode: ↑↓ Navigate | D: Delete | Esc: Exit".to_string())
-            {
+            if let Err(e) = state.add_log(
+                "Queue edit mode: ↑↓ Navigate | K/J: Move | D: Delete | Esc: Exit".to_string(),
+            ) {
                 eprintln!("Error adding log: {}", e);
             }
         } else if let Err(e) = state.add_log("No URLs in queue to edit".to_string()) {

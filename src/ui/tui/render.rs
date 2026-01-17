@@ -136,15 +136,30 @@ pub fn ui(
         let pending_title = if ctx.queue_edit_mode {
             if use_ascii {
                 format!(
-                    "[EDIT] Edit Queue - {}/{} (Up/Down: Navigate | D: Delete | Esc: Exit)",
+                    "[EDIT] Edit Queue - {}/{} (K/J: Move | D: Delete | Esc: Exit)",
                     queue.len(),
                     initial_total
                 )
             } else {
                 format!(
-                    "📝 Edit Queue - {}/{} (↑↓: Navigate | D: Delete | Esc: Exit)",
+                    "📝 Edit Queue - {}/{} (K/J: Move | D: Delete | Esc: Exit)",
                     queue.len(),
                     initial_total
+                )
+            }
+        } else if ctx.filter_mode || !ctx.filter_text.is_empty() {
+            // Show filter info
+            let match_count = ctx.filtered_indices.len();
+            let total = queue.len();
+            if use_ascii {
+                format!(
+                    "[FILTER: {}] {}/{} matches",
+                    ctx.filter_text, match_count, total
+                )
+            } else {
+                format!(
+                    "🔍 [{}] {}/{} matches",
+                    ctx.filter_text, match_count, total
                 )
             }
         } else {
@@ -163,27 +178,42 @@ pub fn ui(
             )
         };
 
+        // Build pending items - highlight matches when filter is active
+        let has_filter = !ctx.filter_text.is_empty();
         let pending_items: Vec<ListItem> = queue
             .iter()
             .enumerate()
             .map(|(i, url)| {
-                let item = ListItem::new(url.as_str());
-                if ctx.queue_edit_mode && i == ctx.queue_selected_index {
-                    item.style(Style::default().fg(Color::Yellow).bg(Color::DarkGray))
+                let is_match = has_filter && ctx.filtered_indices.contains(&i);
+                let is_selected = ctx.queue_edit_mode && i == ctx.queue_selected_index;
+
+                let style = if is_selected {
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+                } else if is_match {
+                    Style::default().fg(Color::Green)
+                } else if has_filter {
+                    Style::default().fg(Color::DarkGray)
                 } else {
-                    item
-                }
+                    Style::default()
+                };
+
+                ListItem::new(url.as_str()).style(style)
             })
             .collect();
+
+        let border_style = if ctx.filter_mode {
+            Style::default().fg(Color::Cyan)
+        } else if ctx.queue_edit_mode {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
         let pending_list = List::new(pending_items).block(
             Block::default()
                 .title(pending_title)
                 .borders(Borders::ALL)
-                .border_style(if ctx.queue_edit_mode {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default()
-                }),
+                .border_style(border_style),
         );
         frame.render_widget(pending_list, downloads_layout[0]);
 
@@ -230,16 +260,18 @@ pub fn ui(
         frame.render_widget(logs_widget, main_layout[2]);
 
         // ----- Help text (keyboard shortcuts) -----
-        let help_text = if ctx.queue_edit_mode {
-            "↑↓: Navigate | D: Delete URL | Esc/Enter: Exit edit mode"
+        let help_text = if ctx.filter_mode {
+            "Type to filter | Enter: Keep filter | Esc: Clear filter"
+        } else if ctx.queue_edit_mode {
+            "↑↓: Navigate | K/J: Move Up/Down | D: Delete | Esc: Exit edit mode"
         } else if is_completed {
-            "R: Restart | E: Edit Queue | F1: Help | F2: Settings | Q: Quit | Shift+Q: Force Quit"
+            "R: Restart | E: Edit Queue | /: Search | F1: Help | F2: Settings | Q: Quit"
         } else if started && is_paused {
-            "P: Resume | R: Reload | E: Edit Queue | S: Stop | A: Paste URLs | F1: Help | F2: Settings | Q: Quit"
+            "P: Resume | R: Reload | E: Edit | /: Search | A: Paste | F1: Help | F2: Settings | Q: Quit"
         } else if started {
             "P: Pause | S: Stop | A: Paste URLs | F1: Help | F2: Settings | Q: Quit | Shift+Q: Force Quit"
         } else {
-            "S: Start | R: Reload | E: Edit Queue | A: Paste URLs | F1: Help | F2: Settings | Q: Quit"
+            "S: Start | R: Reload | E: Edit | /: Search | A: Paste | F1: Help | F2: Settings | Q: Quit"
         };
 
         let info_widget = Paragraph::new(help_text)
@@ -475,7 +507,11 @@ fn render_single_download_progress(
     // Stale indicator
     if is_stale {
         info_parts.push(Span::styled(
-            if use_ascii { " [STALE]" } else { " ⚠" },
+            if use_ascii {
+                " [STALE - X:dismiss]"
+            } else {
+                " ⚠ (X:dismiss)"
+            },
             Style::default().fg(Color::DarkGray),
         ));
     }
@@ -489,7 +525,7 @@ fn render_single_download_progress(
 pub fn render_help_overlay(frame: &mut Frame) {
     let area = frame.area();
     let popup_width = 44;
-    let popup_height = 18;
+    let popup_height = 21;
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -505,6 +541,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
         Line::from("  S     Start / Stop downloads"),
         Line::from("  P     Pause / Resume"),
         Line::from("  R     Reload queue from file"),
+        Line::from("  X     Dismiss stale indicators"),
         Line::from(""),
         Line::from(Span::styled(
             "URL MANAGEMENT",
@@ -513,6 +550,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
         Line::from("  A     Add URLs from clipboard"),
         Line::from("  F     Load URLs from links.txt"),
         Line::from("  E     Edit queue (when stopped)"),
+        Line::from("  /     Search/filter queue"),
         Line::from(""),
         Line::from(Span::styled(
             "APPLICATION",

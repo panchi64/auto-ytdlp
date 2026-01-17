@@ -6,6 +6,114 @@ use std::{
     path::PathBuf,
 };
 
+/// Flags that conflict with custom yt-dlp arguments
+const CONFLICTING_FLAGS: &[&str] = &[
+    "--download-archive",
+    "-a",
+    "--output",
+    "-o",
+    "--progress-template",
+];
+
+/// Settings presets for common use cases
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SettingsPreset {
+    /// Best quality with all extras (subtitles, thumbnails, metadata)
+    BestQuality,
+    /// Audio-only with metadata for music archiving
+    AudioArchive,
+    /// Minimal processing for fast downloads
+    FastDownload,
+    /// Lower quality to save bandwidth
+    BandwidthSaver,
+}
+
+impl SettingsPreset {
+    /// Get all available presets
+    pub const fn all() -> &'static [SettingsPreset] {
+        &[
+            SettingsPreset::BestQuality,
+            SettingsPreset::AudioArchive,
+            SettingsPreset::FastDownload,
+            SettingsPreset::BandwidthSaver,
+        ]
+    }
+
+    /// Get the display name for this preset
+    pub const fn name(&self) -> &'static str {
+        match self {
+            SettingsPreset::BestQuality => "Best Quality",
+            SettingsPreset::AudioArchive => "Audio Archive",
+            SettingsPreset::FastDownload => "Fast Download",
+            SettingsPreset::BandwidthSaver => "Bandwidth Saver",
+        }
+    }
+
+    /// Get the description for this preset
+    pub const fn description(&self) -> &'static str {
+        match self {
+            SettingsPreset::BestQuality => "Best video+audio, subtitles, thumbnails, metadata",
+            SettingsPreset::AudioArchive => "Audio-only MP3 with metadata for music libraries",
+            SettingsPreset::FastDownload => "Best quality, 8 concurrent, minimal extras",
+            SettingsPreset::BandwidthSaver => "480p quality, 2 concurrent downloads",
+        }
+    }
+
+    /// Create settings configured for this preset
+    pub fn apply(&self) -> Settings {
+        match self {
+            SettingsPreset::BestQuality => Settings {
+                format_preset: FormatPreset::Best,
+                output_format: OutputFormat::Auto,
+                write_subtitles: true,
+                write_thumbnail: true,
+                add_metadata: true,
+                concurrent_downloads: 4,
+                network_retry: true,
+                retry_delay: 2,
+                use_ascii_indicators: false,
+                custom_ytdlp_args: String::new(),
+            },
+            SettingsPreset::AudioArchive => Settings {
+                format_preset: FormatPreset::AudioOnly,
+                output_format: OutputFormat::MP3,
+                write_subtitles: false,
+                write_thumbnail: true,
+                add_metadata: true,
+                concurrent_downloads: 4,
+                network_retry: true,
+                retry_delay: 2,
+                use_ascii_indicators: false,
+                custom_ytdlp_args: String::new(),
+            },
+            SettingsPreset::FastDownload => Settings {
+                format_preset: FormatPreset::Best,
+                output_format: OutputFormat::Auto,
+                write_subtitles: false,
+                write_thumbnail: false,
+                add_metadata: false,
+                concurrent_downloads: 8,
+                network_retry: false,
+                retry_delay: 1,
+                use_ascii_indicators: false,
+                custom_ytdlp_args: String::new(),
+            },
+            SettingsPreset::BandwidthSaver => Settings {
+                format_preset: FormatPreset::SD480p,
+                output_format: OutputFormat::Auto,
+                write_subtitles: false,
+                write_thumbnail: false,
+                add_metadata: false,
+                concurrent_downloads: 2,
+                network_retry: true,
+                retry_delay: 5,
+                use_ascii_indicators: false,
+                custom_ytdlp_args: String::new(),
+            },
+        }
+    }
+}
+
 /// Video format preset options
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum FormatPreset {
@@ -93,6 +201,9 @@ pub struct Settings {
     /// Use ASCII indicators instead of emoji (for terminal compatibility)
     #[serde(default)]
     pub use_ascii_indicators: bool,
+    /// Custom yt-dlp arguments (shell-style, validated for conflicts)
+    #[serde(default)]
+    pub custom_ytdlp_args: String,
 }
 
 impl Default for Settings {
@@ -107,6 +218,7 @@ impl Default for Settings {
             network_retry: false,
             retry_delay: 2,
             use_ascii_indicators: false,
+            custom_ytdlp_args: String::new(),
         }
     }
 }
@@ -119,6 +231,45 @@ impl Settings {
         fs::create_dir_all(&config_dir).ok();
         config_dir.push("settings.json");
         config_dir
+    }
+
+    /// Validate custom yt-dlp arguments for conflicts
+    ///
+    /// Returns Ok(()) if valid, or Err with a description of the conflict.
+    pub fn validate_custom_args(args: &str) -> std::result::Result<(), String> {
+        if args.trim().is_empty() {
+            return Ok(());
+        }
+
+        // Parse with shlex to handle quoted arguments properly
+        let parsed = match shlex::split(args) {
+            Some(args) => args,
+            None => return Err("Invalid argument syntax (unmatched quotes)".to_string()),
+        };
+
+        for arg in &parsed {
+            for conflict in CONFLICTING_FLAGS {
+                if arg == *conflict || arg.starts_with(&format!("{}=", conflict)) {
+                    return Err(format!(
+                        "'{}' conflicts with auto-ytdlp's internal handling",
+                        conflict
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Parse custom arguments into a vector of strings
+    ///
+    /// Returns an empty vector if parsing fails or args is empty.
+    pub fn parse_custom_args(&self) -> Vec<String> {
+        if self.custom_ytdlp_args.trim().is_empty() {
+            return Vec::new();
+        }
+
+        shlex::split(&self.custom_ytdlp_args).unwrap_or_default()
     }
 
     /// Load settings from disk, creating default settings if none exist
@@ -198,6 +349,9 @@ impl Settings {
 
         // Always add newline for output processing
         args.push("--newline".to_string());
+
+        // Add custom yt-dlp arguments (already validated)
+        args.extend(self.parse_custom_args());
 
         args
     }

@@ -4,13 +4,49 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::{
     app_state::AppState,
-    utils::settings::{FormatPreset, OutputFormat, Settings},
+    utils::settings::{FormatPreset, OutputFormat, Settings, SettingsPreset},
 };
+
+/// Number of regular settings items (before special actions)
+const SETTINGS_COUNT: usize = 10;
+
+/// Menu item indices
+const IDX_FORMAT_PRESET: usize = 0;
+const IDX_OUTPUT_FORMAT: usize = 1;
+const IDX_WRITE_SUBTITLES: usize = 2;
+const IDX_WRITE_THUMBNAIL: usize = 3;
+const IDX_ADD_METADATA: usize = 4;
+const IDX_CONCURRENT: usize = 5;
+const IDX_NETWORK_RETRY: usize = 6;
+const IDX_RETRY_DELAY: usize = 7;
+const IDX_ASCII_INDICATORS: usize = 8;
+const IDX_CUSTOM_ARGS: usize = 9;
+const IDX_APPLY_PRESET: usize = 10;
+const IDX_RESET_DEFAULTS: usize = 11;
+
+/// Total number of menu items
+const TOTAL_MENU_ITEMS: usize = 12;
+
+/// Descriptions for each setting
+const SETTING_DESCRIPTIONS: [&str; TOTAL_MENU_ITEMS] = [
+    "Video quality preset - Best downloads highest available quality",
+    "Container format - Auto lets yt-dlp choose based on source",
+    "Download subtitles if available (disabled for audio-only)",
+    "Save video thumbnail as separate image file",
+    "Embed metadata (title, artist, etc.) into the file",
+    "Number of simultaneous downloads (higher = faster, more bandwidth)",
+    "Automatically retry downloads that fail due to network errors",
+    "Seconds to wait before retrying a failed download",
+    "Use text indicators [OK] instead of emoji for compatibility",
+    "Extra yt-dlp flags (e.g., --cookies-from-browser firefox)",
+    "Apply a preset configuration for common use cases",
+    "Reset all settings to their default values",
+];
 
 /// Helper function to create a settings list item with consistent styling
 fn create_setting_item<'a>(name: &'a str, value: &'a str) -> ListItem<'a> {
@@ -28,6 +64,25 @@ fn bool_to_yes_no(value: bool) -> &'static str {
     if value { "Yes" } else { "No" }
 }
 
+/// Helper function to create an action item (Apply Preset, Reset, etc.)
+fn create_action_item(name: &str) -> ListItem<'_> {
+    ListItem::new(Line::from(vec![Span::styled(
+        name,
+        Style::default().fg(Color::Cyan),
+    )]))
+}
+
+/// Sub-menu state for settings menu
+#[derive(Default, Clone, Copy, PartialEq)]
+enum SubMenu {
+    #[default]
+    None,
+    /// Showing preset selection
+    PresetSelection,
+    /// Showing reset confirmation
+    ResetConfirmation,
+}
+
 /// Settings menu state
 pub struct SettingsMenu {
     list_state: ListState,
@@ -37,6 +92,12 @@ pub struct SettingsMenu {
     option_index: usize,
     custom_input: String,
     input_mode: bool,
+    /// Current sub-menu state
+    sub_menu: SubMenu,
+    /// Selected preset index when in preset selection
+    preset_index: usize,
+    /// Validation error message for custom args
+    validation_error: Option<String>,
 }
 
 impl SettingsMenu {
@@ -53,6 +114,9 @@ impl SettingsMenu {
             option_index: 0,
             custom_input: String::new(),
             input_mode: false,
+            sub_menu: SubMenu::None,
+            preset_index: 0,
+            validation_error: None,
         }
     }
 
@@ -62,6 +126,8 @@ impl SettingsMenu {
         if self.visible {
             self.editing = false;
             self.input_mode = false;
+            self.sub_menu = SubMenu::None;
+            self.validation_error = None;
         }
     }
 
@@ -76,12 +142,69 @@ impl SettingsMenu {
             return false;
         }
 
+        // Handle sub-menus first
+        match self.sub_menu {
+            SubMenu::PresetSelection => return self.handle_preset_selection(key, state),
+            SubMenu::ResetConfirmation => return self.handle_reset_confirmation(key, state),
+            SubMenu::None => {}
+        }
+
         if self.input_mode {
             self.handle_custom_input(key, state)
         } else if self.editing {
             self.handle_editing(key, state)
         } else {
             self.handle_menu_navigation(key, state)
+        }
+    }
+
+    /// Handle preset selection sub-menu
+    fn handle_preset_selection(&mut self, key: KeyEvent, state: &AppState) -> bool {
+        let presets = SettingsPreset::all();
+        match key.code {
+            KeyCode::Esc => {
+                self.sub_menu = SubMenu::None;
+                true
+            }
+            KeyCode::Up => {
+                if self.preset_index > 0 {
+                    self.preset_index -= 1;
+                }
+                true
+            }
+            KeyCode::Down => {
+                if self.preset_index < presets.len() - 1 {
+                    self.preset_index += 1;
+                }
+                true
+            }
+            KeyCode::Enter => {
+                // Apply the selected preset
+                self.settings = presets[self.preset_index].apply();
+                let _ = state.update_settings(self.settings.clone());
+                self.sub_menu = SubMenu::None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Handle reset confirmation sub-menu
+    fn handle_reset_confirmation(&mut self, key: KeyEvent, state: &AppState) -> bool {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.sub_menu = SubMenu::None;
+                true
+            }
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Reset to defaults
+                self.settings = Settings::default();
+                let _ = self.settings.save();
+                let _ = state.update_settings(self.settings.clone());
+                self.sub_menu = SubMenu::None;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -95,7 +218,7 @@ impl SettingsMenu {
             KeyCode::Enter => {
                 if let Some(selected_setting_idx) = self.list_state.selected() {
                     match selected_setting_idx {
-                        0 => {
+                        IDX_FORMAT_PRESET => {
                             // Format Preset
                             self.option_index = match self.settings.format_preset {
                                 FormatPreset::Best => 0,
@@ -105,8 +228,9 @@ impl SettingsMenu {
                                 FormatPreset::SD480p => 4,
                                 FormatPreset::SD360p => 5,
                             };
+                            self.editing = true;
                         }
-                        1 => {
+                        IDX_OUTPUT_FORMAT => {
                             // Output Format
                             let is_audio_only =
                                 matches!(self.settings.format_preset, FormatPreset::AudioOnly);
@@ -125,8 +249,9 @@ impl SettingsMenu {
                                     OutputFormat::MP3 => 4,
                                 };
                             }
+                            self.editing = true;
                         }
-                        2 => {
+                        IDX_WRITE_SUBTITLES => {
                             // Write Subtitles
                             let is_audio_only =
                                 matches!(self.settings.format_preset, FormatPreset::AudioOnly);
@@ -136,16 +261,19 @@ impl SettingsMenu {
                                 self.option_index =
                                     if self.settings.write_subtitles { 1 } else { 0 };
                             }
+                            self.editing = true;
                         }
-                        3 => {
+                        IDX_WRITE_THUMBNAIL => {
                             // Write Thumbnail
                             self.option_index = if self.settings.write_thumbnail { 1 } else { 0 };
+                            self.editing = true;
                         }
-                        4 => {
+                        IDX_ADD_METADATA => {
                             // Add Metadata
                             self.option_index = if self.settings.add_metadata { 1 } else { 0 };
+                            self.editing = true;
                         }
-                        5 => {
+                        IDX_CONCURRENT => {
                             // Concurrent Downloads
                             self.option_index = match self.settings.concurrent_downloads {
                                 1 => 0,
@@ -154,12 +282,14 @@ impl SettingsMenu {
                                 8 => 3,
                                 _ => 4, // Index for "Custom"
                             };
+                            self.editing = true;
                         }
-                        6 => {
+                        IDX_NETWORK_RETRY => {
                             // Network Retry
                             self.option_index = if self.settings.network_retry { 1 } else { 0 };
+                            self.editing = true;
                         }
-                        7 => {
+                        IDX_RETRY_DELAY => {
                             // Retry Delay
                             self.option_index = match self.settings.retry_delay {
                                 1 => 0,
@@ -168,24 +298,37 @@ impl SettingsMenu {
                                 10 => 3,
                                 _ => 4, // Index for "Custom"
                             };
+                            self.editing = true;
                         }
-                        8 => {
+                        IDX_ASCII_INDICATORS => {
                             // ASCII Indicators
                             self.option_index = if self.settings.use_ascii_indicators {
                                 1
                             } else {
                                 0
                             };
+                            self.editing = true;
+                        }
+                        IDX_CUSTOM_ARGS => {
+                            // Custom yt-dlp Arguments - enter text input mode
+                            self.custom_input = self.settings.custom_ytdlp_args.clone();
+                            self.validation_error = None;
+                            self.input_mode = true;
+                        }
+                        IDX_APPLY_PRESET => {
+                            // Apply Preset - open preset selection sub-menu
+                            self.preset_index = 0;
+                            self.sub_menu = SubMenu::PresetSelection;
+                        }
+                        IDX_RESET_DEFAULTS => {
+                            // Reset to Defaults - show confirmation
+                            self.sub_menu = SubMenu::ResetConfirmation;
                         }
                         _ => {
                             self.option_index = 0; // Default for safety
                         }
                     }
-                } else {
-                    // Should not happen if a list item is selected, but set a safe default.
-                    self.option_index = 0;
                 }
-                self.editing = true;
                 true
             }
             KeyCode::Up => {
@@ -198,9 +341,8 @@ impl SettingsMenu {
             }
             KeyCode::Down => {
                 if let Some(i) = self.list_state.selected()
-                    && i < 8
+                    && i < TOTAL_MENU_ITEMS - 1
                 {
-                    // Number of settings options - 1 (increased to 8 for ascii_indicators)
                     self.list_state.select(Some(i + 1));
                 }
                 true
@@ -212,10 +354,14 @@ impl SettingsMenu {
     /// Check if the current setting is a boolean toggle (Yes/No only)
     fn is_boolean_setting(&self) -> bool {
         if let Some(selected) = self.list_state.selected() {
-            // Indices 2, 3, 4, 6, 8 are boolean toggles (subtitles, thumbnail, metadata, network_retry, ascii_indicators)
-            // Note: subtitles (2) is NOT a toggle when audio-only mode is selected
+            // Boolean toggles: subtitles, thumbnail, metadata, network_retry, ascii_indicators
+            // Note: subtitles is NOT a toggle when audio-only mode is selected
             let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
-            matches!(selected, 2 if !is_audio_only) || matches!(selected, 3 | 4 | 6 | 8)
+            matches!(selected, IDX_WRITE_SUBTITLES if !is_audio_only)
+                || matches!(
+                    selected,
+                    IDX_WRITE_THUMBNAIL | IDX_ADD_METADATA | IDX_NETWORK_RETRY | IDX_ASCII_INDICATORS
+                )
         } else {
             false
         }
@@ -251,7 +397,7 @@ impl SettingsMenu {
             }
             KeyCode::Enter => {
                 // Special case for custom concurrent downloads
-                if let Some(5) = self.list_state.selected()
+                if let Some(IDX_CONCURRENT) = self.list_state.selected()
                     && self.option_index == 4
                 {
                     // Custom option
@@ -261,7 +407,7 @@ impl SettingsMenu {
                 }
 
                 // Special case for custom retry delay
-                if let Some(7) = self.list_state.selected()
+                if let Some(IDX_RETRY_DELAY) = self.list_state.selected()
                     && self.option_index == 4
                 {
                     // Custom option
@@ -279,18 +425,19 @@ impl SettingsMenu {
         }
     }
 
-    /// Handle custom input for concurrent downloads or retry delay
+    /// Handle custom input for concurrent downloads, retry delay, or custom args
     fn handle_custom_input(&mut self, key: KeyEvent, state: &AppState) -> bool {
         match key.code {
             KeyCode::Esc => {
                 self.input_mode = false;
                 self.editing = false;
+                self.validation_error = None;
                 true
             }
             KeyCode::Enter => {
                 if let Some(selected_setting_idx) = self.list_state.selected() {
                     match selected_setting_idx {
-                        5 => {
+                        IDX_CONCURRENT => {
                             // Custom concurrent downloads
                             if let Ok(value) = self.custom_input.parse::<usize>()
                                 && value > 0
@@ -298,12 +445,25 @@ impl SettingsMenu {
                                 self.settings.concurrent_downloads = value;
                             }
                         }
-                        7 => {
+                        IDX_RETRY_DELAY => {
                             // Custom retry delay
                             if let Ok(value) = self.custom_input.parse::<u64>()
                                 && value > 0
                             {
                                 self.settings.retry_delay = value;
+                            }
+                        }
+                        IDX_CUSTOM_ARGS => {
+                            // Custom yt-dlp arguments - validate before accepting
+                            match Settings::validate_custom_args(&self.custom_input) {
+                                Ok(()) => {
+                                    self.settings.custom_ytdlp_args = self.custom_input.clone();
+                                    self.validation_error = None;
+                                }
+                                Err(msg) => {
+                                    self.validation_error = Some(msg);
+                                    return true; // Don't close input mode
+                                }
                             }
                         }
                         _ => {}
@@ -312,17 +472,30 @@ impl SettingsMenu {
 
                 self.input_mode = false;
                 self.editing = false;
+                self.validation_error = None;
 
                 // Immediately save the updated settings
+                let _ = self.settings.save();
                 let _ = state.update_settings(self.settings.clone());
                 true
             }
             KeyCode::Backspace => {
                 self.custom_input.pop();
+                // Clear validation error when editing
+                self.validation_error = None;
                 true
             }
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                self.custom_input.push(c);
+            KeyCode::Char(c) => {
+                // For custom args, allow any printable character
+                // For numeric fields, only allow digits
+                if let Some(selected) = self.list_state.selected() {
+                    if selected == IDX_CUSTOM_ARGS {
+                        self.custom_input.push(c);
+                        self.validation_error = None;
+                    } else if c.is_ascii_digit() {
+                        self.custom_input.push(c);
+                    }
+                }
                 true
             }
             _ => false,
@@ -333,7 +506,8 @@ impl SettingsMenu {
     fn adjust_option_index(&mut self) {
         // Max option indices for each setting (0-indexed)
         // Settings: Format, Output, Subtitles, Thumbnail, Metadata, Concurrent, Retry, Delay, ASCII
-        const MAX_OPTIONS: [usize; 9] = [5, 4, 1, 1, 1, 4, 1, 4, 1];
+        // Note: Custom args, Apply Preset, Reset are handled via input_mode/sub_menu, not editing
+        const MAX_OPTIONS: [usize; SETTINGS_COUNT] = [5, 4, 1, 1, 1, 4, 1, 4, 1, 0];
 
         if let Some(i) = self.list_state.selected()
             && i < MAX_OPTIONS.len()
@@ -342,8 +516,8 @@ impl SettingsMenu {
 
             // Handle audio-only special cases
             let max = match (i, is_audio_only) {
-                (1, true) => 1, // Output format: only Auto/MP3 for audio
-                (2, true) => 0, // Subtitles: disabled for audio-only
+                (IDX_OUTPUT_FORMAT, true) => 1, // Output format: only Auto/MP3 for audio
+                (IDX_WRITE_SUBTITLES, true) => 0, // Subtitles: disabled for audio-only
                 _ => MAX_OPTIONS[i],
             };
 
@@ -359,7 +533,7 @@ impl SettingsMenu {
     fn update_setting(&mut self, state: &AppState) {
         if let Some(selected_setting_idx) = self.list_state.selected() {
             match selected_setting_idx {
-                0 => {
+                IDX_FORMAT_PRESET => {
                     // Format Preset
                     self.settings.format_preset = match self.option_index {
                         0 => FormatPreset::Best,
@@ -371,7 +545,7 @@ impl SettingsMenu {
                         _ => FormatPreset::Best,
                     };
                 }
-                1 => {
+                IDX_OUTPUT_FORMAT => {
                     // Output Format
                     let is_audio_only =
                         matches!(self.settings.format_preset, FormatPreset::AudioOnly);
@@ -392,19 +566,19 @@ impl SettingsMenu {
                         }
                     };
                 }
-                2 => {
+                IDX_WRITE_SUBTITLES => {
                     // Write subtitles
                     self.settings.write_subtitles = self.option_index == 1;
                 }
-                3 => {
+                IDX_WRITE_THUMBNAIL => {
                     // Write thumbnail
                     self.settings.write_thumbnail = self.option_index == 1;
                 }
-                4 => {
+                IDX_ADD_METADATA => {
                     // Add metadata
                     self.settings.add_metadata = self.option_index == 1;
                 }
-                5 => {
+                IDX_CONCURRENT => {
                     // Concurrent Downloads
                     self.settings.concurrent_downloads = match self.option_index {
                         0 => 1,
@@ -414,11 +588,11 @@ impl SettingsMenu {
                         _ => self.settings.concurrent_downloads,
                     };
                 }
-                6 => {
+                IDX_NETWORK_RETRY => {
                     // Network Retry
                     self.settings.network_retry = self.option_index == 1;
                 }
-                7 => {
+                IDX_RETRY_DELAY => {
                     // Retry Delay
                     self.settings.retry_delay = match self.option_index {
                         0 => 1,
@@ -428,7 +602,7 @@ impl SettingsMenu {
                         _ => self.settings.retry_delay,
                     };
                 }
-                8 => {
+                IDX_ASCII_INDICATORS => {
                     // ASCII Indicators
                     self.settings.use_ascii_indicators = self.option_index == 1;
                 }
@@ -440,6 +614,7 @@ impl SettingsMenu {
         self.option_index = 0;
 
         // Automatically save settings
+        let _ = self.settings.save();
         let _ = state.update_settings(self.settings.clone());
     }
 
@@ -449,23 +624,46 @@ impl SettingsMenu {
             return;
         }
 
+        // Handle sub-menus
+        match self.sub_menu {
+            SubMenu::PresetSelection => {
+                self.render_preset_popup(frame, area);
+                return;
+            }
+            SubMenu::ResetConfirmation => {
+                self.render_reset_confirmation(frame, area);
+                return;
+            }
+            SubMenu::None => {}
+        }
+
         if self.input_mode {
             self.render_input_popup(frame, area); // Pass full screen area
         } else if self.editing {
             self.render_edit_popup(frame, area); // Pass full screen area
         } else {
             // Render the main settings dialog (list of settings)
-            let popup_width = 60;
-            let popup_height = 16;
+            let popup_width = 65;
+            let popup_height = 20;
             let dialog_x = (area.width.saturating_sub(popup_width)) / 2;
             let dialog_y = (area.height.saturating_sub(popup_height)) / 2;
             let main_dialog_area = Rect::new(dialog_x, dialog_y, popup_width, popup_height);
 
+            // Clear the area behind the popup
+            frame.render_widget(Clear, main_dialog_area);
+
             // Pre-compute formatted values that need owned strings
             let concurrent_str = self.settings.concurrent_downloads.to_string();
             let retry_delay_str = format!("{} seconds", self.settings.retry_delay);
+            let custom_args_display = if self.settings.custom_ytdlp_args.is_empty() {
+                "(none)".to_string()
+            } else if self.settings.custom_ytdlp_args.len() > 30 {
+                format!("{}...", &self.settings.custom_ytdlp_args[..27])
+            } else {
+                self.settings.custom_ytdlp_args.clone()
+            };
 
-            let items = vec![
+            let mut items = vec![
                 create_setting_item(
                     "Format Preset",
                     self.format_preset_to_string(&self.settings.format_preset),
@@ -490,7 +688,12 @@ impl SettingsMenu {
                     "ASCII Indicators",
                     bool_to_yes_no(self.settings.use_ascii_indicators),
                 ),
+                create_setting_item("Custom yt-dlp Args", &custom_args_display),
             ];
+
+            // Add action items with different styling
+            items.push(create_action_item("Apply Preset..."));
+            items.push(create_action_item("Reset to Defaults..."));
 
             let settings_list = List::new(items)
                 .block(
@@ -506,22 +709,111 @@ impl SettingsMenu {
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(8), Constraint::Length(3)].as_ref())
+                .constraints([
+                    Constraint::Min(10),
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                ])
                 .split(main_dialog_area);
 
             frame.render_stateful_widget(settings_list, chunks[0], &mut self.list_state);
 
+            // Show description for the currently selected item
+            if let Some(selected) = self.list_state.selected()
+                && selected < SETTING_DESCRIPTIONS.len()
+            {
+                let description = SETTING_DESCRIPTIONS[selected];
+                let desc_widget = Paragraph::new(description)
+                    .style(Style::default().fg(Color::Cyan))
+                    .wrap(ratatui::widgets::Wrap { trim: true });
+                frame.render_widget(desc_widget, chunks[1]);
+            }
+
             let help_text = "↑↓: Navigate | Enter: Edit | Esc: Close";
             let help = Paragraph::new(Text::from(help_text))
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .border_style(Style::default().fg(Color::White))
-                        .style(Style::default()),
-                )
-                .style(Style::default().fg(Color::Gray));
-            frame.render_widget(help, chunks[1]);
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(help, chunks[2]);
         }
+    }
+
+    /// Render the preset selection popup
+    fn render_preset_popup(&self, frame: &mut Frame, screen_area: Rect) {
+        let popup_width = 55;
+        let popup_height = 10;
+        let popup_x = (screen_area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (screen_area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let presets = SettingsPreset::all();
+        let items: Vec<ListItem> = presets
+            .iter()
+            .enumerate()
+            .map(|(i, preset)| {
+                let style = if i == self.preset_index {
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(preset.name(), style),
+                    Span::raw(" - "),
+                    Span::styled(preset.description(), Style::default().fg(Color::Gray)),
+                ]))
+            })
+            .collect();
+
+        let preset_list = List::new(items).block(
+            Block::default()
+                .title("Select Preset")
+                .title_style(Style::default().fg(Color::White))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+        frame.render_widget(preset_list, popup_area);
+
+        // Help text below
+        let help_area = Rect::new(popup_x, popup_y + popup_height, popup_width, 1);
+        let help = Paragraph::new("↑↓: Select | Enter: Apply | Esc: Cancel")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(help, help_area);
+    }
+
+    /// Render the reset confirmation popup
+    fn render_reset_confirmation(&self, frame: &mut Frame, screen_area: Rect) {
+        let popup_width = 45;
+        let popup_height = 5;
+        let popup_x = (screen_area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (screen_area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let content = vec![
+            Line::from(""),
+            Line::from("Reset all settings to defaults?"),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Y", Style::default().fg(Color::Green)),
+                Span::raw(": Yes  "),
+                Span::styled("N", Style::default().fg(Color::Red)),
+                Span::raw("/"),
+                Span::styled("Esc", Style::default().fg(Color::Red)),
+                Span::raw(": Cancel"),
+            ]),
+        ];
+
+        let confirm_widget = Paragraph::new(content)
+            .block(
+                Block::default()
+                    .title("Confirm Reset")
+                    .title_style(Style::default().fg(Color::Yellow))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(confirm_widget, popup_area);
     }
 
     /// Render the editing popup for the selected setting
@@ -533,14 +825,17 @@ impl SettingsMenu {
             let popup_y = (screen_area.height.saturating_sub(popup_height)) / 2;
             let edit_popup_dialog_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
+            // Clear the area behind the popup
+            frame.render_widget(Clear, edit_popup_dialog_area);
+
             let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
 
             let (options, title) = match selected {
-                0 => (
+                IDX_FORMAT_PRESET => (
                     vec!["Best", "Audio Only", "1080p", "720p", "480p", "360p"],
                     "Select Format Preset",
                 ),
-                1 => {
+                IDX_OUTPUT_FORMAT => {
                     if is_audio_only {
                         // Only show audio-compatible formats when Audio Only is selected
                         (vec!["Auto", "MP3"], "Select Output Format")
@@ -551,7 +846,7 @@ impl SettingsMenu {
                         )
                     }
                 }
-                2 => {
+                IDX_WRITE_SUBTITLES => {
                     if is_audio_only {
                         // Subtitles are not applicable for audio-only
                         (vec!["No"], "Write Subtitles (N/A for Audio)")
@@ -559,7 +854,7 @@ impl SettingsMenu {
                         (vec!["No", "Yes"], "Write Subtitles")
                     }
                 }
-                3 => {
+                IDX_WRITE_THUMBNAIL => {
                     if is_audio_only {
                         // Thumbnails are less relevant for audio-only
                         (vec!["No", "Yes"], "Write Thumbnail (Album Art)")
@@ -567,11 +862,11 @@ impl SettingsMenu {
                         (vec!["No", "Yes"], "Write Thumbnail")
                     }
                 }
-                4 => (vec!["No", "Yes"], "Add Metadata"),
-                5 => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
-                6 => (vec!["No", "Yes"], "Auto Retry Network Failures"),
-                7 => (vec!["1", "2", "5", "10", "Custom"], "Retry Delay"),
-                8 => (
+                IDX_ADD_METADATA => (vec!["No", "Yes"], "Add Metadata"),
+                IDX_CONCURRENT => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
+                IDX_NETWORK_RETRY => (vec!["No", "Yes"], "Auto Retry Network Failures"),
+                IDX_RETRY_DELAY => (vec!["1", "2", "5", "10", "Custom"], "Retry Delay (seconds)"),
+                IDX_ASCII_INDICATORS => (
                     vec!["No", "Yes"],
                     "ASCII Indicators (for terminal compatibility)",
                 ),
@@ -617,34 +912,59 @@ impl SettingsMenu {
 
     /// Render the input popup for custom values
     fn render_input_popup(&mut self, frame: &mut Frame, screen_area: Rect) {
-        let popup_width = 40;
-        let popup_height = 3;
+        let is_custom_args = self.list_state.selected() == Some(IDX_CUSTOM_ARGS);
+        let popup_width = if is_custom_args { 60 } else { 40 };
+        let popup_height = if self.validation_error.is_some() { 5 } else { 3 };
         let popup_x = (screen_area.width.saturating_sub(popup_width)) / 2;
         let popup_y = (screen_area.height.saturating_sub(popup_height)) / 2;
         let input_popup_dialog_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
+        // Clear the area behind the popup
+        frame.render_widget(Clear, input_popup_dialog_area);
+
         // Dynamic title based on which setting is being edited
         let title = match self.list_state.selected() {
-            Some(5) => "Enter Concurrent Downloads",
-            Some(7) => "Enter Retry Delay (seconds)",
+            Some(IDX_CONCURRENT) => "Enter Concurrent Downloads",
+            Some(IDX_RETRY_DELAY) => "Enter Retry Delay (seconds)",
+            Some(IDX_CUSTOM_ARGS) => "Custom yt-dlp Arguments",
             _ => "Enter Value",
         };
 
         let input_text = format!("{}_", self.custom_input);
-        let input_widget = Paragraph::new(Text::from(input_text))
-            .block(
-                Block::default()
-                    .title(title)
-                    .title_style(Style::default().fg(Color::White))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::White))
-                    .style(Style::default()),
-            )
-            .style(Style::default().fg(Color::Yellow));
+
+        // Build content with optional error message
+        let mut lines = vec![Line::from(Span::styled(
+            input_text,
+            Style::default().fg(Color::Yellow),
+        ))];
+
+        if let Some(ref error) = self.validation_error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("Error: {}", error),
+                Style::default().fg(Color::Red),
+            )));
+        }
+
+        let input_widget = Paragraph::new(lines).block(
+            Block::default()
+                .title(title)
+                .title_style(Style::default().fg(Color::White))
+                .borders(Borders::ALL)
+                .border_style(if self.validation_error.is_some() {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::White)
+                }),
+        );
         frame.render_widget(input_widget, input_popup_dialog_area);
 
         // Help text for this popup
-        let help_text = "Enter a number | Enter: Confirm | Esc: Cancel";
+        let help_text = if is_custom_args {
+            "Type arguments | Enter: Save | Esc: Cancel"
+        } else {
+            "Enter a number | Enter: Confirm | Esc: Cancel"
+        };
         let help_popup_area = Rect::new(
             input_popup_dialog_area.x,
             input_popup_dialog_area.y + input_popup_dialog_area.height,
@@ -652,7 +972,7 @@ impl SettingsMenu {
             1,
         );
         let help_widget =
-            Paragraph::new(Text::from(help_text)).style(Style::default().fg(Color::DarkGray)); // Simple text, no block
+            Paragraph::new(Text::from(help_text)).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(help_widget, help_popup_area);
     }
 

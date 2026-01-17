@@ -369,6 +369,15 @@ impl AppState {
         Ok(())
     }
 
+    /// Refresh the download timestamp for all active downloads to dismiss stale indicators
+    pub fn refresh_all_download_timestamps(&self) -> Result<()> {
+        let mut queues = self.queues.lock()?;
+        for progress in queues.active_downloads.values_mut() {
+            progress.last_update = Instant::now();
+        }
+        Ok(())
+    }
+
     fn handle_increment_completed(&self) -> Result<()> {
         let mut stats = self.stats.lock()?;
         stats.completed_tasks += 1;
@@ -499,6 +508,19 @@ impl AppState {
             Ok(removed)
         } else {
             Ok(None)
+        }
+    }
+
+    /// Swap two items in the queue
+    ///
+    /// Returns true if the swap was successful, false if indices were invalid.
+    pub fn swap_queue_items(&self, index_a: usize, index_b: usize) -> Result<bool> {
+        let mut queues = self.queues.lock()?;
+        if index_a < queues.queue.len() && index_b < queues.queue.len() && index_a != index_b {
+            queues.queue.swap(index_a, index_b);
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 

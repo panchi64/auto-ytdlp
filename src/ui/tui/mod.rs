@@ -24,8 +24,8 @@ use crate::{
 };
 
 use input::{
-    DownloadState, ForceQuitState, InputResult, handle_edit_mode_input, handle_help_overlay_input,
-    handle_normal_mode_input,
+    DownloadState, ForceQuitState, InputResult, handle_edit_mode_input, handle_filter_mode_input,
+    handle_help_overlay_input, handle_normal_mode_input,
 };
 pub use render::ui;
 
@@ -35,6 +35,12 @@ pub struct UiContext {
     pub queue_edit_mode: bool,
     pub queue_selected_index: usize,
     pub show_help: bool,
+    /// Filter mode for queue search
+    pub filter_mode: bool,
+    /// Current filter text
+    pub filter_text: String,
+    /// Indices of queue items that match the filter
+    pub filtered_indices: Vec<usize>,
 }
 
 /// Runs the Terminal User Interface (TUI) loop.
@@ -153,6 +159,12 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
             // Handle help overlay
             if ui_ctx.show_help {
                 handle_help_overlay_input(key.code, &mut ui_ctx.show_help);
+                continue;
+            }
+
+            // Handle filter mode
+            if ui_ctx.filter_mode {
+                handle_filter_mode_input(key.code, &state, &mut ui_ctx);
                 continue;
             }
 
