@@ -1,15 +1,22 @@
 use std::{
     io::{BufRead, BufReader},
     process::{Command, Stdio},
+    time::Instant,
 };
 
 use crate::{
-    app_state::{AppState, StateMessage},
+    app_state::{truncate_url_for_display, AppState, DownloadProgress, StateMessage},
     args::Args,
     utils::file::remove_link_from_file_sync,
 };
 
-use super::common::build_ytdlp_command_args;
+use super::{
+    common::build_ytdlp_command_args,
+    progress_parser::{parse_ytdlp_line, progress_info_to_download_progress, ParsedOutput},
+};
+
+/// Minimum interval between progress updates to reduce lock contention (250ms)
+const PROGRESS_UPDATE_INTERVAL_MS: u64 = 250;
 
 /// Downloads a single video from the provided URL using yt-dlp.
 ///
@@ -124,6 +131,8 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         };
         let reader = BufReader::new(stdout);
         let mut is_network_error = false;
+        let mut last_progress_update = Instant::now();
+        let display_name = truncate_url_for_display(&url);
 
         for line in reader.lines().map_while(Result::ok) {
             if state.is_force_quit().unwrap_or(false) {
@@ -138,26 +147,72 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                 break;
             }
 
-            if line.contains("ERROR")
-                && (line.contains("Unable to download webpage")
-                    || line.contains("HTTP Error")
-                    || line.contains("Connection")
-                    || line.contains("Timeout")
-                    || line.contains("Network")
-                    || line.contains("SSL"))
-            {
-                is_network_error = true;
-            }
+            // Parse the line using the progress parser
+            let parsed = parse_ytdlp_line(&line);
 
-            let log_line = if line.contains("ERROR") {
-                format!("Error: {}", line)
-            } else if line.contains("Destination") || line.contains("[download]") {
-                line
-            } else {
-                continue;
-            };
-            if let Err(e) = state.add_log(log_line) {
-                eprintln!("Error adding log: {}", e);
+            match parsed {
+                ParsedOutput::Progress(info) => {
+                    // Check network error indicators
+                    if line.contains("ERROR") {
+                        is_network_error = check_network_error(&line);
+                    }
+
+                    // Throttle progress updates to reduce lock contention
+                    let elapsed = last_progress_update.elapsed().as_millis() as u64;
+                    if elapsed >= PROGRESS_UPDATE_INTERVAL_MS || info.percent >= 100.0 {
+                        last_progress_update = Instant::now();
+
+                        let progress =
+                            progress_info_to_download_progress(&url, &display_name, &info);
+                        if let Err(e) = state.send(StateMessage::UpdateDownloadProgress {
+                            url: url.clone(),
+                            progress,
+                        }) {
+                            eprintln!("Error sending progress update: {}", e);
+                        }
+                    }
+                }
+                ParsedOutput::PostProcess(msg) => {
+                    // Update phase to processing/merging
+                    let mut progress = DownloadProgress::new(&url);
+                    progress.phase = "processing".to_string();
+                    progress.percent = 100.0; // Mark as fully downloaded
+                    if let Err(e) = state.send(StateMessage::UpdateDownloadProgress {
+                        url: url.clone(),
+                        progress,
+                    }) {
+                        eprintln!("Error sending progress update: {}", e);
+                    }
+
+                    // Log post-processing with URL prefix
+                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+                ParsedOutput::Destination(msg) => {
+                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+                ParsedOutput::AlreadyDownloaded(msg) => {
+                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+                ParsedOutput::Error(msg) => {
+                    is_network_error = check_network_error(&msg);
+                    if let Err(e) = state.add_log(format!("{} Error: {}", display_name, msg)) {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+                ParsedOutput::Info(msg) => {
+                    if let Err(e) = state.add_log(format!("{} {}", display_name, msg)) {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+                ParsedOutput::Ignore => {
+                    // Skip ignored output
+                }
             }
         }
 
@@ -258,4 +313,14 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     {
         eprintln!("Error setting completed: {}", e);
     }
+}
+
+/// Checks if an error message indicates a network-related issue
+fn check_network_error(line: &str) -> bool {
+    line.contains("Unable to download webpage")
+        || line.contains("HTTP Error")
+        || line.contains("Connection")
+        || line.contains("Timeout")
+        || line.contains("Network")
+        || line.contains("SSL")
 }

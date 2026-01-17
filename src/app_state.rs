@@ -1,10 +1,120 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::errors::{AppError, Result};
 use crate::utils::settings::Settings;
+
+/// Progress information for a single download.
+///
+/// Tracks percentage, speed, ETA, and other metadata for displaying
+/// per-download progress bars in the TUI.
+#[derive(Clone, Debug)]
+pub struct DownloadProgress {
+    /// The URL being downloaded (used for tracking)
+    #[allow(dead_code)]
+    pub url: String,
+    /// Truncated URL or video title for display
+    pub display_name: String,
+    /// Current phase: "downloading", "processing", "merging", "finished", "error"
+    pub phase: String,
+    /// Download percentage (0.0 - 100.0)
+    pub percent: f64,
+    /// Download speed (e.g., "1.5MiB/s")
+    pub speed: Option<String>,
+    /// Estimated time remaining (e.g., "00:05:23")
+    pub eta: Option<String>,
+    /// Bytes downloaded so far
+    pub downloaded_bytes: Option<u64>,
+    /// Total file size in bytes
+    pub total_bytes: Option<u64>,
+    /// Current fragment index (for HLS/DASH streams)
+    pub fragment_index: Option<u32>,
+    /// Total fragment count (for HLS/DASH streams)
+    pub fragment_count: Option<u32>,
+    /// Timestamp of last progress update (for staleness detection)
+    pub last_update: Instant,
+}
+
+impl Default for DownloadProgress {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            display_name: String::new(),
+            phase: "downloading".to_string(),
+            percent: 0.0,
+            speed: None,
+            eta: None,
+            downloaded_bytes: None,
+            total_bytes: None,
+            fragment_index: None,
+            fragment_count: None,
+            last_update: Instant::now(),
+        }
+    }
+}
+
+impl DownloadProgress {
+    /// Creates a new DownloadProgress for the given URL
+    pub fn new(url: &str) -> Self {
+        Self {
+            url: url.to_string(),
+            display_name: truncate_url_for_display(url),
+            ..Default::default()
+        }
+    }
+}
+
+/// Truncates a URL for display purposes.
+///
+/// For YouTube URLs, extracts the video ID. For other URLs,
+/// shows the last portion of the URL path.
+pub fn truncate_url_for_display(url: &str) -> String {
+    // Try to extract YouTube video ID
+    if (url.contains("youtube.com") || url.contains("youtu.be"))
+        && let Some(id) = extract_youtube_id(url) {
+            return format!("[{}]", id);
+        }
+
+    // For other URLs, use the last path segment or truncate
+    if let Some(last_segment) = url.rsplit('/').next()
+        && !last_segment.is_empty() && last_segment.len() <= 30 {
+            return last_segment.to_string();
+        }
+
+    // Fallback: truncate the URL
+    if url.len() > 30 {
+        format!("{}...", &url[..27])
+    } else {
+        url.to_string()
+    }
+}
+
+/// Extracts the video ID from a YouTube URL
+fn extract_youtube_id(url: &str) -> Option<String> {
+    // Handle youtu.be/VIDEO_ID format
+    if url.contains("youtu.be/")
+        && let Some(id_start) = url.find("youtu.be/") {
+            let id_portion = &url[id_start + 9..];
+            let id = id_portion.split(&['?', '&', '/'][..]).next()?;
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+
+    // Handle youtube.com/watch?v=VIDEO_ID format
+    if url.contains("v=")
+        && let Some(v_start) = url.find("v=") {
+            let id_portion = &url[v_start + 2..];
+            let id = id_portion.split(&['?', '&', '/'][..]).next()?;
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+
+    None
+}
 
 /// A snapshot of UI-relevant state, captured with minimal locking.
 ///
@@ -20,7 +130,8 @@ pub struct UiSnapshot {
     pub paused: bool,
     pub completed: bool,
     pub queue: VecDeque<String>,
-    pub active_downloads: HashSet<String>,
+    /// Per-download progress information for active downloads
+    pub active_downloads: Vec<DownloadProgress>,
     pub logs: Vec<String>,
     pub concurrent: usize,
     pub toast: Option<String>,
@@ -42,7 +153,8 @@ struct DownloadStats {
 #[derive(Default)]
 struct DownloadQueues {
     queue: VecDeque<String>,
-    active_downloads: HashSet<String>,
+    /// Active downloads with their progress information
+    active_downloads: HashMap<String, DownloadProgress>,
 }
 
 #[derive(Default)]
@@ -101,6 +213,12 @@ pub enum StateMessage {
     /// Updates the application settings.
     #[allow(dead_code)]
     UpdateSettings(Settings),
+
+    /// Updates progress information for an active download.
+    UpdateDownloadProgress {
+        url: String,
+        progress: DownloadProgress,
+    },
 }
 
 /// A thread-safe application state manager for the script.
@@ -214,8 +332,13 @@ impl AppState {
                         }
                     }
                     StateMessage::RemoveActiveDownload(url) => {
-                        if let Err(err) = self.handle_remove_active_download(url) {
+                        if let Err(err) = self.handle_remove_active_download(&url) {
                             eprintln!("Error removing active download: {}", err);
+                        }
+                    }
+                    StateMessage::UpdateDownloadProgress { url, progress } => {
+                        if let Err(err) = self.handle_update_download_progress(&url, progress) {
+                            eprintln!("Error updating download progress: {}", err);
                         }
                     }
                     StateMessage::IncrementCompleted => {
@@ -281,13 +404,22 @@ impl AppState {
 
     fn handle_add_active_download(&self, url: String) -> Result<()> {
         let mut queues = self.queues.lock()?;
-        queues.active_downloads.insert(url);
+        let progress = DownloadProgress::new(&url);
+        queues.active_downloads.insert(url, progress);
         Ok(())
     }
 
-    fn handle_remove_active_download(&self, url: String) -> Result<()> {
+    fn handle_remove_active_download(&self, url: &str) -> Result<()> {
         let mut queues = self.queues.lock()?;
-        queues.active_downloads.remove(&url);
+        queues.active_downloads.remove(url);
+        Ok(())
+    }
+
+    fn handle_update_download_progress(&self, url: &str, progress: DownloadProgress) -> Result<()> {
+        let mut queues = self.queues.lock()?;
+        if let Some(existing) = queues.active_downloads.get_mut(url) {
+            *existing = progress;
+        }
         Ok(())
     }
 
@@ -430,9 +562,10 @@ impl AppState {
         }
     }
 
+    /// Returns just the URLs of active downloads (for compatibility checks)
     pub fn get_active_downloads(&self) -> Result<HashSet<String>> {
         let queues = self.queues.lock()?;
-        Ok(queues.active_downloads.clone())
+        Ok(queues.active_downloads.keys().cloned().collect())
     }
 
     pub fn is_paused(&self) -> Result<bool> {
@@ -626,7 +759,8 @@ impl AppState {
 
         let queues = self.queues.lock()?;
         let queue = queues.queue.clone();
-        let active_downloads = queues.active_downloads.clone();
+        // Convert HashMap values to Vec for UI rendering
+        let active_downloads: Vec<DownloadProgress> = queues.active_downloads.values().cloned().collect();
         drop(queues);
 
         let logs = self.logs.lock()?;

@@ -4,6 +4,8 @@ use crate::{
 };
 use anyhow::{Error, Result};
 
+use super::progress_parser::{PROGRESS_MARKER_END, PROGRESS_MARKER_START};
+
 /// Builds the command arguments for yt-dlp based on provided settings and args
 ///
 /// This centralizes the command construction logic to avoid duplication between
@@ -30,6 +32,15 @@ pub fn build_ytdlp_command_args(args: &Args, settings: &Settings, url: &str) -> 
 
     // Add settings-based arguments
     cmd_args.extend(settings.get_ytdlp_args(output_template));
+
+    // Add custom progress template for structured progress parsing
+    // Format: |PROGRESS|status|percent|speed|eta|downloaded|total|frag_idx|frag_count|PROGRESS_END|
+    cmd_args.push("--progress-template".to_string());
+    cmd_args.push(format!(
+        "download:{}%(progress.status)s|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.fragment_index)s|%(progress.fragment_count)s{}",
+        PROGRESS_MARKER_START,
+        PROGRESS_MARKER_END
+    ));
 
     // Add the URL to download
     cmd_args.push(url.to_string());
