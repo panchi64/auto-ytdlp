@@ -536,3 +536,492 @@ fn handle_edit_mode(state: &AppState, ctx: &mut UiContext) {
         eprintln!("Error adding log: {}", e);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use std::thread;
+    use std::time::Duration;
+
+    // Helper to create AppState for testing
+    fn create_test_state() -> AppState {
+        AppState::new()
+    }
+
+    // Helper to create UiContext for testing
+    fn create_test_context() -> UiContext {
+        UiContext::default()
+    }
+
+    // Helper to create Args for testing
+    fn create_test_args() -> Args {
+        Args::parse_from(["test"])
+    }
+
+    // ==================== ForceQuitState Tests ====================
+
+    #[test]
+    fn test_force_quit_state_initial() {
+        let state = ForceQuitState::default();
+        assert!(!state.pending);
+        assert!(state.time.is_none());
+        assert!(!state.is_confirmed());
+    }
+
+    #[test]
+    fn test_force_quit_state_pending_not_confirmed_without_time() {
+        let mut state = ForceQuitState::default();
+        state.pending = true;
+        // Without setting time, is_confirmed should return false
+        assert!(!state.is_confirmed());
+    }
+
+    #[test]
+    fn test_force_quit_state_confirmed_within_timeout() {
+        let mut state = ForceQuitState::default();
+        state.pending = true;
+        state.time = Some(Instant::now());
+        // Should be confirmed within 2 seconds
+        assert!(state.is_confirmed());
+    }
+
+    #[test]
+    fn test_force_quit_state_not_confirmed_after_timeout() {
+        let mut state = ForceQuitState::default();
+        state.pending = true;
+        // Set time to more than 2 seconds ago
+        state.time = Some(Instant::now() - Duration::from_secs(3));
+        assert!(!state.is_confirmed());
+    }
+
+    #[test]
+    fn test_force_quit_state_check_timeout_resets_state() {
+        let mut state = ForceQuitState::default();
+        state.pending = true;
+        state.time = Some(Instant::now() - Duration::from_secs(3));
+
+        state.check_timeout();
+
+        assert!(!state.pending);
+        assert!(state.time.is_none());
+    }
+
+    #[test]
+    fn test_force_quit_state_check_timeout_preserves_valid_state() {
+        let mut state = ForceQuitState::default();
+        state.pending = true;
+        let now = Instant::now();
+        state.time = Some(now);
+
+        state.check_timeout();
+
+        // State should be preserved if within timeout
+        assert!(state.pending);
+        assert!(state.time.is_some());
+    }
+
+    // ==================== Filter Mode Tests ====================
+
+    #[test]
+    fn test_filter_mode_esc_clears_filter() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.filter_mode = true;
+        ctx.filter_text = "test".to_string();
+        ctx.filtered_indices = vec![0, 1, 2];
+
+        let result = handle_filter_mode_input(KeyCode::Esc, &state, &mut ctx);
+
+        assert!(!ctx.filter_mode);
+        assert!(ctx.filter_text.is_empty());
+        assert!(ctx.filtered_indices.is_empty());
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_filter_mode_enter_keeps_filter() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.filter_mode = true;
+        ctx.filter_text = "test".to_string();
+
+        let result = handle_filter_mode_input(KeyCode::Enter, &state, &mut ctx);
+
+        assert!(!ctx.filter_mode);
+        assert_eq!(ctx.filter_text, "test");
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_filter_mode_backspace_removes_char() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.filter_mode = true;
+        ctx.filter_text = "test".to_string();
+
+        let result = handle_filter_mode_input(KeyCode::Backspace, &state, &mut ctx);
+
+        assert_eq!(ctx.filter_text, "tes");
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_filter_mode_backspace_on_empty_string() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.filter_mode = true;
+        ctx.filter_text = String::new();
+
+        let result = handle_filter_mode_input(KeyCode::Backspace, &state, &mut ctx);
+
+        assert!(ctx.filter_text.is_empty());
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_filter_mode_char_input_adds_to_filter() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.filter_mode = true;
+        ctx.filter_text = "tes".to_string();
+
+        let result = handle_filter_mode_input(KeyCode::Char('t'), &state, &mut ctx);
+
+        assert_eq!(ctx.filter_text, "test");
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    // ==================== Edit Mode Tests ====================
+
+    #[test]
+    fn test_edit_mode_up_navigation() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.queue_edit_mode = true;
+        ctx.queue_selected_index = 2;
+
+        handle_edit_mode_input(KeyCode::Up, &state, &mut ctx);
+
+        assert_eq!(ctx.queue_selected_index, 1);
+    }
+
+    #[test]
+    fn test_edit_mode_up_navigation_at_zero() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.queue_edit_mode = true;
+        ctx.queue_selected_index = 0;
+
+        handle_edit_mode_input(KeyCode::Up, &state, &mut ctx);
+
+        // Should stay at 0 (saturating_sub)
+        assert_eq!(ctx.queue_selected_index, 0);
+    }
+
+    #[test]
+    fn test_edit_mode_down_navigation() {
+        let state = create_test_state();
+        // Add items to queue
+        let _ = state.send(StateMessage::LoadLinks(vec![
+            "url1".to_string(),
+            "url2".to_string(),
+            "url3".to_string(),
+        ]));
+        // Allow message processing
+        thread::sleep(Duration::from_millis(50));
+
+        let mut ctx = create_test_context();
+        ctx.queue_edit_mode = true;
+        ctx.queue_selected_index = 0;
+
+        handle_edit_mode_input(KeyCode::Down, &state, &mut ctx);
+
+        assert_eq!(ctx.queue_selected_index, 1);
+    }
+
+    #[test]
+    fn test_edit_mode_esc_exits() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.queue_edit_mode = true;
+
+        let result = handle_edit_mode_input(KeyCode::Esc, &state, &mut ctx);
+
+        assert!(!ctx.queue_edit_mode);
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_edit_mode_enter_exits() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.queue_edit_mode = true;
+
+        handle_edit_mode_input(KeyCode::Enter, &state, &mut ctx);
+
+        assert!(!ctx.queue_edit_mode);
+    }
+
+    #[test]
+    fn test_edit_mode_e_exits() {
+        let state = create_test_state();
+        let mut ctx = create_test_context();
+        ctx.queue_edit_mode = true;
+
+        handle_edit_mode_input(KeyCode::Char('e'), &state, &mut ctx);
+
+        assert!(!ctx.queue_edit_mode);
+    }
+
+    // ==================== Help Overlay Tests ====================
+
+    #[test]
+    fn test_help_overlay_f1_closes() {
+        let mut show_help = true;
+
+        let result = handle_help_overlay_input(KeyCode::F(1), &mut show_help);
+
+        assert!(!show_help);
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_help_overlay_esc_closes() {
+        let mut show_help = true;
+
+        let result = handle_help_overlay_input(KeyCode::Esc, &mut show_help);
+
+        assert!(!show_help);
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_help_overlay_other_keys_continue() {
+        let mut show_help = true;
+
+        let result = handle_help_overlay_input(KeyCode::Char('a'), &mut show_help);
+
+        // Help should still be showing (other keys don't close it)
+        assert!(show_help);
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    // ==================== Normal Mode Key Mapping Tests ====================
+
+    #[test]
+    fn test_normal_mode_f1_shows_help() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::F(1),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(ctx.show_help);
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_normal_mode_q_graceful_quit() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('q'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(download_state.await_downloads_on_exit);
+        assert!(matches!(result, InputResult::Break));
+    }
+
+    #[test]
+    fn test_normal_mode_shift_q_initiates_force_quit() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('Q'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(force_quit_state.pending);
+        assert!(force_quit_state.time.is_some());
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_normal_mode_shift_q_confirms_force_quit() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState {
+            pending: true,
+            time: Some(Instant::now()),
+        };
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('Q'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(matches!(result, InputResult::Break));
+    }
+
+    #[test]
+    fn test_normal_mode_p_pause_toggle() {
+        let state = create_test_state();
+        // Start downloads first
+        let _ = state.send(StateMessage::SetStarted(true));
+        thread::sleep(Duration::from_millis(50));
+
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('p'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_normal_mode_slash_enters_filter_mode() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('/'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(ctx.filter_mode);
+        assert!(ctx.filter_text.is_empty());
+        assert!(ctx.filtered_indices.is_empty());
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_normal_mode_f2_returns_unhandled() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::F(2),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        // F2 returns Unhandled so the caller can toggle settings menu
+        assert!(matches!(result, InputResult::Unhandled));
+    }
+
+    #[test]
+    fn test_normal_mode_unknown_key_unhandled() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('z'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(matches!(result, InputResult::Unhandled));
+    }
+
+    // ==================== DownloadState Tests ====================
+
+    #[test]
+    fn test_download_state_default() {
+        let state = DownloadState::default();
+        assert!(state.download_thread_handle.is_none());
+        assert!(!state.await_downloads_on_exit);
+    }
+}

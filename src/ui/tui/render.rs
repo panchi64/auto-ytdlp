@@ -157,10 +157,7 @@ pub fn ui(
                     ctx.filter_text, match_count, total
                 )
             } else {
-                format!(
-                    "🔍 [{}] {}/{} matches",
-                    ctx.filter_text, match_count, total
-                )
+                format!("🔍 [{}] {}/{} matches", ctx.filter_text, match_count, total)
             }
         } else {
             let icon = if use_ascii {

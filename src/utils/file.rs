@@ -195,3 +195,176 @@ pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<
 
     Ok(n)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Test helper to read links from a specific file path (not the hardcoded "links.txt")
+    fn get_links_from_file_at_path(path: &std::path::Path) -> Result<Vec<String>> {
+        let content = fs::read_to_string(path).map_err(AppError::Io)?;
+
+        Ok(content
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .filter(|l| url::Url::parse(l).is_ok())
+            .collect())
+    }
+
+    /// Test helper to sanitize a links file at a specific path
+    fn sanitize_links_file_at_path(path: &std::path::Path) -> Result<usize> {
+        let content = fs::read_to_string(path).map_err(AppError::Io)?;
+
+        let mut total_non_empty = 0usize;
+        let valid_lines: Vec<&str> = content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .inspect(|_| total_non_empty += 1)
+            .filter(|l| url::Url::parse(l).is_ok())
+            .collect();
+
+        let removed_count = total_non_empty - valid_lines.len();
+
+        if removed_count > 0 {
+            fs::write(path, valid_lines.join("\n")).map_err(AppError::Io)?;
+        }
+
+        Ok(removed_count)
+    }
+
+    #[test]
+    fn test_get_links_from_file_valid_urls() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content = "https://example.com/video1\nhttps://youtube.com/watch?v=abc123\n";
+        fs::write(&links_path, content).unwrap();
+
+        let links = get_links_from_file_at_path(&links_path).unwrap();
+        assert_eq!(links.len(), 2);
+        assert!(links.contains(&"https://example.com/video1".to_string()));
+        assert!(links.contains(&"https://youtube.com/watch?v=abc123".to_string()));
+    }
+
+    #[test]
+    fn test_get_links_from_file_invalid_urls_filtered() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content = "https://example.com/video1\nnot-a-valid-url\nhttps://example.com/video2\n";
+        fs::write(&links_path, content).unwrap();
+
+        let links = get_links_from_file_at_path(&links_path).unwrap();
+        assert_eq!(links.len(), 2);
+        assert!(!links.iter().any(|l| l == "not-a-valid-url"));
+    }
+
+    #[test]
+    fn test_get_links_from_file_empty_file() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        fs::write(&links_path, "").unwrap();
+
+        let links = get_links_from_file_at_path(&links_path).unwrap();
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_get_links_from_file_whitespace_and_blank_lines() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content = "  https://example.com/video1  \n\n\n   \nhttps://example.com/video2\n\n";
+        fs::write(&links_path, content).unwrap();
+
+        let links = get_links_from_file_at_path(&links_path).unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0], "https://example.com/video1");
+        assert_eq!(links[1], "https://example.com/video2");
+    }
+
+    #[test]
+    fn test_get_links_from_file_unicode_urls() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content = "https://example.com/video?title=%E4%B8%AD%E6%96%87\n";
+        fs::write(&links_path, content).unwrap();
+
+        let links = get_links_from_file_at_path(&links_path).unwrap();
+        assert_eq!(links.len(), 1);
+    }
+
+    #[test]
+    fn test_sanitize_links_file_removes_invalid() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content =
+            "https://example.com/video1\ninvalid-url\nhttps://example.com/video2\nalso-invalid\n";
+        fs::write(&links_path, content).unwrap();
+
+        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        assert_eq!(removed, 2);
+
+        // Verify file content
+        let remaining = fs::read_to_string(&links_path).unwrap();
+        assert!(remaining.contains("https://example.com/video1"));
+        assert!(remaining.contains("https://example.com/video2"));
+        assert!(!remaining.contains("invalid-url"));
+        assert!(!remaining.contains("also-invalid"));
+    }
+
+    #[test]
+    fn test_sanitize_links_file_no_invalid_urls() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content = "https://example.com/video1\nhttps://example.com/video2\n";
+        fs::write(&links_path, content).unwrap();
+
+        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_sanitize_links_file_returns_count() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content = "https://valid.com\nbad1\nbad2\nbad3\nhttps://also-valid.com\n";
+        fs::write(&links_path, content).unwrap();
+
+        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        assert_eq!(removed, 3);
+    }
+
+    #[test]
+    fn test_get_links_file_not_found() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        // Don't create links.txt
+        let result = get_links_from_file_at_path(&links_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_links_very_long_urls() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        // Create a very long but valid URL
+        let long_path = "a".repeat(500);
+        let long_url = format!("https://example.com/{}", long_path);
+        fs::write(&links_path, &long_url).unwrap();
+
+        let links = get_links_from_file_at_path(&links_path).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0], long_url);
+    }
+}

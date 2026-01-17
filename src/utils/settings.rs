@@ -356,3 +356,254 @@ impl Settings {
         args
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_default_values() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.format_preset, FormatPreset::Best);
+        assert_eq!(settings.output_format, OutputFormat::Auto);
+        assert!(!settings.write_subtitles);
+        assert_eq!(settings.concurrent_downloads, 4);
+        assert!(!settings.write_thumbnail);
+        assert!(!settings.add_metadata);
+        assert!(!settings.network_retry);
+        assert_eq!(settings.retry_delay, 2);
+        assert!(!settings.use_ascii_indicators);
+        assert!(settings.custom_ytdlp_args.is_empty());
+    }
+
+    #[test]
+    fn test_format_preset_best() {
+        assert_eq!(
+            FormatPreset::Best.get_format_arg(),
+            "bestvideo*+bestaudio/best"
+        );
+    }
+
+    #[test]
+    fn test_format_preset_audio_only() {
+        assert_eq!(FormatPreset::AudioOnly.get_format_arg(), "bestaudio/best");
+    }
+
+    #[test]
+    fn test_format_preset_hd1080p() {
+        assert_eq!(
+            FormatPreset::HD1080p.get_format_arg(),
+            "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+        );
+    }
+
+    #[test]
+    fn test_format_preset_hd720p() {
+        assert_eq!(
+            FormatPreset::HD720p.get_format_arg(),
+            "bestvideo[height<=720]+bestaudio/best[height<=720]"
+        );
+    }
+
+    #[test]
+    fn test_format_preset_sd480p() {
+        assert_eq!(
+            FormatPreset::SD480p.get_format_arg(),
+            "bestvideo[height<=480]+bestaudio/best[height<=480]"
+        );
+    }
+
+    #[test]
+    fn test_format_preset_sd360p() {
+        assert_eq!(
+            FormatPreset::SD360p.get_format_arg(),
+            "bestvideo[height<=360]+bestaudio/best[height<=360]"
+        );
+    }
+
+    #[test]
+    fn test_output_format_auto() {
+        assert_eq!(OutputFormat::Auto.get_format_modifier(), None);
+    }
+
+    #[test]
+    fn test_output_format_mp4() {
+        assert_eq!(
+            OutputFormat::MP4.get_format_modifier(),
+            Some("--merge-output-format mp4")
+        );
+    }
+
+    #[test]
+    fn test_output_format_mkv() {
+        assert_eq!(
+            OutputFormat::Mkv.get_format_modifier(),
+            Some("--merge-output-format mkv")
+        );
+    }
+
+    #[test]
+    fn test_output_format_mp3() {
+        assert_eq!(
+            OutputFormat::MP3.get_format_modifier(),
+            Some("--extract-audio --audio-format mp3")
+        );
+    }
+
+    #[test]
+    fn test_output_format_webm() {
+        assert_eq!(
+            OutputFormat::Webm.get_format_modifier(),
+            Some("--merge-output-format webm")
+        );
+    }
+
+    #[test]
+    fn test_validate_custom_args_empty() {
+        assert!(Settings::validate_custom_args("").is_ok());
+        assert!(Settings::validate_custom_args("   ").is_ok());
+    }
+
+    #[test]
+    fn test_validate_custom_args_valid() {
+        assert!(Settings::validate_custom_args("--no-playlist").is_ok());
+        assert!(Settings::validate_custom_args("--limit-rate 1M --retries 5").is_ok());
+        assert!(Settings::validate_custom_args("--user-agent 'My Bot'").is_ok());
+    }
+
+    #[test]
+    fn test_validate_custom_args_conflicting_flags() {
+        let result = Settings::validate_custom_args("--download-archive my_archive.txt");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("--download-archive"));
+
+        let result = Settings::validate_custom_args("-o ~/Downloads");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("-o"));
+
+        let result = Settings::validate_custom_args("--output ~/Downloads");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("--output"));
+
+        let result = Settings::validate_custom_args("--progress-template test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("--progress-template"));
+    }
+
+    #[test]
+    fn test_validate_custom_args_unmatched_quotes() {
+        let result = Settings::validate_custom_args("--user-agent 'unmatched");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unmatched quotes"));
+    }
+
+    #[test]
+    fn test_parse_custom_args_empty() {
+        let settings = Settings::default();
+        assert!(settings.parse_custom_args().is_empty());
+
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "   ".to_string();
+        assert!(settings.parse_custom_args().is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_args_simple() {
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "--no-playlist --retries 5".to_string();
+        let args = settings.parse_custom_args();
+        assert_eq!(args, vec!["--no-playlist", "--retries", "5"]);
+    }
+
+    #[test]
+    fn test_parse_custom_args_quoted() {
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "--user-agent 'My Custom Agent'".to_string();
+        let args = settings.parse_custom_args();
+        assert_eq!(args, vec!["--user-agent", "My Custom Agent"]);
+    }
+
+    #[test]
+    fn test_get_ytdlp_args_basic() {
+        let settings = Settings::default();
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"bestvideo*+bestaudio/best".to_string()));
+        assert!(args.contains(&"--output".to_string()));
+        assert!(args.contains(&"%(title)s.%(ext)s".to_string()));
+        assert!(args.contains(&"--newline".to_string()));
+
+        // Default settings should not include optional flags
+        assert!(!args.contains(&"--write-auto-subs".to_string()));
+        assert!(!args.contains(&"--write-thumbnail".to_string()));
+        assert!(!args.contains(&"--add-metadata".to_string()));
+    }
+
+    #[test]
+    fn test_get_ytdlp_args_all_options() {
+        let mut settings = Settings::default();
+        settings.write_subtitles = true;
+        settings.write_thumbnail = true;
+        settings.add_metadata = true;
+        settings.output_format = OutputFormat::MP4;
+        settings.custom_ytdlp_args = "--no-playlist".to_string();
+
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+
+        assert!(args.contains(&"--write-auto-subs".to_string()));
+        assert!(args.contains(&"--sub-langs".to_string()));
+        assert!(args.contains(&"all".to_string()));
+        assert!(args.contains(&"--write-thumbnail".to_string()));
+        assert!(args.contains(&"--add-metadata".to_string()));
+        assert!(args.contains(&"--merge-output-format".to_string()));
+        assert!(args.contains(&"mp4".to_string()));
+        assert!(args.contains(&"--no-playlist".to_string()));
+    }
+
+    #[test]
+    fn test_preset_best_quality() {
+        let settings = SettingsPreset::BestQuality.apply();
+        assert_eq!(settings.format_preset, FormatPreset::Best);
+        assert_eq!(settings.output_format, OutputFormat::Auto);
+        assert!(settings.write_subtitles);
+        assert!(settings.write_thumbnail);
+        assert!(settings.add_metadata);
+        assert_eq!(settings.concurrent_downloads, 4);
+        assert!(settings.network_retry);
+    }
+
+    #[test]
+    fn test_preset_audio_archive() {
+        let settings = SettingsPreset::AudioArchive.apply();
+        assert_eq!(settings.format_preset, FormatPreset::AudioOnly);
+        assert_eq!(settings.output_format, OutputFormat::MP3);
+        assert!(!settings.write_subtitles);
+        assert!(settings.write_thumbnail);
+        assert!(settings.add_metadata);
+    }
+
+    #[test]
+    fn test_preset_fast_download() {
+        let settings = SettingsPreset::FastDownload.apply();
+        assert_eq!(settings.format_preset, FormatPreset::Best);
+        assert!(!settings.write_subtitles);
+        assert!(!settings.write_thumbnail);
+        assert!(!settings.add_metadata);
+        assert_eq!(settings.concurrent_downloads, 8);
+        assert!(!settings.network_retry);
+    }
+
+    #[test]
+    fn test_preset_bandwidth_saver() {
+        let settings = SettingsPreset::BandwidthSaver.apply();
+        assert_eq!(settings.format_preset, FormatPreset::SD480p);
+        assert!(!settings.write_subtitles);
+        assert!(!settings.write_thumbnail);
+        assert!(!settings.add_metadata);
+        assert_eq!(settings.concurrent_downloads, 2);
+        assert!(settings.network_retry);
+        assert_eq!(settings.retry_delay, 5);
+    }
+}

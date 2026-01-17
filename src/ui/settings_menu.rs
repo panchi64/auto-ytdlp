@@ -73,7 +73,7 @@ fn create_action_item(name: &str) -> ListItem<'_> {
 }
 
 /// Sub-menu state for settings menu
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
 enum SubMenu {
     #[default]
     None,
@@ -360,7 +360,10 @@ impl SettingsMenu {
             matches!(selected, IDX_WRITE_SUBTITLES if !is_audio_only)
                 || matches!(
                     selected,
-                    IDX_WRITE_THUMBNAIL | IDX_ADD_METADATA | IDX_NETWORK_RETRY | IDX_ASCII_INDICATORS
+                    IDX_WRITE_THUMBNAIL
+                        | IDX_ADD_METADATA
+                        | IDX_NETWORK_RETRY
+                        | IDX_ASCII_INDICATORS
                 )
         } else {
             false
@@ -730,8 +733,8 @@ impl SettingsMenu {
             }
 
             let help_text = "↑↓: Navigate | Enter: Edit | Esc: Close";
-            let help = Paragraph::new(Text::from(help_text))
-                .style(Style::default().fg(Color::DarkGray));
+            let help =
+                Paragraph::new(Text::from(help_text)).style(Style::default().fg(Color::DarkGray));
             frame.render_widget(help, chunks[2]);
         }
     }
@@ -914,7 +917,11 @@ impl SettingsMenu {
     fn render_input_popup(&mut self, frame: &mut Frame, screen_area: Rect) {
         let is_custom_args = self.list_state.selected() == Some(IDX_CUSTOM_ARGS);
         let popup_width = if is_custom_args { 60 } else { 40 };
-        let popup_height = if self.validation_error.is_some() { 5 } else { 3 };
+        let popup_height = if self.validation_error.is_some() {
+            5
+        } else {
+            3
+        };
         let popup_x = (screen_area.width.saturating_sub(popup_width)) / 2;
         let popup_y = (screen_area.height.saturating_sub(popup_height)) / 2;
         let input_popup_dialog_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -1007,5 +1014,409 @@ impl SettingsMenu {
             }
             OutputFormat::Webm => "WEBM",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_state::AppState;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    // Helper to create a KeyEvent
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    // Helper to create AppState for testing
+    fn create_test_state() -> AppState {
+        AppState::new()
+    }
+
+    // ==================== Visibility Toggle Tests ====================
+
+    #[test]
+    fn test_settings_menu_initial_not_visible() {
+        let state = create_test_state();
+        let menu = SettingsMenu::new(&state);
+        assert!(!menu.is_visible());
+    }
+
+    #[test]
+    fn test_settings_menu_toggle_opens() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+
+        menu.toggle();
+
+        assert!(menu.is_visible());
+    }
+
+    #[test]
+    fn test_settings_menu_toggle_closes() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+
+        menu.toggle(); // Open
+        menu.toggle(); // Close
+
+        assert!(!menu.is_visible());
+    }
+
+    #[test]
+    fn test_settings_menu_toggle_resets_state() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+
+        // Set some state
+        menu.editing = true;
+        menu.input_mode = true;
+        menu.sub_menu = SubMenu::PresetSelection;
+        menu.validation_error = Some("error".to_string());
+
+        menu.toggle(); // Open (should reset)
+
+        assert!(menu.is_visible());
+        assert!(!menu.editing);
+        assert!(!menu.input_mode);
+        assert_eq!(menu.sub_menu, SubMenu::None);
+        assert!(menu.validation_error.is_none());
+    }
+
+    // ==================== Navigation Tests ====================
+
+    #[test]
+    fn test_settings_menu_navigation_down() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Initially at 0
+        assert_eq!(menu.list_state.selected(), Some(0));
+
+        menu.handle_input(key_event(KeyCode::Down), &state);
+
+        assert_eq!(menu.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_settings_menu_navigation_up() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Navigate down first
+        menu.handle_input(key_event(KeyCode::Down), &state);
+        menu.handle_input(key_event(KeyCode::Down), &state);
+
+        assert_eq!(menu.list_state.selected(), Some(2));
+
+        menu.handle_input(key_event(KeyCode::Up), &state);
+
+        assert_eq!(menu.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_settings_menu_navigation_up_at_top() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Already at 0
+        menu.handle_input(key_event(KeyCode::Up), &state);
+
+        // Should stay at 0
+        assert_eq!(menu.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_settings_menu_navigation_down_at_bottom() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Navigate to bottom
+        for _ in 0..TOTAL_MENU_ITEMS {
+            menu.handle_input(key_event(KeyCode::Down), &state);
+        }
+
+        // Should be at the last item
+        assert_eq!(menu.list_state.selected(), Some(TOTAL_MENU_ITEMS - 1));
+    }
+
+    #[test]
+    fn test_settings_menu_esc_closes() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        assert!(menu.is_visible());
+
+        menu.handle_input(key_event(KeyCode::Esc), &state);
+
+        assert!(!menu.is_visible());
+    }
+
+    // ==================== Boolean Toggle Tests ====================
+
+    #[test]
+    fn test_settings_menu_boolean_toggle_write_thumbnail() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Navigate to Write Thumbnail (index 3)
+        menu.list_state.select(Some(IDX_WRITE_THUMBNAIL));
+
+        // Force initial value to false
+        menu.settings.write_thumbnail = false;
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.editing);
+
+        // Toggle with Right arrow (should auto-apply for boolean)
+        // option_index starts at 0 (No), Right moves to 1 (Yes)
+        menu.handle_input(key_event(KeyCode::Right), &state);
+
+        // Boolean toggle should auto-exit editing mode and set to true
+        assert!(!menu.editing);
+        assert!(menu.settings.write_thumbnail);
+    }
+
+    #[test]
+    fn test_settings_menu_boolean_toggle_network_retry() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Navigate to Network Retry (index 6)
+        menu.list_state.select(Some(IDX_NETWORK_RETRY));
+
+        // Force initial value to false
+        menu.settings.network_retry = false;
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        // Toggle with Right arrow - goes from No (0) to Yes (1)
+        menu.handle_input(key_event(KeyCode::Right), &state);
+
+        assert!(menu.settings.network_retry);
+    }
+
+    // ==================== Custom Args Validation Tests ====================
+
+    #[test]
+    fn test_custom_args_validation_empty_is_valid() {
+        let result = Settings::validate_custom_args("");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_custom_args_validation_valid_args() {
+        let result = Settings::validate_custom_args("--cookies-from-browser firefox");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_custom_args_validation_conflict_download_archive() {
+        let result = Settings::validate_custom_args("--download-archive test.txt");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("download-archive"));
+    }
+
+    #[test]
+    fn test_custom_args_validation_conflict_output() {
+        let result = Settings::validate_custom_args("--output '%(title)s.%(ext)s'");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("output"));
+    }
+
+    #[test]
+    fn test_custom_args_validation_conflict_short_output() {
+        let result = Settings::validate_custom_args("-o '%(title)s.%(ext)s'");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_custom_args_validation_unmatched_quotes() {
+        let result = Settings::validate_custom_args("--cookies 'unmatched");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("quotes"));
+    }
+
+    // ==================== Preset Application Tests ====================
+
+    #[test]
+    fn test_preset_best_quality_applies_correct_settings() {
+        let settings = SettingsPreset::BestQuality.apply();
+
+        assert_eq!(settings.format_preset, FormatPreset::Best);
+        assert_eq!(settings.output_format, OutputFormat::Auto);
+        assert!(settings.write_subtitles);
+        assert!(settings.write_thumbnail);
+        assert!(settings.add_metadata);
+        assert_eq!(settings.concurrent_downloads, 4);
+        assert!(settings.network_retry);
+    }
+
+    #[test]
+    fn test_preset_audio_archive_applies_correct_settings() {
+        let settings = SettingsPreset::AudioArchive.apply();
+
+        assert_eq!(settings.format_preset, FormatPreset::AudioOnly);
+        assert_eq!(settings.output_format, OutputFormat::MP3);
+        assert!(!settings.write_subtitles);
+        assert!(settings.add_metadata);
+    }
+
+    #[test]
+    fn test_preset_fast_download_applies_correct_settings() {
+        let settings = SettingsPreset::FastDownload.apply();
+
+        assert_eq!(settings.format_preset, FormatPreset::Best);
+        assert!(!settings.write_subtitles);
+        assert!(!settings.write_thumbnail);
+        assert!(!settings.add_metadata);
+        assert_eq!(settings.concurrent_downloads, 8);
+        assert!(!settings.network_retry);
+    }
+
+    #[test]
+    fn test_preset_bandwidth_saver_applies_correct_settings() {
+        let settings = SettingsPreset::BandwidthSaver.apply();
+
+        assert_eq!(settings.format_preset, FormatPreset::SD480p);
+        assert_eq!(settings.concurrent_downloads, 2);
+        assert!(settings.network_retry);
+    }
+
+    // ==================== Reset Confirmation Tests ====================
+
+    #[test]
+    fn test_reset_confirmation_esc_cancels() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+        menu.sub_menu = SubMenu::ResetConfirmation;
+
+        let handled = menu.handle_input(key_event(KeyCode::Esc), &state);
+
+        assert!(handled);
+        assert_eq!(menu.sub_menu, SubMenu::None);
+    }
+
+    #[test]
+    fn test_reset_confirmation_n_cancels() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+        menu.sub_menu = SubMenu::ResetConfirmation;
+
+        let handled = menu.handle_input(key_event(KeyCode::Char('n')), &state);
+
+        assert!(handled);
+        assert_eq!(menu.sub_menu, SubMenu::None);
+    }
+
+    #[test]
+    fn test_reset_confirmation_y_resets() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Modify settings
+        menu.settings.concurrent_downloads = 99;
+        menu.sub_menu = SubMenu::ResetConfirmation;
+
+        menu.handle_input(key_event(KeyCode::Char('y')), &state);
+
+        // Settings should be reset to default
+        assert_eq!(
+            menu.settings.concurrent_downloads,
+            Settings::default().concurrent_downloads
+        );
+        assert_eq!(menu.sub_menu, SubMenu::None);
+    }
+
+    // ==================== Format/Preset Display String Tests ====================
+
+    #[test]
+    fn test_format_preset_to_string() {
+        let state = create_test_state();
+        let menu = SettingsMenu::new(&state);
+
+        assert_eq!(menu.format_preset_to_string(&FormatPreset::Best), "Best");
+        assert_eq!(
+            menu.format_preset_to_string(&FormatPreset::AudioOnly),
+            "Audio Only"
+        );
+        assert_eq!(
+            menu.format_preset_to_string(&FormatPreset::HD1080p),
+            "1080p"
+        );
+        assert_eq!(menu.format_preset_to_string(&FormatPreset::HD720p), "720p");
+        assert_eq!(menu.format_preset_to_string(&FormatPreset::SD480p), "480p");
+        assert_eq!(menu.format_preset_to_string(&FormatPreset::SD360p), "360p");
+    }
+
+    #[test]
+    fn test_output_format_to_string() {
+        let state = create_test_state();
+        let menu = SettingsMenu::new(&state);
+
+        assert_eq!(menu.output_format_to_string(&OutputFormat::Auto), "Auto");
+        assert_eq!(menu.output_format_to_string(&OutputFormat::MP4), "MP4");
+        assert_eq!(menu.output_format_to_string(&OutputFormat::Mkv), "MKV");
+        assert_eq!(menu.output_format_to_string(&OutputFormat::Webm), "WEBM");
+    }
+
+    #[test]
+    fn test_output_format_mp3_string_varies_by_preset() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+
+        // Default (not audio only)
+        assert_eq!(
+            menu.output_format_to_string(&OutputFormat::MP3),
+            "MP3 (audio only)"
+        );
+
+        // With audio only preset
+        menu.settings.format_preset = FormatPreset::AudioOnly;
+        assert_eq!(
+            menu.output_format_to_string(&OutputFormat::MP3),
+            "MP3 (audio)"
+        );
+    }
+
+    #[test]
+    fn test_settings_preset_names() {
+        assert_eq!(SettingsPreset::BestQuality.name(), "Best Quality");
+        assert_eq!(SettingsPreset::AudioArchive.name(), "Audio Archive");
+        assert_eq!(SettingsPreset::FastDownload.name(), "Fast Download");
+        assert_eq!(SettingsPreset::BandwidthSaver.name(), "Bandwidth Saver");
+    }
+
+    #[test]
+    fn test_settings_preset_descriptions() {
+        // All presets should have non-empty descriptions
+        for preset in SettingsPreset::all() {
+            assert!(!preset.description().is_empty());
+        }
+    }
+
+    // ==================== Input Handling When Not Visible ====================
+
+    #[test]
+    fn test_handle_input_returns_false_when_not_visible() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+
+        // Menu is not visible
+        let result = menu.handle_input(key_event(KeyCode::Down), &state);
+
+        assert!(!result);
     }
 }

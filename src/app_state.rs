@@ -725,3 +725,847 @@ impl AppState {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    // Helper to wait for message processing
+    fn wait_for_processing() {
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // ========== Initialization Tests ==========
+
+    #[test]
+    fn test_new_creates_default_state() {
+        let state = AppState::new();
+
+        // Verify default flags
+        assert!(!state.is_paused().unwrap());
+        assert!(!state.is_started().unwrap());
+        assert!(!state.is_shutdown().unwrap());
+        assert!(!state.is_force_quit().unwrap());
+        assert!(!state.is_completed().unwrap());
+    }
+
+    #[test]
+    fn test_new_creates_empty_queue() {
+        let state = AppState::new();
+        let queue = state.get_queue().unwrap();
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_new_has_welcome_logs() {
+        let state = AppState::new();
+        let snapshot = state.get_ui_snapshot().unwrap();
+
+        assert!(snapshot.logs.len() >= 2);
+        assert!(snapshot.logs[0].contains("Welcome"));
+        assert!(snapshot.logs[1].contains("quit"));
+    }
+
+    #[test]
+    fn test_new_loads_settings() {
+        let state = AppState::new();
+        let settings = state.get_settings().unwrap();
+        // Settings should load (either from file or default)
+        assert!(settings.concurrent_downloads > 0);
+    }
+
+    // ========== Queue Operations Tests ==========
+
+    #[test]
+    fn test_pop_queue_empty() {
+        let state = AppState::new();
+        let result = state.pop_queue().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_pop_queue_returns_front() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let first = state.pop_queue().unwrap();
+        assert_eq!(first, Some("url1".to_string()));
+
+        let second = state.pop_queue().unwrap();
+        assert_eq!(second, Some("url2".to_string()));
+    }
+
+    #[test]
+    fn test_get_queue_returns_copy() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let queue = state.get_queue().unwrap();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0], "url1");
+        assert_eq!(queue[1], "url2");
+    }
+
+    #[test]
+    fn test_remove_from_queue_valid_index() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let removed = state.remove_from_queue(1).unwrap();
+        assert_eq!(removed, Some("url2".to_string()));
+
+        let queue = state.get_queue().unwrap();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0], "url1");
+        assert_eq!(queue[1], "url3");
+    }
+
+    #[test]
+    fn test_remove_from_queue_invalid_index() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec!["url1".to_string()]))
+            .unwrap();
+        wait_for_processing();
+
+        let removed = state.remove_from_queue(5).unwrap();
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn test_swap_queue_items_valid() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let success = state.swap_queue_items(0, 2).unwrap();
+        assert!(success);
+
+        let queue = state.get_queue().unwrap();
+        assert_eq!(queue[0], "url3");
+        assert_eq!(queue[2], "url1");
+    }
+
+    #[test]
+    fn test_swap_queue_items_same_index() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let success = state.swap_queue_items(0, 0).unwrap();
+        assert!(!success);
+    }
+
+    #[test]
+    fn test_swap_queue_items_invalid_index() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec!["url1".to_string()]))
+            .unwrap();
+        wait_for_processing();
+
+        let success = state.swap_queue_items(0, 5).unwrap();
+        assert!(!success);
+    }
+
+    // ========== Flag Mutations Tests ==========
+
+    #[test]
+    fn test_set_paused() {
+        let state = AppState::new();
+        state.send(StateMessage::SetPaused(true)).unwrap();
+        wait_for_processing();
+        assert!(state.is_paused().unwrap());
+
+        state.send(StateMessage::SetPaused(false)).unwrap();
+        wait_for_processing();
+        assert!(!state.is_paused().unwrap());
+    }
+
+    #[test]
+    fn test_set_started() {
+        let state = AppState::new();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        wait_for_processing();
+        assert!(state.is_started().unwrap());
+
+        state.send(StateMessage::SetStarted(false)).unwrap();
+        wait_for_processing();
+        assert!(!state.is_started().unwrap());
+    }
+
+    #[test]
+    fn test_set_shutdown() {
+        let state = AppState::new();
+        state.send(StateMessage::SetShutdown(true)).unwrap();
+        wait_for_processing();
+        assert!(state.is_shutdown().unwrap());
+    }
+
+    #[test]
+    fn test_set_force_quit() {
+        let state = AppState::new();
+        state.send(StateMessage::SetForceQuit(true)).unwrap();
+        wait_for_processing();
+        assert!(state.is_force_quit().unwrap());
+    }
+
+    #[test]
+    fn test_set_completed() {
+        let state = AppState::new();
+        state.send(StateMessage::SetCompleted(true)).unwrap();
+        wait_for_processing();
+        assert!(state.is_completed().unwrap());
+    }
+
+    // ========== Progress Tracking Tests ==========
+
+    #[test]
+    fn test_increment_completed() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        wait_for_processing();
+
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.completed_tasks, 1);
+        assert!((snapshot.progress - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_update_progress_calculation() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+                "url4".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        wait_for_processing();
+
+        // Complete 2 out of 4 tasks
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!((snapshot.progress - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_auto_completion_detection() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        wait_for_processing();
+
+        // Complete all tasks
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        // Give extra time for auto-completion to be detected
+        thread::sleep(Duration::from_millis(100));
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(snapshot.completed);
+        assert!((snapshot.progress - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_progress_zero_when_no_tasks() {
+        let state = AppState::new();
+        state.send(StateMessage::UpdateProgress).unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!((snapshot.progress - 0.0).abs() < 0.01);
+    }
+
+    // ========== Active Downloads Tests ==========
+
+    #[test]
+    fn test_add_active_download() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddActiveDownload(
+                "https://example.com/video".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        let active = state.get_active_downloads().unwrap();
+        assert!(active.contains("https://example.com/video"));
+    }
+
+    #[test]
+    fn test_remove_active_download() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddActiveDownload(
+                "https://example.com/video".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        state
+            .send(StateMessage::RemoveActiveDownload(
+                "https://example.com/video".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        let active = state.get_active_downloads().unwrap();
+        assert!(!active.contains("https://example.com/video"));
+    }
+
+    #[test]
+    fn test_update_download_progress() {
+        let state = AppState::new();
+        let url = "https://youtube.com/watch?v=abc123".to_string();
+        state
+            .send(StateMessage::AddActiveDownload(url.clone()))
+            .unwrap();
+        wait_for_processing();
+
+        let progress = DownloadProgress {
+            display_name: "Test Video".to_string(),
+            phase: "downloading".to_string(),
+            percent: 50.0,
+            speed: Some("1.5MiB/s".to_string()),
+            eta: Some("00:02:30".to_string()),
+            downloaded_bytes: Some(1024 * 1024),
+            total_bytes: Some(2 * 1024 * 1024),
+            fragment_index: None,
+            fragment_count: None,
+            last_update: Instant::now(),
+        };
+
+        state
+            .send(StateMessage::UpdateDownloadProgress {
+                url: url.clone(),
+                progress,
+            })
+            .unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.active_downloads.len(), 1);
+
+        let download = &snapshot.active_downloads[0];
+        assert_eq!(download.display_name, "Test Video");
+        assert!((download.percent - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_multiple_active_downloads() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddActiveDownload("url1".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddActiveDownload("url2".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddActiveDownload("url3".to_string()))
+            .unwrap();
+        wait_for_processing();
+
+        let active = state.get_active_downloads().unwrap();
+        assert_eq!(active.len(), 3);
+    }
+
+    // ========== Log Management Tests ==========
+
+    #[test]
+    fn test_add_log() {
+        let state = AppState::new();
+        state.add_log("Test log message".to_string()).unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(
+            snapshot
+                .logs
+                .iter()
+                .any(|log| log.contains("Test log message"))
+        );
+    }
+
+    #[test]
+    fn test_log_limit_1000() {
+        let state = AppState::new();
+
+        // Add 1100 logs
+        for i in 0..1100 {
+            state.add_log(format!("Log message {}", i)).unwrap();
+        }
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        // Should have at most 1000 logs
+        assert!(snapshot.logs.len() <= 1000);
+
+        // Oldest logs should be removed (logs 0-99 and welcome messages gone)
+        assert!(
+            !snapshot
+                .logs
+                .iter()
+                .any(|log| log.contains("Log message 0"))
+        );
+
+        // Recent logs should still be there
+        assert!(
+            snapshot
+                .logs
+                .iter()
+                .any(|log| log.contains("Log message 1099"))
+        );
+    }
+
+    #[test]
+    fn test_clear_logs() {
+        let state = AppState::new();
+        state.add_log("Test log 1".to_string()).unwrap();
+        state.add_log("Test log 2".to_string()).unwrap();
+        state.clear_logs().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.logs.len(), 1);
+        assert!(snapshot.logs[0].contains("Logs cleared"));
+    }
+
+    #[test]
+    fn test_log_error() {
+        let state = AppState::new();
+        state.log_error("Download", "Connection timeout").unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(snapshot.logs.iter().any(|log| {
+            log.contains("[ERROR]")
+                && log.contains("Download")
+                && log.contains("Connection timeout")
+        }));
+    }
+
+    // ========== Toast Notification Tests ==========
+
+    #[test]
+    fn test_show_toast() {
+        let state = AppState::new();
+        state.show_toast("Test notification").unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.toast, Some("Test notification".to_string()));
+    }
+
+    #[test]
+    fn test_show_toast_accepts_string() {
+        let state = AppState::new();
+        state.show_toast(String::from("String toast")).unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.toast, Some("String toast".to_string()));
+    }
+
+    #[test]
+    fn test_clear_toast() {
+        let state = AppState::new();
+        state.show_toast("Test notification").unwrap();
+        state.clear_toast().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(snapshot.toast.is_none());
+    }
+
+    #[test]
+    fn test_toast_auto_expiry() {
+        let state = AppState::new();
+
+        // Directly set toast with old timestamp
+        {
+            let mut toast = state.toast.lock().unwrap();
+            *toast = Some((
+                "Old toast".to_string(),
+                Instant::now() - Duration::from_secs(5),
+            ));
+        }
+
+        // get_ui_snapshot should clear expired toast
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(snapshot.toast.is_none());
+    }
+
+    // ========== Settings Tests ==========
+
+    #[test]
+    fn test_get_settings() {
+        let state = AppState::new();
+        let settings = state.get_settings().unwrap();
+        // Should have valid default settings
+        assert!(settings.concurrent_downloads > 0);
+    }
+
+    #[test]
+    fn test_update_settings() {
+        let state = AppState::new();
+        let mut new_settings = state.get_settings().unwrap();
+        new_settings.concurrent_downloads = 8;
+        new_settings.write_subtitles = true;
+
+        state.update_settings(new_settings).unwrap();
+
+        let updated = state.get_settings().unwrap();
+        assert_eq!(updated.concurrent_downloads, 8);
+        assert!(updated.write_subtitles);
+    }
+
+    // ========== UI Snapshot Tests ==========
+
+    #[test]
+    fn test_ui_snapshot_captures_all_state() {
+        let state = AppState::new();
+
+        // Set up various state
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::SetPaused(true)).unwrap();
+        state
+            .send(StateMessage::AddActiveDownload("url1".to_string()))
+            .unwrap();
+        wait_for_processing();
+
+        state.add_log("Test log".to_string()).unwrap();
+        state.show_toast("Test toast").unwrap();
+        state.set_concurrent(6).unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+
+        assert!(snapshot.started);
+        assert!(snapshot.paused);
+        assert!(!snapshot.completed);
+        assert_eq!(snapshot.queue.len(), 2);
+        assert_eq!(snapshot.active_downloads.len(), 1);
+        assert!(snapshot.logs.iter().any(|l| l.contains("Test log")));
+        assert_eq!(snapshot.toast, Some("Test toast".to_string()));
+        assert_eq!(snapshot.concurrent, 6);
+        assert_eq!(snapshot.initial_total_tasks, 2);
+    }
+
+    #[test]
+    fn test_ui_snapshot_includes_retry_count() {
+        let state = AppState::new();
+        state.increment_retries().unwrap();
+        state.increment_retries().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_retries, 2);
+    }
+
+    // ========== Concurrent Access Tests ==========
+
+    #[test]
+    fn test_concurrent_get_settings() {
+        let state = AppState::new();
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let state_clone = state.clone();
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        let _ = state_clone.get_settings().unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_concurrent_flag_access() {
+        let state = AppState::new();
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                let state_clone = state.clone();
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        state_clone
+                            .send(StateMessage::SetPaused(i % 2 == 0))
+                            .unwrap();
+                        let _ = state_clone.is_paused().unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_concurrent_queue_access() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+                "url4".to_string(),
+                "url5".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let handles: Vec<_> = (0..3)
+            .map(|_| {
+                let state_clone = state.clone();
+                thread::spawn(move || {
+                    let _ = state_clone.pop_queue().unwrap();
+                    let _ = state_clone.get_queue().unwrap();
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_concurrent_log_writes() {
+        let state = AppState::new();
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                let state_clone = state.clone();
+                thread::spawn(move || {
+                    for j in 0..20 {
+                        state_clone
+                            .add_log(format!("Thread {} log {}", i, j))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        // All 100 logs should be present (5 threads x 20 logs + 2 welcome logs)
+        assert!(snapshot.logs.len() >= 100);
+    }
+
+    // ========== Reset and File Lock Tests ==========
+
+    #[test]
+    fn test_reset_for_new_run() {
+        let state = AppState::new();
+
+        // Set up various state
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::SetPaused(true)).unwrap();
+        state.send(StateMessage::SetCompleted(true)).unwrap();
+        wait_for_processing();
+
+        state.increment_retries().unwrap();
+        state.show_toast("Test").unwrap();
+
+        state.reset_for_new_run().unwrap();
+
+        assert!(!state.is_paused().unwrap());
+        assert!(!state.is_started().unwrap());
+        assert!(!state.is_completed().unwrap());
+        assert!(!state.is_shutdown().unwrap());
+        assert!(!state.is_force_quit().unwrap());
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(snapshot.toast.is_none());
+        assert_eq!(snapshot.total_retries, 0);
+    }
+
+    #[test]
+    fn test_acquire_file_lock() {
+        let state = AppState::new();
+        let _lock = state.acquire_file_lock().unwrap();
+        // Lock is acquired, will be released when _lock drops
+    }
+
+    #[test]
+    fn test_set_concurrent() {
+        let state = AppState::new();
+        state.set_concurrent(12).unwrap();
+        assert_eq!(state.get_concurrent().unwrap(), 12);
+    }
+
+    #[test]
+    fn test_increment_and_reset_retries() {
+        let state = AppState::new();
+        state.increment_retries().unwrap();
+        state.increment_retries().unwrap();
+        state.increment_retries().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_retries, 3);
+
+        state.reset_retries().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_retries, 0);
+    }
+
+    #[test]
+    fn test_refresh_all_download_timestamps() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddActiveDownload("url1".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddActiveDownload("url2".to_string()))
+            .unwrap();
+        wait_for_processing();
+
+        // This should not panic
+        state.refresh_all_download_timestamps().unwrap();
+    }
+
+    // ========== DownloadProgress Tests ==========
+
+    #[test]
+    fn test_download_progress_default() {
+        let progress = DownloadProgress::default();
+        assert!(progress.display_name.is_empty());
+        assert_eq!(progress.phase, "downloading");
+        assert!((progress.percent - 0.0).abs() < 0.01);
+        assert!(progress.speed.is_none());
+        assert!(progress.eta.is_none());
+    }
+
+    #[test]
+    fn test_download_progress_new_youtube() {
+        let progress = DownloadProgress::new("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+        assert!(progress.display_name.contains("dQw4w9WgXcQ"));
+    }
+
+    #[test]
+    fn test_download_progress_new_other_url() {
+        let progress = DownloadProgress::new("https://example.com/video.mp4");
+        assert!(progress.display_name.contains("video.mp4"));
+    }
+
+    // ========== Load Links Tests ==========
+
+    #[test]
+    fn test_load_links_replaces_queue() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec!["old_url".to_string()]))
+            .unwrap();
+        wait_for_processing();
+
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "new1".to_string(),
+                "new2".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let queue = state.get_queue().unwrap();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0], "new1");
+        assert_eq!(queue[1], "new2");
+    }
+
+    #[test]
+    fn test_load_links_updates_stats() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_tasks, 3);
+        assert_eq!(snapshot.initial_total_tasks, 3);
+    }
+
+    // ========== AddToQueue Tests ==========
+
+    #[test]
+    fn test_add_to_queue() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddToQueue("url1".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddToQueue("url2".to_string()))
+            .unwrap();
+        wait_for_processing();
+
+        let queue = state.get_queue().unwrap();
+        assert_eq!(queue.len(), 2);
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 2);
+    }
+}
