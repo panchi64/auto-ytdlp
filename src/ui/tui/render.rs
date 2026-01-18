@@ -10,6 +10,26 @@ use crate::ui::settings_menu::SettingsMenu;
 
 use super::UiContext;
 
+/// Calculate the total height needed to render wrapped lines.
+///
+/// Accounts for text wrapping when lines exceed the available width.
+fn calculate_wrapped_height(lines: &[String], available_width: usize) -> u16 {
+    if available_width == 0 {
+        return lines.len() as u16;
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let chars = line.chars().count();
+            if chars == 0 {
+                1u16
+            } else {
+                chars.div_ceil(available_width).max(1) as u16
+            }
+        })
+        .sum()
+}
+
 /// Renders the Terminal User Interface (TUI) using a snapshot of the application state.
 ///
 /// This function is responsible for drawing all UI elements including the progress bar,
@@ -247,12 +267,16 @@ pub fn ui(
             .collect();
 
         let text_content = Text::from(colored_logs);
-        let text_height = logs.len() as u16;
-        let area_height = main_layout[2].height;
-        let scroll = text_height.saturating_sub(area_height);
+        // Account for borders: 2 for left/right, 2 for top/bottom
+        let inner_width = main_layout[2].width.saturating_sub(2) as usize;
+        let inner_height = main_layout[2].height.saturating_sub(2);
+
+        let total_rendered_lines = calculate_wrapped_height(logs, inner_width);
+        let scroll = total_rendered_lines.saturating_sub(inner_height);
 
         let logs_widget = Paragraph::new(text_content)
             .block(Block::default().title("Logs").borders(Borders::ALL))
+            .wrap(ratatui::widgets::Wrap { trim: true })
             .scroll((scroll, 0));
         frame.render_widget(logs_widget, main_layout[2]);
 
@@ -574,4 +598,120 @@ pub fn render_help_overlay(frame: &mut Frame) {
         .style(Style::default().fg(Color::White));
 
     frame.render_widget(help_widget, popup_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== Log Wrapping Height Calculation Tests ==========
+
+    #[test]
+    fn test_wrapped_height_empty_list() {
+        let lines: Vec<String> = vec![];
+        assert_eq!(calculate_wrapped_height(&lines, 80), 0);
+    }
+
+    #[test]
+    fn test_wrapped_height_empty_lines_count_as_one() {
+        let lines = vec!["".to_string(), "".to_string()];
+        assert_eq!(calculate_wrapped_height(&lines, 80), 2);
+    }
+
+    #[test]
+    fn test_wrapped_height_short_lines_no_wrap() {
+        let lines = vec![
+            "Short line".to_string(),
+            "Another short".to_string(),
+            "Third".to_string(),
+        ];
+        // All lines are under 80 chars, so 3 total lines
+        assert_eq!(calculate_wrapped_height(&lines, 80), 3);
+    }
+
+    #[test]
+    fn test_wrapped_height_exact_width_no_wrap() {
+        // A line exactly at the width should not wrap
+        let line = "x".repeat(40);
+        let lines = vec![line];
+        assert_eq!(calculate_wrapped_height(&lines, 40), 1);
+    }
+
+    #[test]
+    fn test_wrapped_height_line_wraps_once() {
+        // A line of 50 chars in 40 width should wrap to 2 lines
+        let line = "x".repeat(50);
+        let lines = vec![line];
+        assert_eq!(calculate_wrapped_height(&lines, 40), 2);
+    }
+
+    #[test]
+    fn test_wrapped_height_line_wraps_multiple_times() {
+        // A line of 100 chars in 40 width should wrap to 3 lines (40+40+20)
+        let line = "x".repeat(100);
+        let lines = vec![line];
+        assert_eq!(calculate_wrapped_height(&lines, 40), 3);
+    }
+
+    #[test]
+    fn test_wrapped_height_mixed_line_lengths() {
+        let lines = vec![
+            "Short".to_string(),                      // 1 line
+            "x".repeat(50),                           // 2 lines (50 / 40 = 2)
+            "".to_string(),                           // 1 line
+            "x".repeat(100),                          // 3 lines (100 / 40 = 3)
+        ];
+        // Total: 1 + 2 + 1 + 3 = 7 lines
+        assert_eq!(calculate_wrapped_height(&lines, 40), 7);
+    }
+
+    #[test]
+    fn test_wrapped_height_zero_width_returns_line_count() {
+        // Edge case: zero width should return number of lines to avoid division by zero
+        let lines = vec!["test".to_string(), "lines".to_string()];
+        assert_eq!(calculate_wrapped_height(&lines, 0), 2);
+    }
+
+    #[test]
+    fn test_wrapped_height_realistic_error_message() {
+        // Simulate a realistic error message that might overflow
+        let error_msg = "[ERROR] Failed to download: https://www.youtube.com/watch?v=very_long_video_id_here - Connection timeout after 30 seconds".to_string();
+        let lines = vec![error_msg.clone()];
+
+        // This 121-char message in a 60-char terminal wraps to 3 lines (60+60+1)
+        let height = calculate_wrapped_height(&lines, 60);
+        assert_eq!(height, 3);
+
+        // Verify the math: chars.div_ceil(width)
+        assert_eq!(error_msg.chars().count().div_ceil(60), 3);
+    }
+
+    #[test]
+    fn test_wrapped_height_unicode_characters() {
+        // Unicode characters should be counted by char, not bytes
+        let line = "🎵".repeat(10); // 10 emoji characters
+        let lines = vec![line];
+        // 10 chars in 5-char width = 2 lines
+        assert_eq!(calculate_wrapped_height(&lines, 5), 2);
+    }
+
+    #[test]
+    fn test_wrapped_height_single_char_width() {
+        // Edge case: width of 1 means each character is its own line
+        let line = "abc".to_string();
+        let lines = vec![line];
+        assert_eq!(calculate_wrapped_height(&lines, 1), 3);
+    }
+
+    #[test]
+    fn test_wrapped_height_many_log_entries() {
+        // Simulate a log with many entries of varying lengths
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("Log entry {} with some additional text", i))
+            .collect();
+
+        let height = calculate_wrapped_height(&lines, 80);
+        // Each line is under 80 chars, so should be exactly 100
+        assert_eq!(height, 100);
+    }
 }

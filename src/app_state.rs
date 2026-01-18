@@ -555,6 +555,17 @@ impl AppState {
         Ok(flags.force_quit)
     }
 
+    pub fn is_notification_sent(&self) -> Result<bool> {
+        let flags = self.flags.lock()?;
+        Ok(flags.notification_sent)
+    }
+
+    pub fn set_notification_sent(&self, value: bool) -> Result<()> {
+        let mut flags = self.flags.lock()?;
+        flags.notification_sent = value;
+        Ok(())
+    }
+
     pub fn get_concurrent(&self) -> Result<usize> {
         let concurrent = self.concurrent.lock()?;
         Ok(*concurrent)
@@ -1567,5 +1578,77 @@ mod tests {
 
         let snapshot = state.get_ui_snapshot().unwrap();
         assert_eq!(snapshot.initial_total_tasks, 2);
+    }
+
+    // ========== Notification Flag Tests ==========
+
+    #[test]
+    fn test_notification_not_sent_initially() {
+        let state = AppState::new();
+        assert!(!state.is_notification_sent().unwrap());
+    }
+
+    #[test]
+    fn test_notification_can_be_marked_as_sent() {
+        let state = AppState::new();
+        state.set_notification_sent(true).unwrap();
+        assert!(state.is_notification_sent().unwrap());
+    }
+
+    #[test]
+    fn test_notification_flag_resets_on_new_run() {
+        let state = AppState::new();
+
+        // Mark notification as sent
+        state.set_notification_sent(true).unwrap();
+        assert!(state.is_notification_sent().unwrap());
+
+        // Reset for new run
+        state.reset_for_new_run().unwrap();
+
+        // Notification flag should be reset
+        assert!(!state.is_notification_sent().unwrap());
+    }
+
+    #[test]
+    fn test_notification_lifecycle_across_multiple_runs() {
+        let state = AppState::new();
+
+        // First run: notification starts unsent
+        assert!(!state.is_notification_sent().unwrap());
+
+        // Simulate completion notification being sent
+        state.set_notification_sent(true).unwrap();
+        assert!(state.is_notification_sent().unwrap());
+
+        // Subsequent checks should still show sent (idempotent)
+        assert!(state.is_notification_sent().unwrap());
+
+        // User restarts downloads
+        state.reset_for_new_run().unwrap();
+
+        // Second run: notification should be unsent again
+        assert!(!state.is_notification_sent().unwrap());
+
+        // Second completion
+        state.set_notification_sent(true).unwrap();
+        assert!(state.is_notification_sent().unwrap());
+    }
+
+    #[test]
+    fn test_notification_flag_independent_of_completion_state() {
+        let state = AppState::new();
+
+        // Set completed without setting notification
+        state.send(StateMessage::SetCompleted(true)).unwrap();
+        wait_for_processing();
+
+        // Notification flag should still be false
+        assert!(state.is_completed().unwrap());
+        assert!(!state.is_notification_sent().unwrap());
+
+        // Set notification independently
+        state.set_notification_sent(true).unwrap();
+        assert!(state.is_notification_sent().unwrap());
     }
 }

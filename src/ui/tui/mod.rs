@@ -212,13 +212,15 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
             {
                 let is_force_quit = state.is_force_quit().unwrap_or(false);
                 let is_shutdown = state.is_shutdown().unwrap_or(false);
+                let notification_sent = state.is_notification_sent().unwrap_or(false);
 
-                // Show notification when all downloads are completed
-                if !is_force_quit && !is_shutdown {
+                // Show notification when all downloads are completed (only once)
+                if !is_force_quit && !is_shutdown && !notification_sent {
                     let _ = Notification::new()
                         .summary("Auto-YTDlp Downloads Completed")
                         .body("All downloads have been completed!")
                         .show();
+                    let _ = state.set_notification_sent(true);
                 }
             }
         }
