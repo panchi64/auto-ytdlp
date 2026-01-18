@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clipboard::ClipboardProvider;
+use arboard::Clipboard;
 use crossterm::event::KeyCode;
 
 use crate::{
@@ -462,51 +462,45 @@ fn handle_load_file(state: &AppState, last_tick: &mut Instant, tick_rate: Durati
 }
 
 fn handle_add_clipboard(state: &AppState) {
-    let ctx: Result<clipboard::ClipboardContext, Box<dyn std::error::Error>> =
-        ClipboardProvider::new().map_err(|e| {
-            Box::new(AppError::Clipboard(e.to_string())) as Box<dyn std::error::Error>
+    let contents_result = Clipboard::new()
+        .map_err(|e| AppError::Clipboard(format!("Failed to initialize clipboard: {}", e)))
+        .and_then(|mut clipboard| {
+            clipboard
+                .get_text()
+                .map_err(|e| AppError::Clipboard(format!("Failed to read clipboard: {}", e)))
         });
 
-    match ctx {
-        Ok(mut ctx) => match ctx.get_contents() {
-            Ok(contents) => match add_clipboard_links(state, &contents) {
-                Ok(links_added) => {
-                    if links_added > 0 {
-                        if let Err(e) = state.send(StateMessage::SetCompleted(false)) {
-                            eprintln!("Error setting completed flag: {}", e);
-                        }
-                        let is_active = state.is_started().unwrap_or(false)
-                            && !state.is_paused().unwrap_or(false)
-                            && !state.is_completed().unwrap_or(false);
-                        let msg = if is_active {
-                            format!("Queued {} new URLs", links_added)
-                        } else {
-                            format!("Added {} URLs", links_added)
-                        };
-                        let _ = state.show_toast(&msg);
-                        if let Err(e) = state.add_log(msg) {
-                            eprintln!("Error adding log: {}", e);
-                        }
+    match contents_result {
+        Ok(contents) => match add_clipboard_links(state, &contents) {
+            Ok(links_added) => {
+                if links_added > 0 {
+                    if let Err(e) = state.send(StateMessage::SetCompleted(false)) {
+                        eprintln!("Error setting completed flag: {}", e);
+                    }
+                    let is_active = state.is_started().unwrap_or(false)
+                        && !state.is_paused().unwrap_or(false)
+                        && !state.is_completed().unwrap_or(false);
+                    let msg = if is_active {
+                        format!("Queued {} new URLs", links_added)
+                    } else {
+                        format!("Added {} URLs", links_added)
+                    };
+                    let _ = state.show_toast(&msg);
+                    if let Err(e) = state.add_log(msg) {
+                        eprintln!("Error adding log: {}", e);
                     }
                 }
-                Err(e) => {
-                    if let Err(log_err) =
-                        state.add_log(format!("Error adding clipboard links: {}", e))
-                    {
-                        eprintln!("Error adding log: {}", log_err);
-                    }
-                }
-            },
+            }
             Err(e) => {
                 if let Err(log_err) =
-                    state.add_log(format!("Error getting clipboard contents: {}", e))
+                    state.add_log(format!("Error adding clipboard links: {}", e))
                 {
                     eprintln!("Error adding log: {}", log_err);
                 }
             }
         },
         Err(e) => {
-            if let Err(log_err) = state.add_log(format!("Error initializing clipboard: {}", e)) {
+            if let Err(log_err) = state.add_log(format!("{}", e)) {
                 eprintln!("Error adding log: {}", log_err);
             }
         }
