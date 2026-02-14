@@ -111,6 +111,7 @@ jobs:
         run: |
           cd artifacts
           find . -type f -name 'auto-ytdlp-*' -exec mv {} . \;
+          find . -mindepth 1 -type d -delete
           sha256sum auto-ytdlp-* > checksums-sha256.txt
 
       - name: Generate release notes
