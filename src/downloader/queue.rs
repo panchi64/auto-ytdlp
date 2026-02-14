@@ -235,39 +235,14 @@ pub fn process_queue(state: AppState, args: Args) {
 
         // Clear logs after a short delay, but only if not a force quit.
         // For force quit, we want to preserve the logs detailing the forceful termination.
-        let mut log_clear_handle: Option<thread::JoinHandle<()>> = None;
-
         if !state_clone.is_force_quit().unwrap_or(false) {
             let final_state_clone = state_clone.clone();
-            log_clear_handle = Some(thread::spawn(move || {
+            thread::spawn(move || {
                 thread::sleep(Duration::from_secs(2));
-                // Check again in case state changed, though unlikely for a detached thread task like this.
-                if !final_state_clone.is_completed().unwrap_or(false)
-                    && !final_state_clone.is_shutdown().unwrap_or(false)
-                {
-                    // If not completed and not a normal shutdown, maybe don't clear logs?
-                    // For now, let's stick to original logic: clear logs if not force_quit.
-                    // The original logic was to clear logs anyway after a delay.
-                }
-                if let Err(e) =
-                    final_state_clone.add_log("Clearing logs after completion/stop.".to_string())
-                {
-                    eprintln!("Error adding log: {}", e);
-                } // Log before clear
                 if let Err(e) = final_state_clone.clear_logs() {
                     eprintln!("Error clearing logs: {}", e);
                 }
-            }));
-        }
-
-        if let Some(handle) = log_clear_handle
-            && let Err(e) = handle.join()
-            && let Err(log_err) = state_clone.add_log(format!(
-                "Log clearing thread panicked: {:?}. Logs may not be cleared.",
-                e
-            ))
-        {
-            eprintln!("Error adding log: {}", log_err);
+            });
         }
     });
 

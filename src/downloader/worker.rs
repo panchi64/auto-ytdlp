@@ -306,14 +306,6 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             log_msg(&state, format!("Failed: {}", url));
         }
     }
-
-    if state.get_queue().unwrap_or_default().is_empty()
-        && state.get_active_downloads().unwrap_or_default().is_empty()
-        && !should_abort(&state)
-        && let Err(e) = state.send(StateMessage::SetCompleted(true))
-    {
-        eprintln!("Error setting completed: {}", e);
-    }
 }
 
 /// Checks if an error message indicates a network-related issue

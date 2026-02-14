@@ -2,10 +2,13 @@ use crate::app_state::{AppState, FileLockGuard, StateMessage};
 use crate::errors::{AppError, Result};
 use std::fs;
 
+/// Default filename for the download queue
+pub const LINKS_FILE: &str = "links.txt";
+
 /// Internal function to remove a link from file while holding the file lock.
 /// This prevents race conditions when multiple workers complete simultaneously.
 fn remove_link_from_file_internal(_guard: &FileLockGuard<'_>, url: &str) -> Result<()> {
-    let file_path = "links.txt";
+    let file_path = LINKS_FILE;
     let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
 
     // Use a temporary file for atomic writes
@@ -15,7 +18,7 @@ fn remove_link_from_file_internal(_guard: &FileLockGuard<'_>, url: &str) -> Resu
         .filter(|line| line.trim() != url.trim())
         .collect();
 
-    fs::write(&temp_path, new_content.join("\n")).map_err(AppError::Io)?;
+    fs::write(&temp_path, new_content.join("\n") + "\n").map_err(AppError::Io)?;
     fs::rename(&temp_path, file_path).map_err(AppError::Io)?; // Atomic replace
 
     Ok(())
@@ -56,7 +59,7 @@ pub fn remove_link_from_file_sync(state: &AppState, url: &str) -> Result<()> {
 /// state.send(StateMessage::LoadLinks(links))?;
 /// ```
 pub fn get_links_from_file() -> Result<Vec<String>> {
-    let content = fs::read_to_string("links.txt").map_err(AppError::Io)?;
+    let content = fs::read_to_string(LINKS_FILE).map_err(AppError::Io)?;
 
     Ok(content
         .lines()
@@ -82,7 +85,7 @@ pub fn get_links_from_file() -> Result<Vec<String>> {
 /// println!("Removed {} invalid URLs", removed);
 /// ```
 pub fn sanitize_links_file() -> Result<usize> {
-    let file_path = "links.txt";
+    let file_path = LINKS_FILE;
     let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
 
     // Single pass: count total non-empty lines and collect valid URLs
@@ -99,7 +102,7 @@ pub fn sanitize_links_file() -> Result<usize> {
 
     if removed_count > 0 {
         let temp_path = format!("{}.tmp", file_path);
-        fs::write(&temp_path, valid_lines.join("\n")).map_err(AppError::Io)?;
+        fs::write(&temp_path, valid_lines.join("\n") + "\n").map_err(AppError::Io)?;
         fs::rename(&temp_path, file_path).map_err(AppError::Io)?;
     }
 
@@ -153,7 +156,7 @@ pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<
         if !new.is_empty() {
             let mut all_links = current_links;
             all_links.extend(new.iter().cloned());
-            fs::write("links.txt", all_links.join("\n")).map_err(AppError::Io)?;
+            fs::write(LINKS_FILE, all_links.join("\n") + "\n").map_err(AppError::Io)?;
         }
 
         drop(guard);

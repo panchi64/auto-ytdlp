@@ -24,8 +24,8 @@ use crate::{
 };
 
 use input::{
-    DownloadState, ForceQuitState, InputResult, handle_edit_mode_input, handle_filter_mode_input,
-    handle_help_overlay_input, handle_normal_mode_input,
+    DownloadState, ForceQuitState, InputResult, NormalModeContext, handle_edit_mode_input,
+    handle_filter_mode_input, handle_help_overlay_input, handle_normal_mode_input,
 };
 pub use render::ui;
 
@@ -176,16 +176,16 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
             }
 
             // Handle normal mode input
-            let result = handle_normal_mode_input(
-                key.code,
-                &state,
-                &args,
-                &mut ui_ctx,
-                &mut download_state,
-                &mut force_quit_state,
-                &mut last_tick,
-                tick_rate,
-            );
+            let result = {
+                let mut nmc = NormalModeContext {
+                    ctx: &mut ui_ctx,
+                    download_state: &mut download_state,
+                    force_quit_state: &mut force_quit_state,
+                    last_tick: &mut last_tick,
+                    tick_rate,
+                };
+                handle_normal_mode_input(key.code, &state, &args, &mut nmc)
+            };
 
             match result {
                 InputResult::Break => break,

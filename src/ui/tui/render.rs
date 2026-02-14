@@ -108,7 +108,7 @@ pub fn ui(
         let progress_title = format!(
             "{} - Progress: {:.1}% ({}/{}){}{}",
             status_indicator,
-            progress,
+            progress * 100.0,
             completed_tasks,
             total_tasks,
             if failed_count > 0 {
@@ -136,7 +136,7 @@ pub fn ui(
             } else {
                 ratatui::style::Color::Gray
             }))
-            .percent(progress as u16);
+            .ratio(progress);
         frame.render_widget(gauge, main_layout[0]);
 
         // ----- Downloads area (Pending + Active) -----

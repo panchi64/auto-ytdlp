@@ -15,6 +15,7 @@ use std::{
     path::Path,
 };
 use ui::tui::run_tui;
+use utils::file::{get_links_from_file, LINKS_FILE};
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -24,14 +25,11 @@ fn main() -> Result<()> {
 
     fs::create_dir_all(&args.download_dir)?;
 
-    if !Path::new("links.txt").exists() {
-        File::create("links.txt")?;
+    if !Path::new(LINKS_FILE).exists() {
+        File::create(LINKS_FILE)?;
     }
 
-    let links = fs::read_to_string("links.txt")?
-        .lines()
-        .map(String::from)
-        .collect::<Vec<_>>();
+    let links = get_links_from_file()?;
     state.send(StateMessage::LoadLinks(links))?;
 
     if args.auto {

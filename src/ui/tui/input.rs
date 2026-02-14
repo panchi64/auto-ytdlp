@@ -186,27 +186,31 @@ pub fn handle_edit_mode_input(
     InputResult::Continue
 }
 
+/// Context for normal mode input handling, grouping related mutable state
+pub struct NormalModeContext<'a> {
+    pub ctx: &'a mut UiContext,
+    pub download_state: &'a mut DownloadState,
+    pub force_quit_state: &'a mut ForceQuitState,
+    pub last_tick: &'a mut Instant,
+    pub tick_rate: Duration,
+}
+
 /// Handle normal mode keyboard input
-#[allow(clippy::too_many_arguments)]
 pub fn handle_normal_mode_input(
     key_code: KeyCode,
     state: &AppState,
     args: &Args,
-    ctx: &mut UiContext,
-    download_state: &mut DownloadState,
-    force_quit_state: &mut ForceQuitState,
-    last_tick: &mut Instant,
-    tick_rate: Duration,
+    nmc: &mut NormalModeContext<'_>,
 ) -> InputResult {
     match key_code {
         // F1 for help overlay
         KeyCode::F(1) => {
-            ctx.show_help = true;
+            nmc.ctx.show_help = true;
             InputResult::Continue
         }
         // Uppercase 'Q' (typically from Shift+q or CapsLock+Q) for Force Quit
         KeyCode::Char('Q') => {
-            if force_quit_state.is_confirmed() {
+            if nmc.force_quit_state.is_confirmed() {
                 // Second Q within 2 seconds - execute force quit
                 if let Err(e) = state.send(StateMessage::SetForceQuit(true)) {
                     eprintln!("Error setting force quit: {}", e);
@@ -223,8 +227,8 @@ pub fn handle_normal_mode_input(
                 InputResult::Break
             } else {
                 // First Q - set pending and show warning
-                force_quit_state.pending = true;
-                force_quit_state.time = Some(Instant::now());
+                nmc.force_quit_state.pending = true;
+                nmc.force_quit_state.time = Some(Instant::now());
                 if let Err(e) =
                     state.add_log("Press Shift+Q again within 2 seconds to force quit".to_string())
                 {
@@ -244,23 +248,23 @@ pub fn handle_normal_mode_input(
             ) {
                 eprintln!("Error adding log: {}", e);
             }
-            download_state.await_downloads_on_exit = true;
+            nmc.download_state.await_downloads_on_exit = true;
             InputResult::Break
         }
         KeyCode::Char('s') => {
-            handle_start_stop(state, args, download_state);
+            handle_start_stop(state, args, nmc.download_state);
             InputResult::Continue
         }
         KeyCode::Char('p') => {
-            handle_pause_resume(state, last_tick, tick_rate);
+            handle_pause_resume(state, nmc.last_tick, nmc.tick_rate);
             InputResult::Continue
         }
         KeyCode::Char('r') => {
-            handle_reload(state, last_tick, tick_rate);
+            handle_reload(state, nmc.last_tick, nmc.tick_rate);
             InputResult::Continue
         }
         KeyCode::Char('f') => {
-            handle_load_file(state, last_tick, tick_rate);
+            handle_load_file(state, nmc.last_tick, nmc.tick_rate);
             InputResult::Continue
         }
         KeyCode::Char('a') => {
@@ -268,14 +272,14 @@ pub fn handle_normal_mode_input(
             InputResult::Continue
         }
         KeyCode::Char('e') => {
-            handle_edit_mode(state, ctx);
+            handle_edit_mode(state, nmc.ctx);
             InputResult::Continue
         }
         KeyCode::Char('/') => {
             // Enter filter mode for queue search
-            ctx.filter_mode = true;
-            ctx.filter_text.clear();
-            ctx.filtered_indices.clear();
+            nmc.ctx.filter_mode = true;
+            nmc.ctx.filter_text.clear();
+            nmc.ctx.filtered_indices.clear();
             InputResult::Continue
         }
         KeyCode::Char('u') => {
@@ -307,9 +311,6 @@ fn handle_start_stop(state: &AppState, args: &Args, download_state: &mut Downloa
             // Start downloads
             match validate_dependencies() {
                 Ok(()) => {
-                    if let Err(e) = state.reset_for_new_run() {
-                        eprintln!("Error resetting state: {}", e);
-                    }
                     download_state.await_downloads_on_exit = false;
 
                     let state_clone = state.clone();
@@ -654,6 +655,23 @@ mod tests {
         Args::parse_from(["test"])
     }
 
+    // Helper to create NormalModeContext for testing
+    fn create_test_nmc<'a>(
+        ctx: &'a mut UiContext,
+        download_state: &'a mut DownloadState,
+        force_quit_state: &'a mut ForceQuitState,
+        last_tick: &'a mut Instant,
+        tick_rate: Duration,
+    ) -> NormalModeContext<'a> {
+        NormalModeContext {
+            ctx,
+            download_state,
+            force_quit_state,
+            last_tick,
+            tick_rate,
+        }
+    }
+
     // ==================== ForceQuitState Tests ====================
 
     #[test]
@@ -914,16 +932,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::F(1),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::F(1), &state, &args, &mut nmc);
 
         assert!(ctx.show_help);
         assert!(matches!(result, InputResult::Continue));
@@ -939,16 +949,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('q'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('q'), &state, &args, &mut nmc);
 
         assert!(download_state.await_downloads_on_exit);
         assert!(matches!(result, InputResult::Break));
@@ -964,16 +966,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('Q'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc);
 
         assert!(force_quit_state.pending);
         assert!(force_quit_state.time.is_some());
@@ -993,16 +987,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('Q'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Break));
     }
@@ -1021,16 +1007,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('p'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('p'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
     }
@@ -1045,16 +1023,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('/'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('/'), &state, &args, &mut nmc);
 
         assert!(ctx.filter_mode);
         assert!(ctx.filter_text.is_empty());
@@ -1072,16 +1042,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::F(2),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::F(2), &state, &args, &mut nmc);
 
         // F2 returns Unhandled so the caller can toggle settings menu
         assert!(matches!(result, InputResult::Unhandled));
@@ -1097,16 +1059,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('z'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('z'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Unhandled));
     }
@@ -1123,16 +1077,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('u'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
     }
@@ -1150,16 +1096,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('u'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
 
@@ -1185,16 +1123,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let result = handle_normal_mode_input(
-            KeyCode::Char('t'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let result = handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
     }
@@ -1223,16 +1153,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        handle_normal_mode_input(
-            KeyCode::Char('t'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
         // Wait for message processing
         thread::sleep(Duration::from_millis(100));
@@ -1256,16 +1178,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        handle_normal_mode_input(
-            KeyCode::Char('t'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
         let snapshot = state.get_ui_snapshot().unwrap();
         assert!(
@@ -1289,16 +1203,8 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        handle_normal_mode_input(
-            KeyCode::Char('t'),
-            &state,
-            &args,
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
+        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
         let snapshot = state.get_ui_snapshot().unwrap();
         assert!(
