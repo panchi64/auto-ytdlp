@@ -1,3 +1,4 @@
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -277,6 +278,14 @@ pub fn handle_normal_mode_input(
             ctx.filtered_indices.clear();
             InputResult::Continue
         }
+        KeyCode::Char('u') => {
+            handle_ytdlp_update(state);
+            InputResult::Continue
+        }
+        KeyCode::Char('t') => {
+            handle_retry_failed(state);
+            InputResult::Continue
+        }
         KeyCode::Char('x') => {
             // Dismiss stale download indicators
             if let Err(e) = state.refresh_all_download_timestamps() {
@@ -501,6 +510,98 @@ fn handle_add_clipboard(state: &AppState) {
         },
         Err(e) => {
             if let Err(log_err) = state.add_log(format!("{}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+        }
+    }
+}
+
+fn handle_ytdlp_update(state: &AppState) {
+    let is_started = state.is_started().unwrap_or(false);
+    let is_completed = state.is_completed().unwrap_or(false);
+    let is_paused = state.is_paused().unwrap_or(false);
+
+    let downloads_active = is_started && !is_completed && !is_paused;
+    if downloads_active {
+        if let Err(e) =
+            state.add_log("Cannot update while downloads are active".to_string())
+        {
+            eprintln!("Error adding log: {}", e);
+        }
+        return;
+    }
+
+    if let Err(e) = state.add_log("Checking for yt-dlp updates...".to_string()) {
+        eprintln!("Error adding log: {}", e);
+    }
+
+    let state_clone = state.clone();
+    thread::spawn(move || {
+        match Command::new("yt-dlp").arg("-U").output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                for line in stdout.lines().chain(stderr.lines()) {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty()
+                        && let Err(e) = state_clone.add_log(trimmed.to_string())
+                    {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+
+                if output.status.success() {
+                    let _ = state_clone.show_toast("yt-dlp update complete");
+                } else {
+                    let _ = state_clone.show_toast("yt-dlp update failed");
+                }
+            }
+            Err(e) => {
+                if let Err(log_err) =
+                    state_clone.add_log(format!("Failed to run yt-dlp -U: {}", e))
+                {
+                    eprintln!("Error adding log: {}", log_err);
+                }
+                let _ = state_clone.show_toast("yt-dlp update failed");
+            }
+        }
+    });
+}
+
+fn handle_retry_failed(state: &AppState) {
+    let is_started = state.is_started().unwrap_or(false);
+    let is_completed = state.is_completed().unwrap_or(false);
+    let is_paused = state.is_paused().unwrap_or(false);
+
+    let downloads_active = is_started && !is_completed && !is_paused;
+    if downloads_active {
+        if let Err(e) =
+            state.add_log("Cannot retry while downloads are active".to_string())
+        {
+            eprintln!("Error adding log: {}", e);
+        }
+        return;
+    }
+
+    match state.take_failed_downloads() {
+        Ok(failed) => {
+            if failed.is_empty() {
+                if let Err(e) = state.add_log("No failed downloads to retry".to_string()) {
+                    eprintln!("Error adding log: {}", e);
+                }
+            } else {
+                let count = failed.len();
+                for url in failed {
+                    if let Err(e) = state.send(StateMessage::AddToQueue(url)) {
+                        eprintln!("Error re-queuing URL: {}", e);
+                    }
+                }
+                let _ = state.show_toast(format!("Re-queued {} failed downloads", count));
+            }
+        }
+        Err(e) => {
+            if let Err(log_err) = state.add_log(format!("Error getting failed downloads: {}", e)) {
                 eprintln!("Error adding log: {}", log_err);
             }
         }
@@ -1008,6 +1109,204 @@ mod tests {
         );
 
         assert!(matches!(result, InputResult::Unhandled));
+    }
+
+    // ==================== yt-dlp Update Tests ====================
+
+    #[test]
+    fn test_normal_mode_u_handled() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('u'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_normal_mode_u_blocked_when_downloads_active() {
+        let state = create_test_state();
+        let _ = state.send(StateMessage::SetStarted(true));
+        thread::sleep(Duration::from_millis(50));
+
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('u'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(matches!(result, InputResult::Continue));
+
+        // Check that a "Cannot update" log was added
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(
+            snapshot
+                .logs
+                .iter()
+                .any(|l| l.contains("Cannot update while downloads are active"))
+        );
+    }
+
+    // ==================== Retry Failed Tests ====================
+
+    #[test]
+    fn test_normal_mode_t_handled() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        let result = handle_normal_mode_input(
+            KeyCode::Char('t'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        assert!(matches!(result, InputResult::Continue));
+    }
+
+    #[test]
+    fn test_normal_mode_t_requeues_failed() {
+        let state = create_test_state();
+
+        // Add failed downloads
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video1".to_string(),
+            ))
+            .unwrap();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video2".to_string(),
+            ))
+            .unwrap();
+        thread::sleep(Duration::from_millis(50));
+
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        handle_normal_mode_input(
+            KeyCode::Char('t'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        // Wait for message processing
+        thread::sleep(Duration::from_millis(100));
+
+        // Verify URLs were re-queued
+        let queue = state.get_queue().unwrap();
+        assert_eq!(queue.len(), 2);
+
+        // Failed count should be 0 after take
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 0);
+    }
+
+    #[test]
+    fn test_normal_mode_t_no_failed_logs_message() {
+        let state = create_test_state();
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        handle_normal_mode_input(
+            KeyCode::Char('t'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(
+            snapshot
+                .logs
+                .iter()
+                .any(|l| l.contains("No failed downloads to retry"))
+        );
+    }
+
+    #[test]
+    fn test_normal_mode_t_blocked_when_downloads_active() {
+        let state = create_test_state();
+        let _ = state.send(StateMessage::SetStarted(true));
+        thread::sleep(Duration::from_millis(50));
+
+        let args = create_test_args();
+        let mut ctx = create_test_context();
+        let mut download_state = DownloadState::default();
+        let mut force_quit_state = ForceQuitState::default();
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(100);
+
+        handle_normal_mode_input(
+            KeyCode::Char('t'),
+            &state,
+            &args,
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(
+            snapshot
+                .logs
+                .iter()
+                .any(|l| l.contains("Cannot retry while downloads are active"))
+        );
     }
 
     // ==================== DownloadState Tests ====================

@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Number of regular settings items (before special actions)
-const SETTINGS_COUNT: usize = 11;
+const SETTINGS_COUNT: usize = 14;
 
 /// Menu item indices
 const IDX_FORMAT_PRESET: usize = 0;
@@ -21,17 +21,20 @@ const IDX_OUTPUT_FORMAT: usize = 1;
 const IDX_WRITE_SUBTITLES: usize = 2;
 const IDX_WRITE_THUMBNAIL: usize = 3;
 const IDX_ADD_METADATA: usize = 4;
-const IDX_CONCURRENT: usize = 5;
-const IDX_NETWORK_RETRY: usize = 6;
-const IDX_RETRY_DELAY: usize = 7;
-const IDX_ASCII_INDICATORS: usize = 8;
-const IDX_RESET_STATS_ON_BATCH: usize = 9;
-const IDX_CUSTOM_ARGS: usize = 10;
-const IDX_APPLY_PRESET: usize = 11;
-const IDX_RESET_DEFAULTS: usize = 12;
+const IDX_SPONSORBLOCK: usize = 5;
+const IDX_CONCURRENT: usize = 6;
+const IDX_RATE_LIMIT: usize = 7;
+const IDX_NETWORK_RETRY: usize = 8;
+const IDX_RETRY_DELAY: usize = 9;
+const IDX_COOKIES_BROWSER: usize = 10;
+const IDX_ASCII_INDICATORS: usize = 11;
+const IDX_RESET_STATS_ON_BATCH: usize = 12;
+const IDX_CUSTOM_ARGS: usize = 13;
+const IDX_APPLY_PRESET: usize = 14;
+const IDX_RESET_DEFAULTS: usize = 15;
 
 /// Total number of menu items
-const TOTAL_MENU_ITEMS: usize = 13;
+const TOTAL_MENU_ITEMS: usize = 16;
 
 /// Descriptions for each setting
 const SETTING_DESCRIPTIONS: [&str; TOTAL_MENU_ITEMS] = [
@@ -40,12 +43,15 @@ const SETTING_DESCRIPTIONS: [&str; TOTAL_MENU_ITEMS] = [
     "Download subtitles if available (disabled for audio-only)",
     "Save video thumbnail as separate image file",
     "Embed metadata (title, artist, etc.) into the file",
+    "Remove sponsor segments from YouTube videos using SponsorBlock",
     "Number of simultaneous downloads (higher = faster, more bandwidth)",
+    "Limit download speed (e.g., 500K, 2M) - Unlimited uses full bandwidth",
     "Automatically retry downloads that fail due to network errors",
     "Seconds to wait before retrying a failed download",
+    "Use browser cookies for age-restricted or authenticated content",
     "Use text indicators [OK] instead of emoji for compatibility",
     "Reset download counters when starting a new batch (S key)",
-    "Extra yt-dlp flags (e.g., --cookies-from-browser firefox)",
+    "Extra yt-dlp flags (e.g., --no-playlist)",
     "Apply a preset configuration for common use cases",
     "Reset all settings to their default values",
 ];
@@ -275,6 +281,11 @@ impl SettingsMenu {
                             self.option_index = if self.settings.add_metadata { 1 } else { 0 };
                             self.editing = true;
                         }
+                        IDX_SPONSORBLOCK => {
+                            // SponsorBlock
+                            self.option_index = if self.settings.sponsorblock { 1 } else { 0 };
+                            self.editing = true;
+                        }
                         IDX_CONCURRENT => {
                             // Concurrent Downloads
                             self.option_index = match self.settings.concurrent_downloads {
@@ -283,6 +294,19 @@ impl SettingsMenu {
                                 4 => 2,
                                 8 => 3,
                                 _ => 4, // Index for "Custom"
+                            };
+                            self.editing = true;
+                        }
+                        IDX_RATE_LIMIT => {
+                            // Rate Limit
+                            self.option_index = match self.settings.rate_limit.as_str() {
+                                "" => 0,
+                                "500K" => 1,
+                                "1M" => 2,
+                                "2M" => 3,
+                                "5M" => 4,
+                                "10M" => 5,
+                                _ => 6, // Custom
                             };
                             self.editing = true;
                         }
@@ -299,6 +323,21 @@ impl SettingsMenu {
                                 5 => 2,
                                 10 => 3,
                                 _ => 4, // Index for "Custom"
+                            };
+                            self.editing = true;
+                        }
+                        IDX_COOKIES_BROWSER => {
+                            // Cookies from Browser
+                            self.option_index = match self.settings.cookies_from_browser.as_str() {
+                                "" => 0,
+                                "firefox" => 1,
+                                "chrome" => 2,
+                                "chromium" => 3,
+                                "brave" => 4,
+                                "edge" => 5,
+                                "opera" => 6,
+                                "vivaldi" => 7,
+                                _ => 0,
                             };
                             self.editing = true;
                         }
@@ -365,7 +404,7 @@ impl SettingsMenu {
     /// Check if the current setting is a boolean toggle (Yes/No only)
     fn is_boolean_setting(&self) -> bool {
         if let Some(selected) = self.list_state.selected() {
-            // Boolean toggles: subtitles, thumbnail, metadata, network_retry, ascii_indicators, reset_stats
+            // Boolean toggles: subtitles, thumbnail, metadata, sponsorblock, network_retry, ascii_indicators, reset_stats
             // Note: subtitles is NOT a toggle when audio-only mode is selected
             let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
             matches!(selected, IDX_WRITE_SUBTITLES if !is_audio_only)
@@ -373,6 +412,7 @@ impl SettingsMenu {
                     selected,
                     IDX_WRITE_THUMBNAIL
                         | IDX_ADD_METADATA
+                        | IDX_SPONSORBLOCK
                         | IDX_NETWORK_RETRY
                         | IDX_ASCII_INDICATORS
                         | IDX_RESET_STATS_ON_BATCH
@@ -421,6 +461,16 @@ impl SettingsMenu {
                     return true;
                 }
 
+                // Special case for custom rate limit
+                if let Some(IDX_RATE_LIMIT) = self.list_state.selected()
+                    && self.option_index == 6
+                {
+                    // Custom option
+                    self.custom_input = self.settings.rate_limit.clone();
+                    self.input_mode = true;
+                    return true;
+                }
+
                 // Special case for custom retry delay
                 if let Some(IDX_RETRY_DELAY) = self.list_state.selected()
                     && self.option_index == 4
@@ -459,6 +509,11 @@ impl SettingsMenu {
                             {
                                 self.settings.concurrent_downloads = value;
                             }
+                        }
+                        IDX_RATE_LIMIT => {
+                            // Custom rate limit (e.g., "750K", "1.5M")
+                            let trimmed = self.custom_input.trim().to_string();
+                            self.settings.rate_limit = trimmed;
                         }
                         IDX_RETRY_DELAY => {
                             // Custom retry delay
@@ -502,11 +557,16 @@ impl SettingsMenu {
             }
             KeyCode::Char(c) => {
                 // For custom args, allow any printable character
+                // For rate limit, allow alphanumeric and '.' (e.g., "1.5M")
                 // For numeric fields, only allow digits
                 if let Some(selected) = self.list_state.selected() {
                     if selected == IDX_CUSTOM_ARGS {
                         self.custom_input.push(c);
                         self.validation_error = None;
+                    } else if selected == IDX_RATE_LIMIT {
+                        if c.is_ascii_alphanumeric() || c == '.' {
+                            self.custom_input.push(c);
+                        }
                     } else if c.is_ascii_digit() {
                         self.custom_input.push(c);
                     }
@@ -520,9 +580,9 @@ impl SettingsMenu {
     /// Adjust option index to valid range based on current setting
     fn adjust_option_index(&mut self) {
         // Max option indices for each setting (0-indexed)
-        // Settings: Format, Output, Subtitles, Thumbnail, Metadata, Concurrent, Retry, Delay, ASCII, ResetStats
+        // Settings: Format, Output, Subtitles, Thumbnail, Metadata, SponsorBlock, Concurrent, RateLimit, Retry, Delay, Cookies, ASCII, ResetStats, CustomArgs
         // Note: Custom args, Apply Preset, Reset are handled via input_mode/sub_menu, not editing
-        const MAX_OPTIONS: [usize; SETTINGS_COUNT] = [5, 4, 1, 1, 1, 4, 1, 4, 1, 1, 0];
+        const MAX_OPTIONS: [usize; SETTINGS_COUNT] = [5, 4, 1, 1, 1, 1, 4, 6, 1, 4, 7, 1, 1, 0];
 
         if let Some(i) = self.list_state.selected()
             && i < MAX_OPTIONS.len()
@@ -593,6 +653,10 @@ impl SettingsMenu {
                     // Add metadata
                     self.settings.add_metadata = self.option_index == 1;
                 }
+                IDX_SPONSORBLOCK => {
+                    // SponsorBlock
+                    self.settings.sponsorblock = self.option_index == 1;
+                }
                 IDX_CONCURRENT => {
                     // Concurrent Downloads
                     self.settings.concurrent_downloads = match self.option_index {
@@ -601,6 +665,18 @@ impl SettingsMenu {
                         2 => 4,
                         3 => 8,
                         _ => self.settings.concurrent_downloads,
+                    };
+                }
+                IDX_RATE_LIMIT => {
+                    // Rate Limit
+                    self.settings.rate_limit = match self.option_index {
+                        0 => String::new(),
+                        1 => "500K".to_string(),
+                        2 => "1M".to_string(),
+                        3 => "2M".to_string(),
+                        4 => "5M".to_string(),
+                        5 => "10M".to_string(),
+                        _ => self.settings.rate_limit.clone(), // Custom - keep current
                     };
                 }
                 IDX_NETWORK_RETRY => {
@@ -615,6 +691,20 @@ impl SettingsMenu {
                         2 => 5,
                         3 => 10,
                         _ => self.settings.retry_delay,
+                    };
+                }
+                IDX_COOKIES_BROWSER => {
+                    // Cookies from Browser
+                    self.settings.cookies_from_browser = match self.option_index {
+                        0 => String::new(),
+                        1 => "firefox".to_string(),
+                        2 => "chrome".to_string(),
+                        3 => "chromium".to_string(),
+                        4 => "brave".to_string(),
+                        5 => "edge".to_string(),
+                        6 => "opera".to_string(),
+                        7 => "vivaldi".to_string(),
+                        _ => String::new(),
                     };
                 }
                 IDX_ASCII_INDICATORS => {
@@ -663,7 +753,7 @@ impl SettingsMenu {
         } else {
             // Render the main settings dialog (list of settings)
             let popup_width = 65;
-            let popup_height = 20;
+            let popup_height = 23;
             let dialog_x = (area.width.saturating_sub(popup_width)) / 2;
             let dialog_y = (area.height.saturating_sub(popup_height)) / 2;
             let main_dialog_area = Rect::new(dialog_x, dialog_y, popup_width, popup_height);
@@ -673,7 +763,22 @@ impl SettingsMenu {
 
             // Pre-compute formatted values that need owned strings
             let concurrent_str = self.settings.concurrent_downloads.to_string();
+            let rate_limit_display = if self.settings.rate_limit.is_empty() {
+                "Unlimited".to_string()
+            } else {
+                self.settings.rate_limit.clone()
+            };
             let retry_delay_str = format!("{} seconds", self.settings.retry_delay);
+            let cookies_display = if self.settings.cookies_from_browser.is_empty() {
+                "None".to_string()
+            } else {
+                // Capitalize first letter for display
+                let mut c = self.settings.cookies_from_browser.chars();
+                match c.next() {
+                    None => "None".to_string(),
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                }
+            };
             let custom_args_display = if self.settings.custom_ytdlp_args.is_empty() {
                 "(none)".to_string()
             } else if self.settings.custom_ytdlp_args.len() > 30 {
@@ -700,9 +805,12 @@ impl SettingsMenu {
                     bool_to_yes_no(self.settings.write_thumbnail),
                 ),
                 create_setting_item("Add Metadata", bool_to_yes_no(self.settings.add_metadata)),
+                create_setting_item("SponsorBlock", bool_to_yes_no(self.settings.sponsorblock)),
                 create_setting_item("Concurrent Downloads", &concurrent_str),
+                create_setting_item("Rate Limit", &rate_limit_display),
                 create_setting_item("Network Retry", bool_to_yes_no(self.settings.network_retry)),
                 create_setting_item("Retry Delay", &retry_delay_str),
+                create_setting_item("Cookies from Browser", &cookies_display),
                 create_setting_item(
                     "ASCII Indicators",
                     bool_to_yes_no(self.settings.use_ascii_indicators),
@@ -886,9 +994,21 @@ impl SettingsMenu {
                     }
                 }
                 IDX_ADD_METADATA => (vec!["No", "Yes"], "Add Metadata"),
+                IDX_SPONSORBLOCK => (vec!["No", "Yes"], "Remove Sponsor Segments"),
                 IDX_CONCURRENT => (vec!["1", "2", "4", "8", "Custom"], "Concurrent Downloads"),
+                IDX_RATE_LIMIT => (
+                    vec!["Unlimited", "500K", "1M", "2M", "5M", "10M", "Custom"],
+                    "Rate Limit",
+                ),
                 IDX_NETWORK_RETRY => (vec!["No", "Yes"], "Auto Retry Network Failures"),
                 IDX_RETRY_DELAY => (vec!["1", "2", "5", "10", "Custom"], "Retry Delay (seconds)"),
+                IDX_COOKIES_BROWSER => (
+                    vec![
+                        "None", "Firefox", "Chrome", "Chromium", "Brave", "Edge", "Opera",
+                        "Vivaldi",
+                    ],
+                    "Cookies from Browser",
+                ),
                 IDX_ASCII_INDICATORS => (
                     vec!["No", "Yes"],
                     "ASCII Indicators (for terminal compatibility)",
@@ -940,6 +1060,7 @@ impl SettingsMenu {
     /// Render the input popup for custom values
     fn render_input_popup(&mut self, frame: &mut Frame, screen_area: Rect) {
         let is_custom_args = self.list_state.selected() == Some(IDX_CUSTOM_ARGS);
+        let is_rate_limit = self.list_state.selected() == Some(IDX_RATE_LIMIT);
         let popup_width = if is_custom_args { 60 } else { 40 };
         let popup_height = if self.validation_error.is_some() {
             5
@@ -956,6 +1077,7 @@ impl SettingsMenu {
         // Dynamic title based on which setting is being edited
         let title = match self.list_state.selected() {
             Some(IDX_CONCURRENT) => "Enter Concurrent Downloads",
+            Some(IDX_RATE_LIMIT) => "Enter Rate Limit (e.g., 750K, 1.5M)",
             Some(IDX_RETRY_DELAY) => "Enter Retry Delay (seconds)",
             Some(IDX_CUSTOM_ARGS) => "Custom yt-dlp Arguments",
             _ => "Enter Value",
@@ -993,6 +1115,8 @@ impl SettingsMenu {
         // Help text for this popup
         let help_text = if is_custom_args {
             "Type arguments | Enter: Save | Esc: Cancel"
+        } else if is_rate_limit {
+            "e.g., 500K, 1.5M | Enter: Confirm | Esc: Cancel"
         } else {
             "Enter a number | Enter: Confirm | Esc: Cancel"
         };
@@ -1546,5 +1670,200 @@ mod tests {
                 preset.name()
             );
         }
+    }
+
+    // ==================== SponsorBlock Toggle Tests ====================
+
+    #[test]
+    fn test_sponsorblock_toggle_on() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        menu.settings.sponsorblock = false;
+        menu.list_state.select(Some(IDX_SPONSORBLOCK));
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.editing);
+        assert_eq!(menu.option_index, 0); // No
+
+        // Toggle to Yes
+        menu.handle_input(key_event(KeyCode::Right), &state);
+        assert!(!menu.editing); // Boolean auto-applies
+        assert!(menu.settings.sponsorblock);
+    }
+
+    #[test]
+    fn test_sponsorblock_toggle_off() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        menu.settings.sponsorblock = true;
+        menu.list_state.select(Some(IDX_SPONSORBLOCK));
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.editing);
+        assert_eq!(menu.option_index, 1); // Yes
+
+        // Toggle to No
+        menu.handle_input(key_event(KeyCode::Left), &state);
+        assert!(!menu.editing); // Boolean auto-applies
+        assert!(!menu.settings.sponsorblock);
+    }
+
+    // ==================== Rate Limit Tests ====================
+
+    #[test]
+    fn test_rate_limit_preset_selection() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        menu.list_state.select(Some(IDX_RATE_LIMIT));
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.editing);
+        assert_eq!(menu.option_index, 0); // Unlimited (default)
+
+        // Select 2M (index 3)
+        menu.handle_input(key_event(KeyCode::Right), &state); // 500K
+        menu.handle_input(key_event(KeyCode::Right), &state); // 1M
+        menu.handle_input(key_event(KeyCode::Right), &state); // 2M
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(!menu.editing);
+        assert_eq!(menu.settings.rate_limit, "2M");
+    }
+
+    #[test]
+    fn test_rate_limit_unlimited_clears_value() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Set a rate limit first
+        menu.settings.rate_limit = "5M".to_string();
+        menu.list_state.select(Some(IDX_RATE_LIMIT));
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert_eq!(menu.option_index, 4); // 5M
+
+        // Go back to Unlimited
+        menu.handle_input(key_event(KeyCode::Left), &state); // 2M
+        menu.handle_input(key_event(KeyCode::Left), &state); // 1M
+        menu.handle_input(key_event(KeyCode::Left), &state); // 500K
+        menu.handle_input(key_event(KeyCode::Left), &state); // Unlimited
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(menu.settings.rate_limit.is_empty());
+    }
+
+    #[test]
+    fn test_rate_limit_custom_input() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        menu.list_state.select(Some(IDX_RATE_LIMIT));
+
+        // Enter editing, go to Custom (index 6)
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        for _ in 0..6 {
+            menu.handle_input(key_event(KeyCode::Right), &state);
+        }
+        assert_eq!(menu.option_index, 6);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.input_mode);
+
+        // Type custom value
+        menu.handle_input(key_event(KeyCode::Char('7')), &state);
+        menu.handle_input(key_event(KeyCode::Char('5')), &state);
+        menu.handle_input(key_event(KeyCode::Char('0')), &state);
+        menu.handle_input(key_event(KeyCode::Char('K')), &state);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(!menu.input_mode);
+        assert_eq!(menu.settings.rate_limit, "750K");
+    }
+
+    // ==================== Cookies from Browser Tests ====================
+
+    #[test]
+    fn test_cookies_browser_selection() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        menu.list_state.select(Some(IDX_COOKIES_BROWSER));
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.editing);
+        assert_eq!(menu.option_index, 0); // None
+
+        // Select Firefox (index 1)
+        menu.handle_input(key_event(KeyCode::Right), &state);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(!menu.editing);
+        assert_eq!(menu.settings.cookies_from_browser, "firefox");
+    }
+
+    #[test]
+    fn test_cookies_browser_chrome() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        menu.list_state.select(Some(IDX_COOKIES_BROWSER));
+
+        // Enter editing mode and go to Chrome (index 2)
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.handle_input(key_event(KeyCode::Right), &state); // Firefox
+        menu.handle_input(key_event(KeyCode::Right), &state); // Chrome
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert_eq!(menu.settings.cookies_from_browser, "chrome");
+    }
+
+    #[test]
+    fn test_cookies_browser_none_clears() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        menu.settings.cookies_from_browser = "firefox".to_string();
+        menu.list_state.select(Some(IDX_COOKIES_BROWSER));
+
+        // Enter editing mode - should be at Firefox (index 1)
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert_eq!(menu.option_index, 1);
+
+        // Go to None
+        menu.handle_input(key_event(KeyCode::Left), &state);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(menu.settings.cookies_from_browser.is_empty());
+    }
+
+    // ==================== Menu Layout Tests ====================
+
+    #[test]
+    fn test_total_menu_items_count() {
+        // Verify SETTINGS_COUNT and TOTAL_MENU_ITEMS are correct
+        assert_eq!(SETTINGS_COUNT, 14);
+        assert_eq!(TOTAL_MENU_ITEMS, 16);
+        assert_eq!(IDX_APPLY_PRESET, SETTINGS_COUNT);
+        assert_eq!(IDX_RESET_DEFAULTS, SETTINGS_COUNT + 1);
+    }
+
+    #[test]
+    fn test_setting_descriptions_count() {
+        assert_eq!(SETTING_DESCRIPTIONS.len(), TOTAL_MENU_ITEMS);
     }
 }

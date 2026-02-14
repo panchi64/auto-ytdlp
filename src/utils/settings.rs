@@ -68,9 +68,12 @@ impl SettingsPreset {
                 write_subtitles: true,
                 write_thumbnail: true,
                 add_metadata: true,
+                sponsorblock: false,
                 concurrent_downloads: 4,
+                rate_limit: String::new(),
                 network_retry: true,
                 retry_delay: 2,
+                cookies_from_browser: String::new(),
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
@@ -81,9 +84,12 @@ impl SettingsPreset {
                 write_subtitles: false,
                 write_thumbnail: true,
                 add_metadata: true,
+                sponsorblock: false,
                 concurrent_downloads: 4,
+                rate_limit: String::new(),
                 network_retry: true,
                 retry_delay: 2,
+                cookies_from_browser: String::new(),
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
@@ -94,9 +100,12 @@ impl SettingsPreset {
                 write_subtitles: false,
                 write_thumbnail: false,
                 add_metadata: false,
+                sponsorblock: false,
                 concurrent_downloads: 8,
+                rate_limit: String::new(),
                 network_retry: false,
                 retry_delay: 1,
+                cookies_from_browser: String::new(),
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
@@ -107,9 +116,12 @@ impl SettingsPreset {
                 write_subtitles: false,
                 write_thumbnail: false,
                 add_metadata: false,
+                sponsorblock: false,
                 concurrent_downloads: 2,
+                rate_limit: "2M".to_string(),
                 network_retry: true,
                 retry_delay: 5,
+                cookies_from_browser: String::new(),
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
@@ -192,16 +204,25 @@ pub struct Settings {
     pub output_format: OutputFormat,
     /// Write subtitles if available
     pub write_subtitles: bool,
-    /// Number of concurrent downloads
-    pub concurrent_downloads: usize,
     /// Write thumbnail if available
     pub write_thumbnail: bool,
     /// Add metadata to file if available
     pub add_metadata: bool,
+    /// Remove sponsor segments using SponsorBlock
+    #[serde(default)]
+    pub sponsorblock: bool,
+    /// Number of concurrent downloads
+    pub concurrent_downloads: usize,
+    /// Rate limit for downloads (e.g., "500K", "2M"), empty for unlimited
+    #[serde(default)]
+    pub rate_limit: String,
     /// Automatically retry failed downloads due to network issues
     pub network_retry: bool,
     /// Delay in seconds between retry attempts
     pub retry_delay: u64,
+    /// Use browser cookies for authenticated content (e.g., "firefox", "chrome")
+    #[serde(default)]
+    pub cookies_from_browser: String,
     /// Use ASCII indicators instead of emoji (for terminal compatibility)
     #[serde(default)]
     pub use_ascii_indicators: bool,
@@ -226,11 +247,14 @@ impl Default for Settings {
             format_preset: FormatPreset::default(),
             output_format: OutputFormat::default(),
             write_subtitles: false,
-            concurrent_downloads: 4,
             write_thumbnail: false,
             add_metadata: false,
+            sponsorblock: false,
+            concurrent_downloads: 4,
+            rate_limit: String::new(),
             network_retry: false,
             retry_delay: 2,
+            cookies_from_browser: String::new(),
             use_ascii_indicators: false,
             custom_ytdlp_args: String::new(),
             reset_stats_on_new_batch: true,
@@ -372,6 +396,21 @@ impl Settings {
             args.push("--add-metadata".to_string());
         }
 
+        if self.sponsorblock {
+            args.push("--sponsorblock-remove".to_string());
+            args.push("all".to_string());
+        }
+
+        if !self.rate_limit.is_empty() {
+            args.push("--rate-limit".to_string());
+            args.push(self.rate_limit.clone());
+        }
+
+        if !self.cookies_from_browser.is_empty() {
+            args.push("--cookies-from-browser".to_string());
+            args.push(self.cookies_from_browser.clone());
+        }
+
         // Always add newline for output processing
         args.push("--newline".to_string());
 
@@ -393,11 +432,14 @@ mod tests {
         assert_eq!(settings.format_preset, FormatPreset::Best);
         assert_eq!(settings.output_format, OutputFormat::Auto);
         assert!(!settings.write_subtitles);
-        assert_eq!(settings.concurrent_downloads, 4);
         assert!(!settings.write_thumbnail);
         assert!(!settings.add_metadata);
+        assert!(!settings.sponsorblock);
+        assert_eq!(settings.concurrent_downloads, 4);
+        assert!(settings.rate_limit.is_empty());
         assert!(!settings.network_retry);
         assert_eq!(settings.retry_delay, 2);
+        assert!(settings.cookies_from_browser.is_empty());
         assert!(!settings.use_ascii_indicators);
         assert!(settings.custom_ytdlp_args.is_empty());
         assert!(settings.reset_stats_on_new_batch);
@@ -674,5 +716,113 @@ mod tests {
             args,
             vec!["--cookies", "path/to/cookies", "--user-agent", "Bot"]
         );
+    }
+
+    // ==================== Rate Limit Tests ====================
+
+    #[test]
+    fn test_rate_limit_default_empty() {
+        let settings = Settings::default();
+        assert!(settings.rate_limit.is_empty());
+    }
+
+    #[test]
+    fn test_rate_limit_args_when_set() {
+        let mut settings = Settings::default();
+        settings.rate_limit = "2M".to_string();
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+        assert!(args.contains(&"--rate-limit".to_string()));
+        assert!(args.contains(&"2M".to_string()));
+    }
+
+    #[test]
+    fn test_rate_limit_args_when_empty() {
+        let settings = Settings::default();
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+        assert!(!args.contains(&"--rate-limit".to_string()));
+    }
+
+    #[test]
+    fn test_preset_bandwidth_saver_has_rate_limit() {
+        let settings = SettingsPreset::BandwidthSaver.apply();
+        assert_eq!(settings.rate_limit, "2M");
+    }
+
+    #[test]
+    fn test_preset_best_quality_no_rate_limit() {
+        let settings = SettingsPreset::BestQuality.apply();
+        assert!(settings.rate_limit.is_empty());
+    }
+
+    // ==================== SponsorBlock Tests ====================
+
+    #[test]
+    fn test_sponsorblock_default_false() {
+        let settings = Settings::default();
+        assert!(!settings.sponsorblock);
+    }
+
+    #[test]
+    fn test_sponsorblock_args_when_enabled() {
+        let mut settings = Settings::default();
+        settings.sponsorblock = true;
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+        assert!(args.contains(&"--sponsorblock-remove".to_string()));
+        assert!(args.contains(&"all".to_string()));
+    }
+
+    #[test]
+    fn test_sponsorblock_args_when_disabled() {
+        let settings = Settings::default();
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+        assert!(!args.contains(&"--sponsorblock-remove".to_string()));
+    }
+
+    #[test]
+    fn test_all_presets_sponsorblock_false() {
+        for preset in SettingsPreset::all() {
+            let settings = preset.apply();
+            assert!(
+                !settings.sponsorblock,
+                "Preset {:?} should have sponsorblock = false",
+                preset.name()
+            );
+        }
+    }
+
+    // ==================== Cookies from Browser Tests ====================
+
+    #[test]
+    fn test_cookies_from_browser_default_empty() {
+        let settings = Settings::default();
+        assert!(settings.cookies_from_browser.is_empty());
+    }
+
+    #[test]
+    fn test_cookies_from_browser_args_when_set() {
+        let mut settings = Settings::default();
+        settings.cookies_from_browser = "firefox".to_string();
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+        assert!(args.contains(&"--cookies-from-browser".to_string()));
+        assert!(args.contains(&"firefox".to_string()));
+    }
+
+    #[test]
+    fn test_cookies_from_browser_args_when_empty() {
+        let settings = Settings::default();
+        let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
+        assert!(!args.contains(&"--cookies-from-browser".to_string()));
+    }
+
+    #[test]
+    fn test_all_presets_cookies_empty() {
+        for preset in SettingsPreset::all() {
+            let settings = preset.apply();
+            assert!(
+                settings.cookies_from_browser.is_empty(),
+                "Preset {:?} should have cookies_from_browser empty",
+                preset.name()
+            );
+        }
     }
 }

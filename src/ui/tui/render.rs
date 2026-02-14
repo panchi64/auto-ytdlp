@@ -92,11 +92,7 @@ pub fn ui(
             "⏹️ STOPPED"
         };
 
-        // Count failed downloads based on log entries
-        let failed_count = logs
-            .iter()
-            .filter(|line| line.starts_with("Failed:"))
-            .count();
+        let failed_count = snapshot.failed_count;
 
         // ----- Progress bar with status -----
         let retry_info = if total_retries > 0 {
@@ -281,18 +277,33 @@ pub fn ui(
         frame.render_widget(logs_widget, main_layout[2]);
 
         // ----- Help text (keyboard shortcuts) -----
-        let help_text = if ctx.filter_mode {
+        let failed_hint = if failed_count > 0 && (!started || is_completed) {
+            format!(" | T: Retry {} failed", failed_count)
+        } else {
+            String::new()
+        };
+
+        let help_text_owned;
+        let help_text: &str = if ctx.filter_mode {
             "Type to filter | Enter: Keep filter | Esc: Clear filter"
         } else if ctx.queue_edit_mode {
             "↑↓: Navigate | K/J: Move Up/Down | D: Delete | Esc: Exit edit mode"
         } else if is_completed {
-            "R: Restart | E: Edit Queue | /: Search | F1: Help | F2: Settings | Q: Quit"
+            help_text_owned = format!(
+                "R: Restart | E: Edit Queue | /: Search | U: Update yt-dlp{} | F1: Help | F2: Settings | Q: Quit",
+                failed_hint
+            );
+            &help_text_owned
         } else if started && is_paused {
             "P: Resume | R: Reload | E: Edit | /: Search | A: Paste | F1: Help | F2: Settings | Q: Quit"
         } else if started {
             "P: Pause | S: Stop | A: Paste URLs | F1: Help | F2: Settings | Q: Quit | Shift+Q: Force Quit"
         } else {
-            "S: Start | R: Reload | E: Edit | /: Search | A: Paste | F1: Help | F2: Settings | Q: Quit"
+            help_text_owned = format!(
+                "S: Start | R: Reload | E: Edit | /: Search | A: Paste | U: Update{} | F1: Help | F2: Settings | Q: Quit",
+                failed_hint
+            );
+            &help_text_owned
         };
 
         let info_widget = Paragraph::new(help_text)
@@ -553,7 +564,7 @@ fn render_single_download_progress(
 pub fn render_help_overlay(frame: &mut Frame) {
     let area = frame.area();
     let popup_width = 44;
-    let popup_height = 21;
+    let popup_height = 24;
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -569,6 +580,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
         Line::from("  S     Start / Stop downloads"),
         Line::from("  P     Pause / Resume"),
         Line::from("  R     Reload queue from file"),
+        Line::from("  T     Retry failed downloads"),
         Line::from("  X     Dismiss stale indicators"),
         Line::from(""),
         Line::from(Span::styled(
@@ -584,6 +596,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
             "APPLICATION",
             Style::default().fg(Color::Yellow),
         )),
+        Line::from("  U     Update yt-dlp"),
         Line::from("  F1    Toggle this help"),
         Line::from("  F2    Open settings"),
         Line::from("  q     Graceful quit"),

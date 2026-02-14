@@ -138,6 +138,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
             toast: None,
             use_ascii_indicators: false,
             total_retries: 0,
+            failed_count: 0,
         });
 
         // Draw UI using snapshot

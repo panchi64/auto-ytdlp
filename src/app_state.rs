@@ -83,6 +83,8 @@ pub struct UiSnapshot {
     pub toast: Option<String>,
     pub use_ascii_indicators: bool,
     pub total_retries: usize,
+    /// Number of failed downloads tracked for retry
+    pub failed_count: usize,
 }
 
 /// Guard type for file operations lock
@@ -159,6 +161,9 @@ pub enum StateMessage {
         url: String,
         progress: DownloadProgress,
     },
+
+    /// Records a URL that failed to download (for retry).
+    AddFailedDownload(String),
 }
 
 /// A thread-safe application state manager for the script.
@@ -183,6 +188,9 @@ pub struct AppState {
 
     /// Retry statistics counter
     total_retries: Arc<Mutex<usize>>,
+
+    /// URLs that failed to download (for retry with 'T' key)
+    failed_downloads: Arc<Mutex<Vec<String>>>,
 
     // Channel for state updates
     tx: Sender<StateMessage>,
@@ -224,6 +232,7 @@ impl AppState {
             file_lock: Arc::new(Mutex::new(())),
             toast: Arc::new(Mutex::new(None)),
             total_retries: Arc::new(Mutex::new(0)),
+            failed_downloads: Arc::new(Mutex::new(Vec::new())),
             tx,
             rx: Arc::new(Mutex::new(rx)),
         };
@@ -319,6 +328,11 @@ impl AppState {
                 StateMessage::LoadLinks(links) => {
                     if let Err(err) = self.handle_load_links(links) {
                         eprintln!("Error loading links: {}", err);
+                    }
+                }
+                StateMessage::AddFailedDownload(url) => {
+                    if let Err(err) = self.handle_add_failed_download(url) {
+                        eprintln!("Error adding failed download: {}", err);
                     }
                 }
             }
@@ -417,6 +431,14 @@ impl AppState {
         let mut stats = self.stats.lock()?;
         stats.total_tasks = queue_len;
         stats.initial_total_tasks = queue_len;
+        Ok(())
+    }
+
+    fn handle_add_failed_download(&self, url: String) -> Result<()> {
+        let mut failed = self.failed_downloads.lock()?;
+        if !failed.contains(&url) {
+            failed.push(url);
+        }
         Ok(())
     }
 
@@ -590,9 +612,13 @@ impl AppState {
         }
         drop(stats);
 
-        // Reset retry counter and clear toast using the public API
+        // Reset retry counter, clear toast, and clear failed downloads
         self.reset_retries()?;
         self.clear_toast()?;
+        {
+            let mut failed = self.failed_downloads.lock()?;
+            failed.clear();
+        }
 
         Ok(())
     }
@@ -658,6 +684,12 @@ impl AppState {
         Ok(())
     }
 
+    /// Drain and return all failed download URLs (for retry)
+    pub fn take_failed_downloads(&self) -> Result<Vec<String>> {
+        let mut failed = self.failed_downloads.lock()?;
+        Ok(failed.drain(..).collect())
+    }
+
     /// Creates a snapshot of all UI-relevant state with minimal locking.
     ///
     /// This method acquires each lock once and captures all necessary state
@@ -716,6 +748,8 @@ impl AppState {
 
         let total_retries = *self.total_retries.lock()?;
 
+        let failed_count = self.failed_downloads.lock()?.len();
+
         Ok(UiSnapshot {
             progress,
             completed_tasks,
@@ -731,6 +765,7 @@ impl AppState {
             toast,
             use_ascii_indicators,
             total_retries,
+            failed_count,
         })
     }
 }
@@ -1869,6 +1904,140 @@ mod tests {
 
     // ========== StateMessage Variant Coverage Tests ==========
 
+    // ========== Failed Downloads Tests ==========
+
+    #[test]
+    fn test_failed_downloads_initially_empty() {
+        let state = AppState::new();
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 0);
+    }
+
+    #[test]
+    fn test_add_failed_download() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video1".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 1);
+    }
+
+    #[test]
+    fn test_add_failed_download_no_duplicates() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video1".to_string(),
+            ))
+            .unwrap();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video1".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 1);
+    }
+
+    #[test]
+    fn test_add_multiple_failed_downloads() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video1".to_string(),
+            ))
+            .unwrap();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video2".to_string(),
+            ))
+            .unwrap();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video3".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 3);
+    }
+
+    #[test]
+    fn test_take_failed_downloads_drains() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video1".to_string(),
+            ))
+            .unwrap();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video2".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        let failed = state.take_failed_downloads().unwrap();
+        assert_eq!(failed.len(), 2);
+        assert!(failed.contains(&"https://example.com/video1".to_string()));
+        assert!(failed.contains(&"https://example.com/video2".to_string()));
+
+        // Should be empty after take
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 0);
+    }
+
+    #[test]
+    fn test_take_failed_downloads_empty() {
+        let state = AppState::new();
+        let failed = state.take_failed_downloads().unwrap();
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn test_reset_for_new_run_clears_failed_downloads() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com/video1".to_string(),
+            ))
+            .unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 1);
+
+        state.reset_for_new_run().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 0);
+    }
+
+    #[test]
+    fn test_ui_snapshot_includes_failed_count() {
+        let state = AppState::new();
+        state
+            .send(StateMessage::AddFailedDownload("url1".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddFailedDownload("url2".to_string()))
+            .unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.failed_count, 2);
+    }
+
+    // ========== StateMessage Variant Coverage Tests ==========
+
     #[test]
     fn test_all_state_messages_are_processed() {
         // Ensure every StateMessage variant can be sent and processed
@@ -1902,6 +2071,11 @@ mod tests {
                 url: "https://example.com".to_string(),
                 progress: DownloadProgress::new("https://example.com"),
             })
+            .unwrap();
+        state
+            .send(StateMessage::AddFailedDownload(
+                "https://example.com".to_string(),
+            ))
             .unwrap();
 
         wait_for_processing();

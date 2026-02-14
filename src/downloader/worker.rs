@@ -292,13 +292,19 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             &state,
             format!("Download aborted due to force quit: {}", url),
         );
-    } else if retry_count > 0 {
-        log_msg(
-            &state,
-            format!("Failed after {} retries: {}", retry_count, url),
-        );
     } else {
-        log_msg(&state, format!("Failed: {}", url));
+        // Record failed download for retry (not force-quit)
+        if let Err(e) = state.send(StateMessage::AddFailedDownload(url.clone())) {
+            eprintln!("Error recording failed download: {}", e);
+        }
+        if retry_count > 0 {
+            log_msg(
+                &state,
+                format!("Failed after {} retries: {}", retry_count, url),
+            );
+        } else {
+            log_msg(&state, format!("Failed: {}", url));
+        }
     }
 
     if state.get_queue().unwrap_or_default().is_empty()
