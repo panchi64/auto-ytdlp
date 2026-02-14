@@ -73,6 +73,7 @@ impl SettingsPreset {
                 retry_delay: 2,
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
+                reset_stats_on_new_batch: true,
             },
             SettingsPreset::AudioArchive => Settings {
                 format_preset: FormatPreset::AudioOnly,
@@ -85,6 +86,7 @@ impl SettingsPreset {
                 retry_delay: 2,
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
+                reset_stats_on_new_batch: true,
             },
             SettingsPreset::FastDownload => Settings {
                 format_preset: FormatPreset::Best,
@@ -97,6 +99,7 @@ impl SettingsPreset {
                 retry_delay: 1,
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
+                reset_stats_on_new_batch: true,
             },
             SettingsPreset::BandwidthSaver => Settings {
                 format_preset: FormatPreset::SD480p,
@@ -109,6 +112,7 @@ impl SettingsPreset {
                 retry_delay: 5,
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
+                reset_stats_on_new_batch: true,
             },
         }
     }
@@ -204,6 +208,16 @@ pub struct Settings {
     /// Custom yt-dlp arguments (shell-style, validated for conflicts)
     #[serde(default)]
     pub custom_ytdlp_args: String,
+    /// Reset download stats when starting a new batch (pressing 'S')
+    /// When true (default): counters reset on each new batch
+    /// When false: counters accumulate across batches in a session
+    #[serde(default = "default_true")]
+    pub reset_stats_on_new_batch: bool,
+}
+
+/// Default function for serde to use true as default
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -219,6 +233,7 @@ impl Default for Settings {
             retry_delay: 2,
             use_ascii_indicators: false,
             custom_ytdlp_args: String::new(),
+            reset_stats_on_new_batch: true,
         }
     }
 }
@@ -264,12 +279,22 @@ impl Settings {
     /// Parse custom arguments into a vector of strings
     ///
     /// Returns an empty vector if parsing fails or args is empty.
+    /// Logs a warning to stderr if the arguments contain malformed shell syntax.
     pub fn parse_custom_args(&self) -> Vec<String> {
         if self.custom_ytdlp_args.trim().is_empty() {
             return Vec::new();
         }
 
-        shlex::split(&self.custom_ytdlp_args).unwrap_or_default()
+        match shlex::split(&self.custom_ytdlp_args) {
+            Some(args) => args,
+            None => {
+                eprintln!(
+                    "Warning: custom yt-dlp args have malformed shell syntax (e.g., unclosed quotes): {}",
+                    self.custom_ytdlp_args
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Load settings from disk, creating default settings if none exist
@@ -375,6 +400,7 @@ mod tests {
         assert_eq!(settings.retry_delay, 2);
         assert!(!settings.use_ascii_indicators);
         assert!(settings.custom_ytdlp_args.is_empty());
+        assert!(settings.reset_stats_on_new_batch);
     }
 
     #[test]
@@ -605,5 +631,48 @@ mod tests {
         assert_eq!(settings.concurrent_downloads, 2);
         assert!(settings.network_retry);
         assert_eq!(settings.retry_delay, 5);
+    }
+
+    #[test]
+    fn test_parse_custom_args_malformed_unclosed_single_quote() {
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "--user-agent 'unclosed".to_string();
+        let args = settings.parse_custom_args();
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_args_malformed_unclosed_double_quote() {
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "--user-agent \"unclosed".to_string();
+        let args = settings.parse_custom_args();
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_args_malformed_trailing_backslash() {
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "test\\".to_string();
+        let args = settings.parse_custom_args();
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_args_valid_double_quotes() {
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "--user-agent \"My Custom Agent\"".to_string();
+        let args = settings.parse_custom_args();
+        assert_eq!(args, vec!["--user-agent", "My Custom Agent"]);
+    }
+
+    #[test]
+    fn test_parse_custom_args_multiple_quoted_segments() {
+        let mut settings = Settings::default();
+        settings.custom_ytdlp_args = "--cookies 'path/to/cookies' --user-agent 'Bot'".to_string();
+        let args = settings.parse_custom_args();
+        assert_eq!(
+            args,
+            vec!["--cookies", "path/to/cookies", "--user-agent", "Bot"]
+        );
     }
 }

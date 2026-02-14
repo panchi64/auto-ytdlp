@@ -1,6 +1,6 @@
 use crate::app_state::{AppState, FileLockGuard, StateMessage};
 use crate::errors::{AppError, Result};
-use std::{collections::HashSet, fs};
+use std::fs;
 
 /// Internal function to remove a link from file while holding the file lock.
 /// This prevents race conditions when multiple workers complete simultaneously.
@@ -37,58 +37,6 @@ fn remove_link_from_file_internal(_guard: &FileLockGuard<'_>, url: &str) -> Resu
 pub fn remove_link_from_file_sync(state: &AppState, url: &str) -> Result<()> {
     let guard = state.acquire_file_lock()?;
     remove_link_from_file_internal(&guard, url)
-}
-
-/// Internal function to add clipboard links while holding the file lock.
-fn add_clipboard_links_to_file_internal(
-    _guard: &FileLockGuard<'_>,
-    clipboard_content: &str,
-) -> Result<usize> {
-    let links: Vec<String> = clipboard_content
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .filter(|l| url::Url::parse(l).is_ok())
-        .collect();
-
-    // Current file content to check for duplicates
-    let current_links = get_links_from_file()?;
-    let existing: HashSet<_> = current_links.iter().collect();
-
-    // Filter out links that already exist
-    let new_links = links
-        .into_iter()
-        .filter(|link| !existing.contains(link))
-        .collect::<Vec<_>>();
-
-    // If links were added, save to file
-    if !new_links.is_empty() {
-        // Use extend() instead of [a, b].concat() to avoid cloning new_links
-        let mut all_links = current_links;
-        all_links.extend(new_links.iter().cloned());
-        fs::write("links.txt", all_links.join("\n")).map_err(AppError::Io)?;
-    }
-
-    Ok(new_links.len())
-}
-
-/// Parses URLs from clipboard content and adds them to the links.txt file
-/// with thread-safe synchronization.
-///
-/// # Parameters
-///
-/// * `state` - Reference to the application state for file lock access
-/// * `clipboard_content` - String content from the clipboard to parse
-///
-/// # Returns
-///
-/// * `Result<usize>` - The number of new URLs that were added, or an error
-pub fn add_clipboard_links_to_file_sync(
-    state: &AppState,
-    clipboard_content: &str,
-) -> Result<usize> {
-    let guard = state.acquire_file_lock()?;
-    add_clipboard_links_to_file_internal(&guard, clipboard_content)
 }
 
 /// Loads URLs from the 'links.txt' file without requiring an AppState.
@@ -150,7 +98,9 @@ pub fn sanitize_links_file() -> Result<usize> {
     let removed_count = total_non_empty - valid_lines.len();
 
     if removed_count > 0 {
-        fs::write(file_path, valid_lines.join("\n")).map_err(AppError::Io)?;
+        let temp_path = format!("{}.tmp", file_path);
+        fs::write(&temp_path, valid_lines.join("\n")).map_err(AppError::Io)?;
+        fs::rename(&temp_path, file_path).map_err(AppError::Io)?;
     }
 
     Ok(removed_count)
@@ -182,18 +132,40 @@ pub fn sanitize_links_file() -> Result<usize> {
 /// }
 /// ```
 pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<usize> {
-    // Use the synchronized version to prevent race conditions
-    let n = add_clipboard_links_to_file_sync(state, clipboard_content)?;
+    // Parse and deduplicate new links before writing to file
+    let new_links: Vec<String> = {
+        let guard = state.acquire_file_lock()?;
+        let parsed: Vec<String> = clipboard_content
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .filter(|l| url::Url::parse(l).is_ok())
+            .collect();
 
-    if n > 0 {
-        // Then update app state
-        let links = get_links_from_file()?;
-        for link in &links {
-            state.send(StateMessage::AddToQueue(link.clone()))?;
+        let current_links = get_links_from_file()?;
+        let existing: std::collections::HashSet<_> = current_links.iter().collect();
+
+        let new: Vec<String> = parsed
+            .into_iter()
+            .filter(|link| !existing.contains(link))
+            .collect();
+
+        if !new.is_empty() {
+            let mut all_links = current_links;
+            all_links.extend(new.iter().cloned());
+            fs::write("links.txt", all_links.join("\n")).map_err(AppError::Io)?;
         }
+
+        drop(guard);
+        new
+    };
+
+    // Only send the new links to the queue
+    for link in &new_links {
+        state.send(StateMessage::AddToQueue(link.clone()))?;
     }
 
-    Ok(n)
+    Ok(new_links.len())
 }
 
 #[cfg(test)]
@@ -366,5 +338,127 @@ mod tests {
         let links = get_links_from_file_at_path(&links_path).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0], long_url);
+    }
+
+    #[test]
+    fn test_sanitize_links_file_preserves_valid_content() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+
+        let content = "https://example.com/a\nbad\nhttps://example.com/b\n";
+        fs::write(&links_path, content).unwrap();
+
+        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        assert_eq!(removed, 1);
+
+        // Original file should still contain valid URLs
+        let result = fs::read_to_string(&links_path).unwrap();
+        assert!(result.contains("https://example.com/a"));
+        assert!(result.contains("https://example.com/b"));
+        assert!(!result.contains("bad"));
+    }
+
+    #[test]
+    fn test_sanitize_links_file_no_temp_file_left_behind() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let links_path = temp_dir.path().join("links.txt");
+        let temp_path = temp_dir.path().join("links.txt.tmp");
+
+        let content = "https://example.com/a\nbad\n";
+        fs::write(&links_path, content).unwrap();
+
+        sanitize_links_file_at_path(&links_path).unwrap();
+
+        // No temp file should remain after the operation
+        assert!(!temp_path.exists());
+    }
+
+    /// Helper that mirrors the dedup logic used in add_clipboard_links
+    fn deduplicate_links(existing: &[String], clipboard: &str) -> Vec<String> {
+        let parsed: Vec<String> = clipboard
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .filter(|l| url::Url::parse(l).is_ok())
+            .collect();
+
+        let existing_set: std::collections::HashSet<_> = existing.iter().collect();
+
+        parsed
+            .into_iter()
+            .filter(|link| !existing_set.contains(link))
+            .collect()
+    }
+
+    #[test]
+    fn test_deduplicate_links_no_duplicates() {
+        let existing = vec!["https://example.com/a".to_string()];
+        let clipboard = "https://example.com/b\nhttps://example.com/c\n";
+
+        let new = deduplicate_links(&existing, clipboard);
+        assert_eq!(new.len(), 2);
+        assert!(new.contains(&"https://example.com/b".to_string()));
+        assert!(new.contains(&"https://example.com/c".to_string()));
+    }
+
+    #[test]
+    fn test_deduplicate_links_all_duplicates() {
+        let existing = vec![
+            "https://example.com/a".to_string(),
+            "https://example.com/b".to_string(),
+        ];
+        let clipboard = "https://example.com/a\nhttps://example.com/b\n";
+
+        let new = deduplicate_links(&existing, clipboard);
+        assert!(new.is_empty());
+    }
+
+    #[test]
+    fn test_deduplicate_links_mixed() {
+        let existing = vec!["https://example.com/a".to_string()];
+        let clipboard = "https://example.com/a\nhttps://example.com/b\n";
+
+        let new = deduplicate_links(&existing, clipboard);
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0], "https://example.com/b");
+    }
+
+    #[test]
+    fn test_deduplicate_links_filters_invalid_urls() {
+        let existing: Vec<String> = vec![];
+        let clipboard = "https://example.com/a\nnot-a-url\nhttps://example.com/b\n";
+
+        let new = deduplicate_links(&existing, clipboard);
+        assert_eq!(new.len(), 2);
+        assert!(!new.iter().any(|l| l == "not-a-url"));
+    }
+
+    #[test]
+    fn test_deduplicate_links_empty_clipboard() {
+        let existing = vec!["https://example.com/a".to_string()];
+        let clipboard = "";
+
+        let new = deduplicate_links(&existing, clipboard);
+        assert!(new.is_empty());
+    }
+
+    #[test]
+    fn test_deduplicate_links_whitespace_only_clipboard() {
+        let existing: Vec<String> = vec![];
+        let clipboard = "   \n\n  \n";
+
+        let new = deduplicate_links(&existing, clipboard);
+        assert!(new.is_empty());
+    }
+
+    #[test]
+    fn test_deduplicate_links_trims_whitespace() {
+        let existing: Vec<String> = vec![];
+        let clipboard = "  https://example.com/a  \n  https://example.com/b  \n";
+
+        let new = deduplicate_links(&existing, clipboard);
+        assert_eq!(new.len(), 2);
+        assert_eq!(new[0], "https://example.com/a");
+        assert_eq!(new[1], "https://example.com/b");
     }
 }

@@ -431,6 +431,20 @@ fn render_active_downloads(
     }
 }
 
+/// Truncates a display name to fit within a maximum character width.
+///
+/// Uses char-aware truncation to avoid panics on multi-byte UTF-8 strings.
+/// Appends "..." when truncation occurs.
+fn truncate_display_name(name: &str, max_len: usize) -> String {
+    let char_count = name.chars().count();
+    if char_count > max_len {
+        let truncated: String = name.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    } else {
+        name.to_string()
+    }
+}
+
 /// Render a single download's progress
 fn render_single_download_progress(
     frame: &mut Frame,
@@ -485,16 +499,9 @@ fn render_single_download_progress(
     // Line 2: Info line with display name, speed, ETA
     let mut info_parts: Vec<Span> = Vec::with_capacity(4);
 
-    // Display name (truncated if needed)
+    // Display name (truncated if needed, char-aware to avoid UTF-8 panics)
     let max_name_len = (area.width as usize).saturating_sub(25);
-    let display_name = if download.display_name.len() > max_name_len {
-        format!(
-            "{}...",
-            &download.display_name[..max_name_len.saturating_sub(3)]
-        )
-    } else {
-        download.display_name.clone()
-    };
+    let display_name = truncate_display_name(&download.display_name, max_name_len);
     info_parts.push(Span::styled(display_name, Style::default().fg(color)));
 
     // Size info (downloaded/total)
@@ -713,5 +720,72 @@ mod tests {
         let height = calculate_wrapped_height(&lines, 80);
         // Each line is under 80 chars, so should be exactly 100
         assert_eq!(height, 100);
+    }
+
+    // ========== Display Name Truncation Tests ==========
+
+    #[test]
+    fn test_truncate_display_name_short_ascii() {
+        let result = truncate_display_name("short.mp4", 20);
+        assert_eq!(result, "short.mp4");
+    }
+
+    #[test]
+    fn test_truncate_display_name_exact_fit() {
+        let name = "x".repeat(20);
+        let result = truncate_display_name(&name, 20);
+        assert_eq!(result, name);
+    }
+
+    #[test]
+    fn test_truncate_display_name_long_ascii() {
+        let name = "a".repeat(30);
+        let result = truncate_display_name(&name, 20);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 20);
+    }
+
+    #[test]
+    fn test_truncate_display_name_unicode_no_truncation() {
+        let name = "動画テスト";
+        let result = truncate_display_name(name, 20);
+        assert_eq!(result, name);
+    }
+
+    #[test]
+    fn test_truncate_display_name_unicode_truncation() {
+        // 20 CJK characters, truncate to 10
+        let name = "動画テストファイル名前動画テストファイル名前";
+        let result = truncate_display_name(name, 10);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 10);
+    }
+
+    #[test]
+    fn test_truncate_display_name_emoji() {
+        let name = "🎵🎶🎧🎤🎸🎹🎺🎻🥁🎼🎵🎶🎧🎤🎸";
+        let result = truncate_display_name(name, 10);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 10);
+    }
+
+    #[test]
+    fn test_truncate_display_name_mixed_ascii_and_unicode() {
+        let name = "Video - 日本語のタイトル - Episode 01";
+        let result = truncate_display_name(name, 15);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 15);
+    }
+
+    #[test]
+    fn test_truncate_display_name_empty() {
+        let result = truncate_display_name("", 20);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_display_name_zero_max_len() {
+        let result = truncate_display_name("test", 0);
+        assert!(result.ends_with("..."));
     }
 }

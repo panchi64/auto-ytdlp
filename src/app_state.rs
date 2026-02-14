@@ -118,10 +118,8 @@ struct AppFlags {
 /// This enum defines all possible state changes that can be applied to the
 /// application state through the message passing system.
 ///
-/// Note: Some variants may appear unused in the current implementation
-/// but are retained for future extensibility. For example, the `UpdateSettings`
-/// variant is referenced in the error handler of the message processor but
-/// may not be directly constructed elsewhere in the codebase.
+/// Settings are updated directly via `AppState::update_settings()` rather
+/// than through message passing.
 pub enum StateMessage {
     /// Adds a URL to the download queue.
     AddToQueue(String),
@@ -155,10 +153,6 @@ pub enum StateMessage {
 
     /// Replaces the entire download queue with the provided list.
     LoadLinks(Vec<String>),
-
-    /// Updates the application settings.
-    #[allow(dead_code)]
-    UpdateSettings(Settings),
 
     /// Updates progress information for an active download.
     UpdateDownloadProgress {
@@ -325,11 +319,6 @@ impl AppState {
                 StateMessage::LoadLinks(links) => {
                     if let Err(err) = self.handle_load_links(links) {
                         eprintln!("Error loading links: {}", err);
-                    }
-                }
-                StateMessage::UpdateSettings(settings) => {
-                    if let Err(err) = self.update_settings(settings) {
-                        eprintln!("Error updating settings: {}", err);
                     }
                 }
             }
@@ -578,6 +567,9 @@ impl AppState {
     }
 
     pub fn reset_for_new_run(&self) -> Result<()> {
+        // Check setting before acquiring stats lock
+        let reset_stats = self.settings.lock()?.reset_stats_on_new_batch;
+
         let mut flags = self.flags.lock()?;
         flags.paused = false;
         flags.started = false;
@@ -590,6 +582,12 @@ impl AppState {
         let mut stats = self.stats.lock()?;
         stats.completed_tasks = 0;
         stats.progress = 0.0;
+
+        // Conditionally reset total counters based on setting
+        if reset_stats {
+            stats.total_tasks = 0;
+            stats.initial_total_tasks = 0;
+        }
         drop(stats);
 
         // Reset retry counter and clear toast using the public API
@@ -1650,5 +1648,266 @@ mod tests {
         // Set notification independently
         state.set_notification_sent(true).unwrap();
         assert!(state.is_notification_sent().unwrap());
+    }
+
+    // ========== Reset Stats on New Batch Tests ==========
+
+    #[test]
+    fn test_new_batch_resets_counters_by_default() {
+        let state = AppState::new();
+
+        // Explicitly enable per-session mode (settings file on disk may differ)
+        let mut settings = state.get_settings().unwrap();
+        settings.reset_stats_on_new_batch = true;
+        state.update_settings(settings).unwrap();
+
+        // Load initial batch and complete some downloads
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_tasks, 3);
+        assert_eq!(snapshot.initial_total_tasks, 3);
+        assert_eq!(snapshot.completed_tasks, 2);
+
+        // Start a new batch (simulates pressing 'S' again)
+        state.reset_for_new_run().unwrap();
+
+        // With default setting (reset_stats_on_new_batch = true),
+        // counters should be reset to zero
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_tasks, 0);
+        assert_eq!(snapshot.initial_total_tasks, 0);
+        assert_eq!(snapshot.completed_tasks, 0);
+    }
+
+    #[test]
+    fn test_new_batch_preserves_counters_when_cumulative_mode_enabled() {
+        let state = AppState::new();
+
+        // Disable reset (enable cumulative mode)
+        let mut settings = state.get_settings().unwrap();
+        settings.reset_stats_on_new_batch = false;
+        state.update_settings(settings).unwrap();
+
+        // Load initial batch and complete some downloads
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_tasks, 3);
+        assert_eq!(snapshot.initial_total_tasks, 3);
+        assert_eq!(snapshot.completed_tasks, 2);
+
+        // Start a new batch
+        state.reset_for_new_run().unwrap();
+
+        // With cumulative mode, total_tasks and initial_total_tasks should be preserved
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.total_tasks, 3);
+        assert_eq!(snapshot.initial_total_tasks, 3);
+        // But completed_tasks is always reset
+        assert_eq!(snapshot.completed_tasks, 0);
+    }
+
+    #[test]
+    fn test_cumulative_mode_accumulates_across_batches() {
+        let state = AppState::new();
+
+        // Enable cumulative mode
+        let mut settings = state.get_settings().unwrap();
+        settings.reset_stats_on_new_batch = false;
+        state.update_settings(settings).unwrap();
+
+        // First batch: 3 URLs
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        // All 3 completed
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 3);
+        assert_eq!(snapshot.completed_tasks, 3);
+
+        // Reset for second batch
+        state.reset_for_new_run().unwrap();
+
+        // Add more URLs to queue (simulating user adding new links)
+        state
+            .send(StateMessage::AddToQueue("url4".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddToQueue("url5".to_string()))
+            .unwrap();
+        wait_for_processing();
+
+        // In cumulative mode: initial_total_tasks preserved (3) + new additions (2) = 5
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 5);
+        assert_eq!(snapshot.total_tasks, 5);
+        // completed_tasks was reset
+        assert_eq!(snapshot.completed_tasks, 0);
+    }
+
+    #[test]
+    fn test_per_session_mode_fresh_count_each_batch() {
+        let state = AppState::new();
+
+        // Explicitly enable per-session mode (settings file on disk may differ)
+        let mut settings = state.get_settings().unwrap();
+        settings.reset_stats_on_new_batch = true;
+        state.update_settings(settings).unwrap();
+
+        // First batch: 3 URLs, complete all
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+                "url3".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 3);
+        assert_eq!(snapshot.completed_tasks, 3);
+
+        // Reset for second batch
+        state.reset_for_new_run().unwrap();
+
+        // Counters should be zeroed
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 0);
+        assert_eq!(snapshot.total_tasks, 0);
+        assert_eq!(snapshot.completed_tasks, 0);
+
+        // Add new URLs
+        state
+            .send(StateMessage::AddToQueue("url4".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddToQueue("url5".to_string()))
+            .unwrap();
+        wait_for_processing();
+
+        // Fresh count: only the 2 new URLs
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 2);
+        assert_eq!(snapshot.total_tasks, 2);
+    }
+
+    #[test]
+    fn test_switching_modes_mid_session() {
+        let state = AppState::new();
+
+        // Start in per-session mode (default)
+        state
+            .send(StateMessage::LoadLinks(vec![
+                "url1".to_string(),
+                "url2".to_string(),
+            ]))
+            .unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        wait_for_processing();
+
+        // Switch to cumulative mode
+        let mut settings = state.get_settings().unwrap();
+        settings.reset_stats_on_new_batch = false;
+        state.update_settings(settings).unwrap();
+
+        // Reset - should now preserve counters
+        state.reset_for_new_run().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 2);
+        assert_eq!(snapshot.total_tasks, 2);
+
+        // Switch back to per-session mode
+        let mut settings = state.get_settings().unwrap();
+        settings.reset_stats_on_new_batch = true;
+        state.update_settings(settings).unwrap();
+
+        // Reset - should now clear counters
+        state.reset_for_new_run().unwrap();
+
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert_eq!(snapshot.initial_total_tasks, 0);
+        assert_eq!(snapshot.total_tasks, 0);
+    }
+
+    // ========== StateMessage Variant Coverage Tests ==========
+
+    #[test]
+    fn test_all_state_messages_are_processed() {
+        // Ensure every StateMessage variant can be sent and processed
+        let state = AppState::new();
+
+        state
+            .send(StateMessage::AddToQueue("https://example.com".to_string()))
+            .unwrap();
+        state
+            .send(StateMessage::AddActiveDownload(
+                "https://example.com".to_string(),
+            ))
+            .unwrap();
+        state
+            .send(StateMessage::RemoveActiveDownload(
+                "https://example.com".to_string(),
+            ))
+            .unwrap();
+        state.send(StateMessage::IncrementCompleted).unwrap();
+        state.send(StateMessage::SetPaused(true)).unwrap();
+        state.send(StateMessage::SetStarted(true)).unwrap();
+        state.send(StateMessage::SetShutdown(false)).unwrap();
+        state.send(StateMessage::SetForceQuit(false)).unwrap();
+        state.send(StateMessage::SetCompleted(false)).unwrap();
+        state.send(StateMessage::UpdateProgress).unwrap();
+        state
+            .send(StateMessage::LoadLinks(vec!["https://example.com".to_string()]))
+            .unwrap();
+        state
+            .send(StateMessage::UpdateDownloadProgress {
+                url: "https://example.com".to_string(),
+                progress: DownloadProgress::new("https://example.com"),
+            })
+            .unwrap();
+
+        wait_for_processing();
+
+        // If we get here without panics, all variants are handled
+        let snapshot = state.get_ui_snapshot().unwrap();
+        assert!(snapshot.started);
     }
 }

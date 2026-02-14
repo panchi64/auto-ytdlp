@@ -28,8 +28,7 @@ fn main() -> Result<()> {
         File::create("links.txt")?;
     }
 
-    let links = fs::read_to_string("links.txt")
-        .unwrap_or_default()
+    let links = fs::read_to_string("links.txt")?
         .lines()
         .map(String::from)
         .collect::<Vec<_>>();

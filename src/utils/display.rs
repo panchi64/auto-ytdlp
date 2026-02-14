@@ -18,9 +18,10 @@ pub fn truncate_url_for_display(url: &str) -> String {
         return last_segment.to_string();
     }
 
-    // Fallback: truncate the URL
-    if url.len() > 30 {
-        format!("{}...", &url[..27])
+    // Fallback: truncate the URL (char-aware to avoid UTF-8 panics)
+    if url.chars().count() > 30 {
+        let truncated: String = url.chars().take(27).collect();
+        format!("{}...", truncated)
     } else {
         url.to_string()
     }
@@ -145,5 +146,50 @@ mod tests {
 
         // Non-YouTube URL
         assert_eq!(extract_youtube_id("https://vimeo.com/123456"), None);
+    }
+
+    #[test]
+    fn test_truncate_url_with_unicode_path() {
+        // URL with unicode characters that would panic with byte slicing
+        let url = "https://example.com/vidéos/日本語のタイトル/watch";
+        let result = truncate_url_for_display(url);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_url_with_encoded_unicode() {
+        // Percent-encoded CJK characters in a long URL
+        let url = "https://example.com/%E5%8B%95%E7%94%BB/%E3%83%86%E3%82%B9%E3%83%88/%E3%83%95%E3%82%A1%E3%82%A4%E3%83%AB";
+        let result = truncate_url_for_display(url);
+        assert!(!result.is_empty());
+        // Should not panic and should truncate if too long
+        if result.contains("...") {
+            assert!(result.chars().count() <= 30);
+        }
+    }
+
+    #[test]
+    fn test_truncate_url_with_emoji_path() {
+        let url = "https://example.com/🎵🎶🎧🎤🎸🎹🎺🎻🥁🎼🎵🎶🎧🎤🎸🎹🎺🎻🥁🎼";
+        let result = truncate_url_for_display(url);
+        assert!(!result.is_empty());
+        assert!(result.chars().count() <= 30);
+    }
+
+    #[test]
+    fn test_truncate_url_exactly_30_chars() {
+        // URL that is exactly 30 characters (should not truncate)
+        let url = "https://example.com/123456789a";
+        assert_eq!(url.chars().count(), 30);
+        let result = truncate_url_for_display(url);
+        // Last segment "123456789a" is short, so it should be returned as-is
+        assert_eq!(result, "123456789a");
+    }
+
+    #[test]
+    fn test_truncate_url_short_url_returned_as_is() {
+        let url = "https://a.co/x";
+        let result = truncate_url_for_display(url);
+        assert_eq!(result, "x");
     }
 }

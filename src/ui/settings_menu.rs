@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Number of regular settings items (before special actions)
-const SETTINGS_COUNT: usize = 10;
+const SETTINGS_COUNT: usize = 11;
 
 /// Menu item indices
 const IDX_FORMAT_PRESET: usize = 0;
@@ -25,12 +25,13 @@ const IDX_CONCURRENT: usize = 5;
 const IDX_NETWORK_RETRY: usize = 6;
 const IDX_RETRY_DELAY: usize = 7;
 const IDX_ASCII_INDICATORS: usize = 8;
-const IDX_CUSTOM_ARGS: usize = 9;
-const IDX_APPLY_PRESET: usize = 10;
-const IDX_RESET_DEFAULTS: usize = 11;
+const IDX_RESET_STATS_ON_BATCH: usize = 9;
+const IDX_CUSTOM_ARGS: usize = 10;
+const IDX_APPLY_PRESET: usize = 11;
+const IDX_RESET_DEFAULTS: usize = 12;
 
 /// Total number of menu items
-const TOTAL_MENU_ITEMS: usize = 12;
+const TOTAL_MENU_ITEMS: usize = 13;
 
 /// Descriptions for each setting
 const SETTING_DESCRIPTIONS: [&str; TOTAL_MENU_ITEMS] = [
@@ -43,6 +44,7 @@ const SETTING_DESCRIPTIONS: [&str; TOTAL_MENU_ITEMS] = [
     "Automatically retry downloads that fail due to network errors",
     "Seconds to wait before retrying a failed download",
     "Use text indicators [OK] instead of emoji for compatibility",
+    "Reset download counters when starting a new batch (S key)",
     "Extra yt-dlp flags (e.g., --cookies-from-browser firefox)",
     "Apply a preset configuration for common use cases",
     "Reset all settings to their default values",
@@ -309,6 +311,15 @@ impl SettingsMenu {
                             };
                             self.editing = true;
                         }
+                        IDX_RESET_STATS_ON_BATCH => {
+                            // Reset Stats on New Batch
+                            self.option_index = if self.settings.reset_stats_on_new_batch {
+                                1
+                            } else {
+                                0
+                            };
+                            self.editing = true;
+                        }
                         IDX_CUSTOM_ARGS => {
                             // Custom yt-dlp Arguments - enter text input mode
                             self.custom_input = self.settings.custom_ytdlp_args.clone();
@@ -354,7 +365,7 @@ impl SettingsMenu {
     /// Check if the current setting is a boolean toggle (Yes/No only)
     fn is_boolean_setting(&self) -> bool {
         if let Some(selected) = self.list_state.selected() {
-            // Boolean toggles: subtitles, thumbnail, metadata, network_retry, ascii_indicators
+            // Boolean toggles: subtitles, thumbnail, metadata, network_retry, ascii_indicators, reset_stats
             // Note: subtitles is NOT a toggle when audio-only mode is selected
             let is_audio_only = matches!(self.settings.format_preset, FormatPreset::AudioOnly);
             matches!(selected, IDX_WRITE_SUBTITLES if !is_audio_only)
@@ -364,6 +375,7 @@ impl SettingsMenu {
                         | IDX_ADD_METADATA
                         | IDX_NETWORK_RETRY
                         | IDX_ASCII_INDICATORS
+                        | IDX_RESET_STATS_ON_BATCH
                 )
         } else {
             false
@@ -508,9 +520,9 @@ impl SettingsMenu {
     /// Adjust option index to valid range based on current setting
     fn adjust_option_index(&mut self) {
         // Max option indices for each setting (0-indexed)
-        // Settings: Format, Output, Subtitles, Thumbnail, Metadata, Concurrent, Retry, Delay, ASCII
+        // Settings: Format, Output, Subtitles, Thumbnail, Metadata, Concurrent, Retry, Delay, ASCII, ResetStats
         // Note: Custom args, Apply Preset, Reset are handled via input_mode/sub_menu, not editing
-        const MAX_OPTIONS: [usize; SETTINGS_COUNT] = [5, 4, 1, 1, 1, 4, 1, 4, 1, 0];
+        const MAX_OPTIONS: [usize; SETTINGS_COUNT] = [5, 4, 1, 1, 1, 4, 1, 4, 1, 1, 0];
 
         if let Some(i) = self.list_state.selected()
             && i < MAX_OPTIONS.len()
@@ -609,6 +621,10 @@ impl SettingsMenu {
                     // ASCII Indicators
                     self.settings.use_ascii_indicators = self.option_index == 1;
                 }
+                IDX_RESET_STATS_ON_BATCH => {
+                    // Reset Stats on New Batch
+                    self.settings.reset_stats_on_new_batch = self.option_index == 1;
+                }
                 _ => {}
             }
         }
@@ -690,6 +706,10 @@ impl SettingsMenu {
                 create_setting_item(
                     "ASCII Indicators",
                     bool_to_yes_no(self.settings.use_ascii_indicators),
+                ),
+                create_setting_item(
+                    "Reset Stats on Batch",
+                    bool_to_yes_no(self.settings.reset_stats_on_new_batch),
                 ),
                 create_setting_item("Custom yt-dlp Args", &custom_args_display),
             ];
@@ -873,6 +893,10 @@ impl SettingsMenu {
                     vec!["No", "Yes"],
                     "ASCII Indicators (for terminal compatibility)",
                 ),
+                IDX_RESET_STATS_ON_BATCH => (
+                    vec!["No", "Yes"],
+                    "Reset Stats When Starting New Batch",
+                ),
                 _ => (vec![], ""),
             };
 
@@ -1028,9 +1052,15 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    // Helper to create AppState for testing
+    // Helper to create AppState for testing with default settings
+    // (avoids depending on the settings file on disk, which may be
+    // modified by other tests that call settings.save())
     fn create_test_state() -> AppState {
-        AppState::new()
+        let state = AppState::new();
+        state
+            .update_settings(Settings::default())
+            .expect("Failed to reset settings for test");
+        state
     }
 
     // ==================== Visibility Toggle Tests ====================
@@ -1418,5 +1448,103 @@ mod tests {
         let result = menu.handle_input(key_event(KeyCode::Down), &state);
 
         assert!(!result);
+    }
+
+    // ==================== Reset Stats on Batch Toggle Tests ====================
+
+    #[test]
+    fn test_reset_stats_setting_defaults_to_enabled() {
+        let state = create_test_state();
+        let menu = SettingsMenu::new(&state);
+
+        // Default should be true (per-session mode)
+        assert!(menu.settings.reset_stats_on_new_batch);
+    }
+
+    #[test]
+    fn test_reset_stats_setting_can_be_disabled() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Navigate to Reset Stats on Batch setting
+        menu.list_state.select(Some(IDX_RESET_STATS_ON_BATCH));
+
+        // Initially enabled
+        assert!(menu.settings.reset_stats_on_new_batch);
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.editing);
+
+        // option_index should be 1 (Yes) since setting is true
+        assert_eq!(menu.option_index, 1);
+
+        // Press Left to select "No" (index 0)
+        menu.handle_input(key_event(KeyCode::Left), &state);
+
+        // Boolean toggle auto-applies and exits editing
+        assert!(!menu.editing);
+        assert!(!menu.settings.reset_stats_on_new_batch);
+    }
+
+    #[test]
+    fn test_reset_stats_setting_can_be_enabled() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Start with setting disabled
+        menu.settings.reset_stats_on_new_batch = false;
+
+        // Navigate to Reset Stats on Batch setting
+        menu.list_state.select(Some(IDX_RESET_STATS_ON_BATCH));
+
+        // Enter editing mode
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        assert!(menu.editing);
+
+        // option_index should be 0 (No) since setting is false
+        assert_eq!(menu.option_index, 0);
+
+        // Press Right to select "Yes" (index 1)
+        menu.handle_input(key_event(KeyCode::Right), &state);
+
+        // Boolean toggle auto-applies and exits editing
+        assert!(!menu.editing);
+        assert!(menu.settings.reset_stats_on_new_batch);
+    }
+
+    #[test]
+    fn test_reset_stats_setting_persists_to_app_state() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state);
+        menu.toggle();
+
+        // Navigate to Reset Stats on Batch and toggle it off
+        menu.list_state.select(Some(IDX_RESET_STATS_ON_BATCH));
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.handle_input(key_event(KeyCode::Left), &state);
+
+        // Verify menu settings updated
+        assert!(!menu.settings.reset_stats_on_new_batch);
+
+        // Verify AppState was updated
+        let app_settings = state.get_settings().unwrap();
+        assert!(!app_settings.reset_stats_on_new_batch);
+    }
+
+    #[test]
+    fn test_all_presets_include_reset_stats_setting() {
+        // All presets should have the reset_stats_on_new_batch field set
+        for preset in SettingsPreset::all() {
+            let settings = preset.apply();
+            // All presets default to per-session mode (true)
+            assert!(
+                settings.reset_stats_on_new_batch,
+                "Preset {:?} should have reset_stats_on_new_batch = true",
+                preset.name()
+            );
+        }
     }
 }
