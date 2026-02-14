@@ -1,6 +1,6 @@
 # Auto-YTDLP
 
-![image](https://github.com/user-attachments/assets/d21d3df2-9905-48fc-b058-3b06ae91f449)
+<img width="1903" height="986" alt="image" src="https://github.com/user-attachments/assets/18cf03b0-369a-470e-b6da-fe230edde28b" />
 
 ## Overview
 
