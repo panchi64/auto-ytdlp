@@ -1,150 +1,91 @@
 # Auto-YTDLP
 
-![image](https://github.com/user-attachments/assets/d21d3df2-9905-48fc-b058-3b06ae91f449)
+A concurrent video downloader built on [yt-dlp](https://github.com/yt-dlp/yt-dlp) with an interactive terminal interface. Queue up URLs, configure quality and format settings, and let it handle the rest.
 
-## Overview
-
-I wrote this script originally in Python so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading and an intuitive TUI.
-
-However I rewrote it in Rust, as a little practice for myself, since I've been trying to write more Rust recently.
-
-It's not just for archiving course videos however! This script can handle all sorts of video-downloading tasks. Maybe you're a researcher collecting data, a content creator gathering inspiration, or just someone who likes to keep offline copies of their favorite online content. Whatever your reason, I hope my little repo helps.
-
-Here's what makes this script nice to have:
-
-1. **Multi-video Downloading**: Downloads multiple videos concurrently, making efficient use of your bandwidth and saving time.
-2. **Clean Interface**: The TUI shows you exactly what's happening - active downloads, queue status, and detailed logs all in one view.
-3. **Easy to Use**: Simple keyboard controls let you manage downloads, pause/resume operations, and add new URLs without hassle.
-4. **Flexible**: Configure concurrent download limits, download directories, and archive locations to suit your needs.
-5. **Hard Shell**: Built in Rust for rock-solid stability. Handles long download sessions reliably and shuts down gracefully when needed.
-6. **Organized**: Keeps track of downloaded videos and maintains clean logs, so you always know what's happening.
-
-And hey, if you think of some cool feature to add, the code's right there for you to tinker with!
+<img width="1903" height="986" alt="Auto-YTDLP TUI Screenshot" src="https://github.com/user-attachments/assets/18cf03b0-369a-470e-b6da-fe230edde28b" />
 
 ## Features
 
-- Download videos from URLs listed in a text file
-- Terminal User Interface (TUI)
-- Multithreaded downloads for improved performance
-- yt-dlp archive feature to avoid re-downloading
-- Verbose logging
-- Parallel processing limit
-- Desktop notification system
-- Graceful shutdown
-- Metadata extraction (using yt-dlp's built-in functionality)
-- Clipboard integration for easy URL addition
-- Progress tracking with visual feedback
+- **Concurrent downloads** - Process multiple videos in parallel with configurable worker count
+- **Interactive TUI** - Real-time progress bars, download speeds, ETAs, and log output
+- **Headless mode** - Run without a UI for scripting, cron jobs, and automation
+- **Queue management** - Reorder, filter, add, and remove URLs interactively
+- **Settings panel** - Configure format, quality, subtitles, metadata, and more from within the TUI
+- **Settings presets** - One-click profiles for common workflows (Best Quality, Audio Archive, Fast Download, Bandwidth Saver)
+- **SponsorBlock** - Automatically remove sponsor segments from YouTube videos
+- **Rate limiting** - Cap download speed per worker to manage bandwidth
+- **Browser cookies** - Access age-restricted or authenticated content via browser cookie extraction
+- **Network retry** - Automatically retry failed downloads with configurable delay
+- **yt-dlp updates** - Check for and install yt-dlp updates from within the app
+- **Download archive** - Skip previously downloaded videos across sessions
+- **Clipboard integration** - Paste URLs directly from your clipboard into the queue
+- **Desktop notifications** - Get notified when all downloads complete
+- **Graceful shutdown** - Wait for active downloads to finish before exiting
 
 ## Requirements
 
-- Rust (latest stable version)
-- yt-dlp
-- ffmpeg (yt-dlp requires it as an internal dependency)
-- Additional dependencies will be handled by Cargo
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp/releases)
+- [ffmpeg](https://www.ffmpeg.org/download.html)
+
+Both must be installed and available in your `PATH`. The application validates this at startup.
 
 ## Installation
 
-> [!WARNING]
-> You need [FFMPEG](https://www.ffmpeg.org/download.html) and [yt-dlp](https://github.com/yt-dlp/yt-dlp/releases) installed in your system for the script to work appropriately.
+### Pre-built Binaries
 
-### Using [Pre-built Binaries](https://github.com/panchi64/auto-ytdlp/releases)
+Download the latest binary for your platform from the [Releases page](https://github.com/panchi64/auto-ytdlp/releases):
 
-1. Go to the [Releases page](https://github.com/panchi64/auto-ytdlp/releases)
-2. Download the appropriate binary for your system:
+- **Linux:** `auto-ytdlp-<version>-linux`
+- **macOS:** `auto-ytdlp-<version>-macos`
+- **Windows:** `auto-ytdlp-<version>-windows.exe`
 
-   - Windows: `auto-ytdlp-[version]-windows.exe`
-   - macOS: `auto-ytdlp-[version]-macos`
-   - Linux: `auto-ytdlp-[version]-linux`
-
-3. Make the binary executable (macOS/Linux only):
-
-   ```bash
-   chmod +x auto-ytdlp-[version]-[platform]
-   ```
-
-4. Optional: Move the binary to a directory in your `PATH`:
-
-   - Windows: Move to `C:\Windows\` or add the binary location to your `PATH`
-   - macOS/Linux:
-     ```bash
-     sudo mv auto-ytdlp-[version]-[platform] /usr/local/bin/auto-ytdlp
-     ```
-
-### Installation via Cargo
+On macOS/Linux, make it executable and optionally move it to your `PATH`:
 
 ```bash
-# Install directly from crates.io
-cargo install auto-ytdlp-rs
-
-# Then run with:
-auto-ytdlp
+chmod +x auto-ytdlp-<version>-<platform>
+sudo mv auto-ytdlp-<version>-<platform> /usr/local/bin/auto-ytdlp
 ```
 
-### Building from source
+> [!NOTE]
+> On macOS, if you get an "app not opened" quarantine warning, run:
+> ```bash
+> xattr -dr com.apple.quarantine /path/to/auto-ytdlp-<version>-macos
+> ```
 
-1. Clone this repository:
+### Cargo
 
-   ```bash
-   git clone https://github.com/panchi64/auto-ytdlp.git
-   cd auto-ytdlp
-   ```
+```bash
+cargo install auto-ytdlp-rs
+```
 
-2. Build the project:
+### From Source
 
-   ```bash
-   cargo build --release
-   ```
-
-3. Run the application:
-   ```bash
-   cargo run --release
-   ```
+```bash
+git clone https://github.com/panchi64/auto-ytdlp.git
+cd auto-ytdlp
+cargo build --release
+# Binary is at target/release/auto-ytdlp
+```
 
 ## Usage
 
-The application can be run in two modes:
-
-> [!NOTE]
-> The following commands assume you've renamed the downloaded binary file from:
->
-> `auto-ytdlp-[version]-[platform]` to `auto-ytdlp`
-
-### TUI Mode (Default):
+### TUI Mode (default)
 
 ```bash
-# Using pre-built binary
-./auto-ytdlp
-
-# If you wanna download the videos into the folder you're in, use:
-./auto-ytdlp -d ./
-
-# Or if installed to PATH
 auto-ytdlp
 ```
 
-#### Interface Controls
+This opens the interactive terminal interface. Add URLs to `links.txt` (one per line) in the working directory, then press **S** to start downloading.
 
-- `S`: Start/Stop downloads
-- `P`: Pause active downloads
-- `R`: Refresh downloads from links list file
-- `A`: Add URLs from clipboard
-- `Q`: Graceful shutdown
-- `Shift+Q`: Force quit
-
-> [!NOTE]
-> All quit options will wait for the currently active downloads to finish, even the **Force Quit**
-
-### Automated Mode (no TUI):
+### Automated Mode
 
 ```bash
-# Using pre-built binary:
-./auto-ytdlp --auto
-
-# Or if installed to PATH
 auto-ytdlp --auto
 ```
 
-#### Command Line options
+Processes the queue without a UI and exits when complete. Useful for scripts and cron jobs.
+
+### CLI Options
 
 ```
 -a, --auto                         Run in automated mode without TUI
@@ -155,26 +96,110 @@ auto-ytdlp --auto
 -V, --version                      Print version
 ```
 
+**Example:**
+```bash
+auto-ytdlp --auto --concurrent 8 --download-dir ~/Videos
+```
+
+## TUI Controls
+
+### Main Controls
+
+| Key | Action |
+|-----|--------|
+| `S` | Start/Stop downloads |
+| `P` | Pause/Resume active downloads |
+| `Q` | Graceful quit (waits for active downloads to finish) |
+| `Shift+Q` | Force quit (press twice within 2s to confirm) |
+| `A` | Add URLs from clipboard |
+| `R` | Reload queue from `links.txt` |
+| `F` | Reload and sanitize `links.txt` (removes invalid URLs) |
+| `E` | Enter queue edit mode |
+| `/` | Filter/search queue |
+| `U` | Update yt-dlp (blocked during active downloads) |
+| `T` | Retry failed downloads |
+| `X` | Dismiss stale download indicators |
+| `F1` | Show help overlay |
+| `F2` | Open settings panel |
+
+### Queue Edit Mode (`E`)
+
+| Key | Action |
+|-----|--------|
+| `Up/Down` | Navigate items |
+| `K` | Move selected item up |
+| `J` | Move selected item down |
+| `D` / `Delete` | Remove selected item |
+| `Esc` / `Enter` / `E` | Exit edit mode |
+
+### Filter Mode (`/`)
+
+| Key | Action |
+|-----|--------|
+| Type | Filter by substring (case-insensitive) |
+| `Backspace` | Delete last character |
+| `Enter` | Keep filter and exit filter mode |
+| `Esc` | Clear filter and exit |
+
+## Settings
+
+Settings persist across sessions at `~/.config/auto-ytdlp/settings.json` (Linux/macOS) or `%APPDATA%\auto-ytdlp\settings.json` (Windows). Open the settings panel in the TUI with **F2**.
+
+### Available Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Format Preset | Best | Video quality: Best, Audio Only, 1080p, 720p, 480p, 360p |
+| Output Format | Auto | Container: Auto, MP4, MKV, MP3, WEBM |
+| Write Subtitles | Off | Download available subtitles (all languages) |
+| Write Thumbnail | Off | Save video thumbnail as a separate image |
+| Add Metadata | Off | Embed title, artist, date, etc. into the file |
+| SponsorBlock | Off | Remove sponsor segments (YouTube) |
+| Concurrent Downloads | 4 | Number of parallel download workers |
+| Rate Limit | Unlimited | Download speed cap per worker (e.g., `1M`, `500K`) |
+| Network Retry | Off | Automatically retry downloads that fail due to network errors |
+| Retry Delay | 2s | Seconds to wait between retry attempts |
+| Cookies from Browser | None | Browser to extract cookies from (Firefox, Chrome, Brave, etc.) |
+| ASCII Indicators | Off | Use text `[OK]`/`[PAUSE]` instead of emoji indicators |
+| Reset Stats on Batch | On | Reset counters each batch (Off = cumulative across batches) |
+| Custom yt-dlp Args | Empty | Extra yt-dlp flags (validated to prevent conflicts) |
+
+### Presets
+
+Apply a full configuration profile from the settings panel:
+
+- **Best Quality** - Highest quality with subtitles, thumbnails, and metadata
+- **Audio Archive** - Audio-only MP3 with metadata (for music libraries)
+- **Fast Download** - Best quality with 8 concurrent workers, no extras
+- **Bandwidth Saver** - 480p, 2 workers, 2M rate limit, network retry with 5s delay
+
 ## File Management
 
-The application handles several important files:
-
-- `links.txt`: Contains your download queue
-- `download_archive.txt`: Tracks completed downloads
-- _Download directory_: Where your content gets saved
+| File | Purpose |
+|------|---------|
+| `links.txt` | Download queue — one URL per line. Created in the working directory. |
+| `download_archive.txt` | Tracks downloaded video IDs to prevent re-downloads across sessions. |
+| `~/.config/auto-ytdlp/settings.json` | Persistent settings (auto-created on first run). |
 
 ## Troubleshooting
 
-1. Ensure yt-dlp is properly installed and in your `PATH`
-2. Check the logs panel for detailed error messages
-3. Verify your URLs are valid and accessible
-4. Make sure you have write permissions in the download directory
+1. **"yt-dlp/ffmpeg not found"** - Ensure both are installed and in your `PATH`
+2. **Downloads fail immediately** - Check the logs panel for error details; verify URLs are valid and accessible
+3. **Permission errors** - Ensure you have write access to the download directory
+4. **Clipboard not working** - On Wayland (Linux), ensure `wl-copy`/`wl-paste` are available
+5. **Authenticated content failing** - Set a browser for cookie extraction in settings (`F2`)
 
-If you get the "auto-ytdlp-[version]-macos not opened" message on Apple devices. Use the following command to remove it from quarantine:
+## FAQ
 
-```
-xattr -dr com.apple.quarantine <path to file>/auto-ytdlp-[version]-macos
-```
+### Why does this exist?
+
+I wrote this script originally in Python so that I didn't have to manually archive a massive list of YouTube university course videos (at the request of my professor). I built it around the yt-dlp repository because it extends the capabilities of manual downloads by incorporating a lot of QoL features. This script builds on top of that by adding multiple download multithreading and an intuitive TUI.
+
+However I rewrote it in Rust, as a little practice for myself, since I've been trying to write more Rust recently.
+
+It's not just for archiving course videos however! This script can handle all sorts of video-downloading tasks. Maybe you're a researcher collecting data, a content creator gathering inspiration, or just someone who likes to keep offline copies of their favorite online content. Whatever your reason, I hope my little repo helps.
+
+And hey, if you think of some cool feature to add, the code's right there for you to tinker with!
 
 ## Contributing
 
@@ -182,7 +207,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the GNU GPLv3 - look at the LICENSE file for details.
+This project is licensed under the [GNU GPLv3](LICENSE).
 
 ## Disclaimer
 

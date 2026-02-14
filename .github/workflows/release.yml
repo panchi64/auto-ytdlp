@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      
+
       - name: Get current version
         id: get-version
         run: |
@@ -27,9 +27,8 @@ jobs:
       - name: Check if version changed
         id: check-version
         run: |
-          git fetch origin
           CHANGED=$(git diff HEAD^ HEAD -- Cargo.toml | grep '^+version = ')
-          if [ ! -z "$CHANGED" ]; then
+          if [ -n "$CHANGED" ]; then
             echo "should_release=true" >> $GITHUB_OUTPUT
           else
             echo "should_release=false" >> $GITHUB_OUTPUT
@@ -39,66 +38,107 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
-    
+
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             platform: linux
+            arch: x86_64
             extension: ''
           - os: windows-latest
             platform: windows
+            arch: x86_64
             extension: '.exe'
           - os: macos-latest
             platform: macos
+            arch: aarch64
             extension: ''
-            
+          - os: macos-13
+            platform: macos
+            arch: x86_64
+            extension: ''
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        
+
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-        
+
       - name: Build binary
         run: cargo build --release
-        
-      - name: Rename binary with version and platform
+
+      - name: Rename binary
         shell: bash
         run: |
-          cd target/release
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            mv auto-ytdlp-rs${{ matrix.extension }} auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}${{ matrix.extension }}
-          else
-            mv auto-ytdlp-rs auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}${{ matrix.extension }}
-          fi
-          
-      - name: Upload artifacts
+          mv "target/release/auto-ytdlp${{ matrix.extension }}" \
+             "target/release/auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.extension }}"
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.platform }}
-          path: target/release/auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}${{ matrix.extension }}
-          
+          name: auto-ytdlp-${{ matrix.platform }}-${{ matrix.arch }}
+          path: target/release/auto-ytdlp-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.extension }}
+
   create-release:
     needs: [check-version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
-        
+        with:
+          path: artifacts
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f -name 'auto-ytdlp-*' -exec mv {} . \;
+          sha256sum auto-ytdlp-* > checksums-sha256.txt
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          PREVIOUS_TAG=$(git tag --sort=-v:refname | head -n1)
+          {
+            echo 'notes<<EOF'
+            if [ -n "$PREVIOUS_TAG" ]; then
+              echo "## Changes since $PREVIOUS_TAG"
+              echo ""
+              git log "$PREVIOUS_TAG"..HEAD --pretty=format:"- %s" --no-merges
+            else
+              echo "## Initial Release"
+              echo ""
+              git log --pretty=format:"- %s" --no-merges -20
+            fi
+            echo ""
+            echo ""
+            echo "## Checksums (SHA-256)"
+            echo '```'
+            cat artifacts/checksums-sha256.txt
+            echo '```'
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
-          name: Release v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.check-version.outputs.version }}
+          body: ${{ steps.release-notes.outputs.notes }}
           draft: false
           prerelease: false
           files: |
-            binary-*/auto-ytdlp-${{ needs.check-version.outputs.version }}-*
+            artifacts/auto-ytdlp-${{ needs.check-version.outputs.version }}-*
+            artifacts/checksums-sha256.txt
