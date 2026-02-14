@@ -601,14 +601,22 @@ impl AppState {
         flags.force_quit = false;
         drop(flags);
 
+        // Get current queue length before stats lock (consistent lock ordering: queues → stats)
+        let queue_len = if reset_stats {
+            self.queues.lock()?.queue.len()
+        } else {
+            0 // unused when not resetting
+        };
+
         let mut stats = self.stats.lock()?;
         stats.completed_tasks = 0;
         stats.progress = 0.0;
 
-        // Conditionally reset total counters based on setting
+        // Reset total counters to current queue size so the progress bar
+        // starts at 0% with the correct denominator
         if reset_stats {
-            stats.total_tasks = 0;
-            stats.initial_total_tasks = 0;
+            stats.total_tasks = queue_len;
+            stats.initial_total_tasks = queue_len;
         }
         drop(stats);
 
@@ -1707,18 +1715,18 @@ mod tests {
         state.send(StateMessage::SetStarted(true)).unwrap();
         state.send(StateMessage::IncrementCompleted).unwrap();
         state.send(StateMessage::IncrementCompleted).unwrap();
+        // Simulate workers draining the queue
+        state.send(StateMessage::LoadLinks(vec![])).unwrap();
         wait_for_processing();
 
         let snapshot = state.get_ui_snapshot().unwrap();
-        assert_eq!(snapshot.total_tasks, 3);
-        assert_eq!(snapshot.initial_total_tasks, 3);
         assert_eq!(snapshot.completed_tasks, 2);
 
-        // Start a new batch (simulates pressing 'S' again)
+        // Start a new batch (simulates pressing 'S' again with empty queue)
         state.reset_for_new_run().unwrap();
 
         // With default setting (reset_stats_on_new_batch = true),
-        // counters should be reset to zero
+        // counters should be reset based on current queue size (0)
         let snapshot = state.get_ui_snapshot().unwrap();
         assert_eq!(snapshot.total_tasks, 0);
         assert_eq!(snapshot.initial_total_tasks, 0);
@@ -1832,16 +1840,17 @@ mod tests {
         state.send(StateMessage::IncrementCompleted).unwrap();
         state.send(StateMessage::IncrementCompleted).unwrap();
         state.send(StateMessage::IncrementCompleted).unwrap();
+        // Simulate workers draining the queue
+        state.send(StateMessage::LoadLinks(vec![])).unwrap();
         wait_for_processing();
 
         let snapshot = state.get_ui_snapshot().unwrap();
-        assert_eq!(snapshot.initial_total_tasks, 3);
         assert_eq!(snapshot.completed_tasks, 3);
 
-        // Reset for second batch
+        // Reset for second batch (queue is empty)
         state.reset_for_new_run().unwrap();
 
-        // Counters should be zeroed
+        // Counters should be zeroed (queue is empty)
         let snapshot = state.get_ui_snapshot().unwrap();
         assert_eq!(snapshot.initial_total_tasks, 0);
         assert_eq!(snapshot.total_tasks, 0);
@@ -1882,7 +1891,7 @@ mod tests {
         settings.reset_stats_on_new_batch = false;
         state.update_settings(settings).unwrap();
 
-        // Reset - should now preserve counters
+        // Reset - should preserve counters in cumulative mode
         state.reset_for_new_run().unwrap();
 
         let snapshot = state.get_ui_snapshot().unwrap();
@@ -1894,12 +1903,12 @@ mod tests {
         settings.reset_stats_on_new_batch = true;
         state.update_settings(settings).unwrap();
 
-        // Reset - should now clear counters
+        // Reset - should reset to current queue size (2 items still in queue)
         state.reset_for_new_run().unwrap();
 
         let snapshot = state.get_ui_snapshot().unwrap();
-        assert_eq!(snapshot.initial_total_tasks, 0);
-        assert_eq!(snapshot.total_tasks, 0);
+        assert_eq!(snapshot.initial_total_tasks, 2);
+        assert_eq!(snapshot.total_tasks, 2);
     }
 
     // ========== StateMessage Variant Coverage Tests ==========
