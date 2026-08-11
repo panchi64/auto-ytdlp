@@ -309,7 +309,7 @@ mod tests {
         let args = create_test_args();
 
         // Ensure the queue is empty
-        assert!(state.get_queue().unwrap_or_default().is_empty());
+        assert_eq!(state.queue_len().unwrap_or(0), 0);
 
         // Process the empty queue
         process_queue(state.clone(), args);
@@ -450,7 +450,7 @@ mod tests {
         let state = AppState::new();
 
         // Ensure the queue is empty
-        assert!(state.get_queue().unwrap_or_default().is_empty());
+        assert_eq!(state.queue_len().unwrap_or(0), 0);
 
         // Pop from empty queue should return None
         let url = state.pop_queue();

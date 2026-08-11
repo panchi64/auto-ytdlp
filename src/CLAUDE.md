@@ -26,6 +26,8 @@ Uses `thiserror`. The `Result<T>` type alias wraps `AppError`. Mutex poison erro
 ### args.rs
 CLI argument parsing with `clap`. Defines `-c` (concurrent), `-d` (download dir), `-f` (archive file), `--auto` (no TUI).
 
+`-d` is optional; `Args::resolve_download_dir()` falls back to the `download_dir` setting and then to `DEFAULT_DOWNLOAD_DIR`. The output template is rebuilt per download so directory changes made in the settings menu apply without a restart.
+
 ## Data Flow
 
 1. URLs loaded from `links.txt` → `StateMessage::LoadLinks` → queue

@@ -1,4 +1,5 @@
 use std::{
+    fs,
     io::{BufRead, BufReader},
     process::{Command, Stdio},
     time::Instant,
@@ -73,6 +74,17 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
     log_msg(&state, format!("Starting download: {}", url));
 
     let settings = state.get_settings().unwrap_or_default();
+
+    // The directory can be changed from the settings menu after startup, so
+    // make sure it exists before handing the path to yt-dlp
+    let download_dir = args.resolve_download_dir(&settings);
+    if let Err(e) = fs::create_dir_all(&download_dir) {
+        log_msg(
+            &state,
+            format!("Cannot create download directory {:?}: {}", download_dir, e),
+        );
+    }
+
     let max_retries = if settings.network_retry { 3 } else { 0 };
     let retry_delay = settings.retry_delay;
     let mut retry_count = 0;

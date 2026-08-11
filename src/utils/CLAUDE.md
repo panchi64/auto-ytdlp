@@ -12,6 +12,10 @@ Key types:
 - `FormatPreset`: Video quality presets (Best, AudioOnly, HD1080p, etc.)
 - `OutputFormat`: Container format (Auto, MP4, MKV, MP3, WEBM)
 
+`download_dir` is empty by default, meaning "use the CLI value or the built-in default" — resolve it through `Args::resolve_download_dir()`, never by reading the field directly. `expand_tilde()` handles `~` paths and returns `None` when there is no home directory, so callers fall back instead of creating a directory named `~`. `validate_download_dir()` only checks the path (it runs on the TUI thread); the directory is created in `main.rs` at startup and in `download_worker()` before each download.
+
+In test builds `get_settings_path()` returns a per-thread temp file, so tests that exercise save/load never touch the developer's real `~/.config/auto-ytdlp/settings.json`.
+
 Settings use atomic write (temp file + rename) to prevent corruption.
 
 ### file.rs

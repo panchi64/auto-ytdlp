@@ -1,14 +1,25 @@
 use ratatui::{
     Frame,
+    layout::{Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph},
+    widgets::{
+        Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
 };
 
 use crate::app_state::{DownloadProgress, UiSnapshot};
 use crate::ui::settings_menu::SettingsMenu;
 
-use super::UiContext;
+use super::{UiContext, flip_index};
+
+/// Background shades a freshly added link fades through, brightest first.
+const FLASH_SHADES: [Color; 3] = [
+    Color::Rgb(0, 84, 46),
+    Color::Rgb(0, 56, 31),
+    Color::Rgb(0, 30, 17),
+];
 
 /// Calculate the number of rows a single line occupies once wrapped.
 ///
@@ -61,18 +72,16 @@ pub fn ui(
     frame: &mut Frame,
     snapshot: &UiSnapshot,
     settings_menu: &mut SettingsMenu,
-    ctx: &UiContext,
+    ctx: &mut UiContext,
 ) {
     if settings_menu.is_visible() {
         settings_menu.render(frame, frame.area());
     } else {
         // Use pre-captured snapshot data instead of acquiring locks
         let progress = snapshot.progress;
-        let queue = &snapshot.queue;
         let active_downloads = &snapshot.active_downloads;
         let started = snapshot.started;
         let logs = &snapshot.logs;
-        let initial_total = snapshot.initial_total_tasks;
         let concurrent = snapshot.concurrent;
         let is_paused = snapshot.paused;
         let is_completed = snapshot.completed;
@@ -171,87 +180,7 @@ pub fn ui(
             ])
             .split(main_layout[1]);
 
-        // Pending downloads list with status icon
-        let pending_title = if ctx.queue_edit_mode {
-            if use_ascii {
-                format!(
-                    "[EDIT] Edit Queue - {}/{} (K/J: Move | D: Delete | Esc: Exit)",
-                    queue.len(),
-                    initial_total
-                )
-            } else {
-                format!(
-                    "📝 Edit Queue - {}/{} (K/J: Move | D: Delete | Esc: Exit)",
-                    queue.len(),
-                    initial_total
-                )
-            }
-        } else if ctx.filter_mode || !ctx.filter_text.is_empty() {
-            // Show filter info
-            let match_count = ctx.filtered_indices.len();
-            let total = queue.len();
-            if use_ascii {
-                format!(
-                    "[FILTER: {}] {}/{} matches",
-                    ctx.filter_text, match_count, total
-                )
-            } else {
-                format!("🔍 [{}] {}/{} matches", ctx.filter_text, match_count, total)
-            }
-        } else {
-            let icon = if use_ascii {
-                if queue.is_empty() { "[OK]" } else { "[Q]" }
-            } else if queue.is_empty() {
-                "✅"
-            } else {
-                "📋"
-            };
-            format!(
-                "{} Pending Downloads - {}/{}",
-                icon,
-                queue.len(),
-                initial_total
-            )
-        };
-
-        // Build pending items - highlight matches when filter is active
-        let has_filter = !ctx.filter_text.is_empty();
-        let pending_items: Vec<ListItem> = queue
-            .iter()
-            .enumerate()
-            .map(|(i, url)| {
-                let is_match = has_filter && ctx.filtered_indices.contains(&i);
-                let is_selected = ctx.queue_edit_mode && i == ctx.queue_selected_index;
-
-                let style = if is_selected {
-                    Style::default().fg(Color::Yellow).bg(Color::DarkGray)
-                } else if is_match {
-                    Style::default().fg(Color::Green)
-                } else if has_filter {
-                    Style::default().fg(Color::DarkGray)
-                } else {
-                    Style::default()
-                };
-
-                ListItem::new(url.as_str()).style(style)
-            })
-            .collect();
-
-        let border_style = if ctx.filter_mode {
-            Style::default().fg(Color::Cyan)
-        } else if ctx.queue_edit_mode {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
-
-        let pending_list = List::new(pending_items).block(
-            Block::default()
-                .title(pending_title)
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
-        frame.render_widget(pending_list, downloads_layout[0]);
+        render_pending_queue(frame, downloads_layout[0], snapshot, ctx);
 
         // Active downloads with per-download progress bars
         render_active_downloads(
@@ -344,6 +273,154 @@ pub fn ui(
             render_toast(frame, toast_msg);
         }
     }
+}
+
+/// Builds the title for the pending queue panel, which doubles as the mode
+/// indicator for edit and filter modes.
+fn pending_queue_title(snapshot: &UiSnapshot, ctx: &UiContext) -> String {
+    let queue_len = snapshot.queue.len();
+    let initial_total = snapshot.initial_total_tasks;
+    let use_ascii = snapshot.use_ascii_indicators;
+
+    if ctx.queue_edit_mode {
+        let icon = if use_ascii { "[EDIT]" } else { "📝" };
+        format!(
+            "{} Edit Queue - {}/{} (K/J: Move | D: Delete | Esc: Exit)",
+            icon, queue_len, initial_total
+        )
+    } else if ctx.filter_mode || !ctx.filter_text.is_empty() {
+        let match_count = ctx.filtered_indices.len();
+        if use_ascii {
+            format!(
+                "[FILTER: {}] {}/{} matches",
+                ctx.filter_text, match_count, queue_len
+            )
+        } else {
+            format!(
+                "🔍 [{}] {}/{} matches",
+                ctx.filter_text, match_count, queue_len
+            )
+        }
+    } else {
+        let icon = if use_ascii {
+            if queue_len == 0 { "[OK]" } else { "[Q]" }
+        } else if queue_len == 0 {
+            "✅"
+        } else {
+            "📋"
+        };
+        format!(
+            "{} Pending Downloads - {}/{}",
+            icon, queue_len, initial_total
+        )
+    }
+}
+
+/// Style for a link partway through its "just added" flash.
+///
+/// The fade needs truecolor, which is the same capability gap the ASCII indicator
+/// setting exists for, so compatibility mode gets a flat basic-ANSI highlight.
+fn flash_style(progress: f32, use_ascii: bool) -> Style {
+    if use_ascii {
+        return Style::default().fg(Color::Black).bg(Color::Green);
+    }
+
+    let step = ((progress * FLASH_SHADES.len() as f32) as usize).min(FLASH_SHADES.len() - 1);
+    Style::default().fg(Color::White).bg(FLASH_SHADES[step])
+}
+
+/// Renders the pending queue panel.
+///
+/// Rows are drawn newest first, so links added while the user is watching land at
+/// the top of the panel, and only the slice starting at `ctx.queue_scroll` is drawn.
+/// The underlying queue keeps its FIFO order - workers still pop the oldest link.
+fn render_pending_queue(frame: &mut Frame, area: Rect, snapshot: &UiSnapshot, ctx: &mut UiContext) {
+    let queue = &snapshot.queue;
+
+    let border_style = if ctx.filter_mode {
+        Style::default().fg(Color::Cyan)
+    } else if ctx.queue_edit_mode {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
+    let block = Block::default()
+        .title(pending_queue_title(snapshot, ctx))
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Record what was drawn so the input handlers can hit-test the wheel, page
+    // against the viewport, and map rows using the same length the user saw
+    ctx.queue_area = area;
+    ctx.queue_view_height = inner.height as usize;
+    ctx.queue_drawn_len = queue.len();
+    ctx.scroll_queue_by(0, queue.len());
+    let scroll = ctx.queue_scroll;
+    let view_height = ctx.queue_view_height;
+
+    let has_filter = !ctx.filter_text.is_empty();
+    let visible_items: Vec<ListItem> = (scroll..queue.len())
+        .take(view_height)
+        .filter_map(|display_index| {
+            let queue_index = flip_index(display_index, queue.len())?;
+            let url = &queue[queue_index];
+            let is_filtered_out = has_filter && !ctx.filtered_indices.contains(&queue_index);
+
+            // A link the filter excludes stays dimmed even while it is flashing,
+            // so the panel never reads as if a non-match were a match
+            let style = if ctx.queue_edit_mode && display_index == ctx.queue_selected_index {
+                Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+            } else if is_filtered_out {
+                Style::default().fg(Color::DarkGray)
+            } else if let Some(progress) = ctx.flash_progress(url) {
+                flash_style(progress, snapshot.use_ascii_indicators)
+            } else if has_filter {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+
+            Some(ListItem::new(url.as_str()).style(style))
+        })
+        .collect();
+
+    frame.render_widget(List::new(visible_items), inner);
+
+    if queue.len() > view_height {
+        render_queue_scrollbar(frame, area, scroll, queue.len(), view_height);
+    }
+}
+
+/// Draws a scroll thumb over the pending panel's right border.
+fn render_queue_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    scroll: usize,
+    queue_len: usize,
+    view_height: usize,
+) {
+    // Content length is the number of scroll positions, so a fully scrolled list
+    // puts the thumb flush against the bottom of the track.
+    let mut scrollbar_state = ScrollbarState::new(queue_len - view_height + 1)
+        .position(scroll)
+        .viewport_content_length(view_height);
+
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .track_symbol(None)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_symbol("┃")
+            .thumb_style(Style::default().fg(Color::Gray)),
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
 }
 
 /// Format bytes into human-readable string (e.g., "1.5MiB")
@@ -586,8 +663,10 @@ fn render_single_download_progress(
 /// Render the help overlay
 pub fn render_help_overlay(frame: &mut Frame) {
     let area = frame.area();
-    let popup_width = 44;
-    let popup_height = 24;
+    // Never exceed the frame: rendering a Rect taller than the buffer panics, so
+    // on a short terminal the popup shrinks and its trailing lines are clipped.
+    let popup_width = 44.min(area.width);
+    let popup_height = 24.min(area.height);
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -614,6 +693,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
         Line::from("  F     Load URLs from links.txt"),
         Line::from("  E     Edit queue (when stopped)"),
         Line::from("  /     Search/filter queue"),
+        Line::from("  ↑↓ wheel PgUp/PgDn Home/End  Scroll"),
         Line::from(""),
         Line::from(Span::styled(
             "APPLICATION",
@@ -646,6 +726,219 @@ pub fn render_help_overlay(frame: &mut Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+
+    fn snapshot_with_queue(urls: &[&str]) -> UiSnapshot {
+        UiSnapshot {
+            progress: 0.0,
+            completed_tasks: 0,
+            total_tasks: urls.len(),
+            initial_total_tasks: urls.len(),
+            started: false,
+            paused: false,
+            completed: false,
+            queue: urls.iter().map(|u| u.to_string()).collect(),
+            active_downloads: Vec::new(),
+            logs: Vec::new(),
+            concurrent: 1,
+            toast: None,
+            use_ascii_indicators: false,
+            total_retries: 0,
+            failed_count: 0,
+        }
+    }
+
+    /// Draws just the pending panel into an off-screen buffer.
+    fn draw_pending_queue(snapshot: &UiSnapshot, ctx: &mut UiContext, height: u16) -> Buffer {
+        let mut terminal =
+            Terminal::new(TestBackend::new(24, height)).expect("failed to build test terminal");
+        terminal
+            .draw(|frame| render_pending_queue(frame, frame.area(), snapshot, ctx))
+            .expect("failed to draw pending queue");
+        terminal.backend().buffer().clone()
+    }
+
+    /// Text of a rendered row, excluding the panel borders.
+    fn row_text(buffer: &Buffer, row: u16) -> String {
+        (1..buffer.area.width - 1)
+            .map(|x| buffer[(x, row + 1)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    // ========== Pending Queue Panel Tests ==========
+
+    #[test]
+    fn test_pending_queue_lists_newest_link_first() {
+        let snapshot = snapshot_with_queue(&["url1", "url2", "url3"]);
+        let mut ctx = UiContext::default();
+
+        // 5 rows tall leaves 3 rows inside the borders
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 5);
+
+        assert_eq!(row_text(&buffer, 0), "url3");
+        assert_eq!(row_text(&buffer, 1), "url2");
+        assert_eq!(row_text(&buffer, 2), "url1");
+    }
+
+    #[test]
+    fn test_pending_queue_shows_only_the_scrolled_window() {
+        let snapshot = snapshot_with_queue(&["url1", "url2", "url3", "url4", "url5"]);
+        let mut ctx = UiContext {
+            queue_scroll: 2,
+            ..Default::default()
+        };
+
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+
+        // Display order is url5..url1, so scrolling two rows starts at url3
+        assert_eq!(ctx.queue_view_height, 2);
+        assert_eq!(row_text(&buffer, 0), "url3");
+        assert_eq!(row_text(&buffer, 1), "url2");
+    }
+
+    #[test]
+    fn test_pending_queue_clamps_scroll_past_the_end() {
+        let snapshot = snapshot_with_queue(&["url1", "url2", "url3", "url4"]);
+        let mut ctx = UiContext {
+            queue_scroll: 99,
+            ..Default::default()
+        };
+
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+
+        // 4 links with 2 visible rows bottoms out showing the two oldest
+        assert_eq!(ctx.queue_scroll, 2);
+        assert_eq!(row_text(&buffer, 0), "url2");
+        assert_eq!(row_text(&buffer, 1), "url1");
+    }
+
+    #[test]
+    fn test_pending_queue_scrollbar_tracks_position() {
+        let snapshot = snapshot_with_queue(&["url1", "url2", "url3", "url4", "url5"]);
+        let mut ctx = UiContext::default();
+
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+        let right_edge = buffer.area.width - 1;
+        assert_eq!(buffer[(right_edge, 1)].symbol(), "┃");
+
+        // Scrolled to the oldest link, the thumb sits at the bottom of the track
+        ctx.queue_scroll = 3;
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+        assert_eq!(buffer[(right_edge, 2)].symbol(), "┃");
+    }
+
+    #[test]
+    fn test_pending_queue_hides_scrollbar_when_everything_fits() {
+        let snapshot = snapshot_with_queue(&["url1", "url2"]);
+        let mut ctx = UiContext::default();
+
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+        let right_edge = buffer.area.width - 1;
+
+        assert_ne!(buffer[(right_edge, 1)].symbol(), "┃");
+    }
+
+    #[test]
+    fn test_pending_queue_keeps_a_flashing_non_match_dimmed() {
+        // A newly added link that the filter excludes must not outshine the
+        // matches, or the panel reads as if it were one of them.
+        let mut ctx = UiContext {
+            filter_text: "keep".to_string(),
+            ..Default::default()
+        };
+        ctx.track_new_links(&snapshot_with_queue(&["keep-1"]).queue);
+
+        let snapshot = snapshot_with_queue(&["keep-1", "drop-1"]);
+        ctx.track_new_links(&snapshot.queue);
+        // Only "keep-1" matches, at queue index 0
+        ctx.filtered_indices = vec![0];
+
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+
+        assert_eq!(row_text(&buffer, 0), "drop-1");
+        assert_eq!(buffer[(1, 1)].bg, Color::Reset);
+        assert_eq!(buffer[(1, 1)].fg, Color::DarkGray);
+        // The matching link still renders as a match
+        assert_eq!(buffer[(1, 2)].fg, Color::Green);
+    }
+
+    #[test]
+    fn test_pending_queue_flashes_a_new_link_that_matches_the_filter() {
+        let mut ctx = UiContext {
+            filter_text: "keep".to_string(),
+            ..Default::default()
+        };
+        ctx.track_new_links(&snapshot_with_queue(&["keep-1"]).queue);
+
+        let snapshot = snapshot_with_queue(&["keep-1", "keep-2"]);
+        ctx.track_new_links(&snapshot.queue);
+        ctx.filtered_indices = vec![0, 1];
+
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+
+        assert_eq!(row_text(&buffer, 0), "keep-2");
+        assert_eq!(buffer[(1, 1)].bg, FLASH_SHADES[0]);
+    }
+
+    #[test]
+    fn test_help_overlay_fits_a_short_terminal() {
+        // Rendering a Rect taller than the frame panics, so the popup must shrink
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("failed to build test terminal");
+        terminal
+            .draw(render_help_overlay)
+            .expect("help overlay must fit an 80x24 terminal");
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(20, 6)).expect("failed to build test terminal");
+        terminal
+            .draw(render_help_overlay)
+            .expect("help overlay must fit a 20x6 terminal");
+    }
+
+    #[test]
+    fn test_pending_queue_flashes_only_the_new_link() {
+        let mut ctx = UiContext::default();
+        ctx.track_new_links(&snapshot_with_queue(&["url1"]).queue);
+
+        let snapshot = snapshot_with_queue(&["url1", "url2"]);
+        ctx.track_new_links(&snapshot.queue);
+
+        let buffer = draw_pending_queue(&snapshot, &mut ctx, 4);
+
+        // url2 is newest, so it sits on the top row wearing the flash
+        assert_eq!(row_text(&buffer, 0), "url2");
+        assert_eq!(buffer[(1, 1)].bg, FLASH_SHADES[0]);
+        assert_eq!(buffer[(1, 2)].bg, Color::Reset);
+    }
+
+    // ========== New Link Flash Tests ==========
+
+    #[test]
+    fn test_flash_style_fades_through_the_shades() {
+        assert_eq!(flash_style(0.0, false).bg, Some(FLASH_SHADES[0]));
+        assert_eq!(flash_style(0.5, false).bg, Some(FLASH_SHADES[1]));
+        assert_eq!(flash_style(0.9, false).bg, Some(FLASH_SHADES[2]));
+    }
+
+    #[test]
+    fn test_flash_style_uses_basic_ansi_in_compatibility_mode() {
+        // Truecolor shades would not survive a terminal that needs ASCII indicators
+        for progress in [0.0, 0.5, 0.9] {
+            let style = flash_style(progress, true);
+            assert_eq!(style.bg, Some(Color::Green));
+            assert_eq!(style.fg, Some(Color::Black));
+        }
+    }
+
+    #[test]
+    fn test_flash_style_clamps_at_the_dimmest_shade() {
+        assert_eq!(flash_style(1.0, false).bg, Some(FLASH_SHADES[2]));
+        assert_eq!(flash_style(5.0, false).bg, Some(FLASH_SHADES[2]));
+    }
 
     // ========== Log Wrapping Height Calculation Tests ==========
 
