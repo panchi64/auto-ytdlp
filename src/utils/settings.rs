@@ -711,23 +711,29 @@ mod tests {
         let settings = Settings::default();
         assert!(settings.parse_custom_args().is_empty());
 
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "   ".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "   ".to_string(),
+            ..Default::default()
+        };
         assert!(settings.parse_custom_args().is_empty());
     }
 
     #[test]
     fn test_parse_custom_args_simple() {
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "--no-playlist --retries 5".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "--no-playlist --retries 5".to_string(),
+            ..Default::default()
+        };
         let args = settings.parse_custom_args();
         assert_eq!(args, vec!["--no-playlist", "--retries", "5"]);
     }
 
     #[test]
     fn test_parse_custom_args_quoted() {
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "--user-agent 'My Custom Agent'".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "--user-agent 'My Custom Agent'".to_string(),
+            ..Default::default()
+        };
         let args = settings.parse_custom_args();
         assert_eq!(args, vec!["--user-agent", "My Custom Agent"]);
     }
@@ -751,12 +757,14 @@ mod tests {
 
     #[test]
     fn test_get_ytdlp_args_all_options() {
-        let mut settings = Settings::default();
-        settings.write_subtitles = true;
-        settings.write_thumbnail = true;
-        settings.add_metadata = true;
-        settings.output_format = OutputFormat::MP4;
-        settings.custom_ytdlp_args = "--no-playlist".to_string();
+        let settings = Settings {
+            write_subtitles: true,
+            write_thumbnail: true,
+            add_metadata: true,
+            output_format: OutputFormat::MP4,
+            custom_ytdlp_args: "--no-playlist".to_string(),
+            ..Default::default()
+        };
 
         let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
 
@@ -817,40 +825,50 @@ mod tests {
 
     #[test]
     fn test_parse_custom_args_malformed_unclosed_single_quote() {
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "--user-agent 'unclosed".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "--user-agent 'unclosed".to_string(),
+            ..Default::default()
+        };
         let args = settings.parse_custom_args();
         assert!(args.is_empty());
     }
 
     #[test]
     fn test_parse_custom_args_malformed_unclosed_double_quote() {
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "--user-agent \"unclosed".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "--user-agent \"unclosed".to_string(),
+            ..Default::default()
+        };
         let args = settings.parse_custom_args();
         assert!(args.is_empty());
     }
 
     #[test]
     fn test_parse_custom_args_malformed_trailing_backslash() {
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "test\\".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "test\\".to_string(),
+            ..Default::default()
+        };
         let args = settings.parse_custom_args();
         assert!(args.is_empty());
     }
 
     #[test]
     fn test_parse_custom_args_valid_double_quotes() {
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "--user-agent \"My Custom Agent\"".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "--user-agent \"My Custom Agent\"".to_string(),
+            ..Default::default()
+        };
         let args = settings.parse_custom_args();
         assert_eq!(args, vec!["--user-agent", "My Custom Agent"]);
     }
 
     #[test]
     fn test_parse_custom_args_multiple_quoted_segments() {
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "--cookies 'path/to/cookies' --user-agent 'Bot'".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "--cookies 'path/to/cookies' --user-agent 'Bot'".to_string(),
+            ..Default::default()
+        };
         let args = settings.parse_custom_args();
         assert_eq!(
             args,
@@ -868,8 +886,10 @@ mod tests {
 
     #[test]
     fn test_rate_limit_args_when_set() {
-        let mut settings = Settings::default();
-        settings.rate_limit = "2M".to_string();
+        let settings = Settings {
+            rate_limit: "2M".to_string(),
+            ..Default::default()
+        };
         let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
         assert!(args.contains(&"--rate-limit".to_string()));
         assert!(args.contains(&"2M".to_string()));
@@ -904,8 +924,10 @@ mod tests {
 
     #[test]
     fn test_sponsorblock_args_when_enabled() {
-        let mut settings = Settings::default();
-        settings.sponsorblock = true;
+        let settings = Settings {
+            sponsorblock: true,
+            ..Default::default()
+        };
         let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
         assert!(args.contains(&"--sponsorblock-remove".to_string()));
         assert!(args.contains(&"all".to_string()));
@@ -940,8 +962,10 @@ mod tests {
 
     #[test]
     fn test_cookies_from_browser_args_when_set() {
-        let mut settings = Settings::default();
-        settings.cookies_from_browser = "firefox".to_string();
+        let settings = Settings {
+            cookies_from_browser: "firefox".to_string(),
+            ..Default::default()
+        };
         let args = settings.get_ytdlp_args("%(title)s.%(ext)s");
         assert!(args.contains(&"--cookies-from-browser".to_string()));
         assert!(args.contains(&"firefox".to_string()));

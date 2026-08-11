@@ -83,7 +83,7 @@ mod tests {
         // Create a poisoned mutex by panicking while holding it
         let mutex = Mutex::new(42);
         let result = std::panic::catch_unwind(|| {
-            let _guard = mutex.lock().unwrap();
+            let _guard = mutex.lock().expect("mutex should not be poisoned yet");
             panic!("intentional panic to poison mutex");
         });
         assert!(result.is_err());

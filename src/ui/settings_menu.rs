@@ -1755,7 +1755,7 @@ mod tests {
         assert!(!menu.settings.reset_stats_on_new_batch);
 
         // Verify AppState was updated
-        let app_settings = state.get_settings().unwrap();
+        let app_settings = state.get_settings().expect("failed to read settings");
         assert!(!app_settings.reset_stats_on_new_batch);
     }
 

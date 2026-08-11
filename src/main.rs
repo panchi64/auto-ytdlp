@@ -15,7 +15,7 @@ use std::{
     path::Path,
 };
 use ui::tui::run_tui;
-use utils::file::{get_links_from_file, LINKS_FILE};
+use utils::file::{LINKS_FILE, get_links_from_file};
 
 fn main() -> Result<()> {
     let args = Args::parse();
