@@ -415,7 +415,7 @@ mod tests {
         let url = state.pop_queue();
 
         assert!(url.is_ok());
-        assert!(url.unwrap().is_some());
+        assert!(url.expect("failed to pop from queue").is_some());
     }
 
     #[test]
@@ -429,6 +429,6 @@ mod tests {
         let url = state.pop_queue();
 
         assert!(url.is_ok());
-        assert!(url.unwrap().is_none());
+        assert!(url.expect("failed to pop from empty queue").is_none());
     }
 }

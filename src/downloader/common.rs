@@ -110,7 +110,7 @@ mod tests {
         let template_idx = cmd_args
             .iter()
             .position(|a| a == "--progress-template")
-            .unwrap();
+            .expect("--progress-template flag missing from yt-dlp args");
         let template_value = &cmd_args[template_idx + 1];
 
         assert!(template_value.starts_with("download:"));
@@ -129,7 +129,10 @@ mod tests {
         assert!(cmd_args.contains(&"--output".to_string()));
 
         // Find the output template value
-        let output_idx = cmd_args.iter().position(|a| a == "--output").unwrap();
+        let output_idx = cmd_args
+            .iter()
+            .position(|a| a == "--output")
+            .expect("--output flag missing from yt-dlp args");
         let output_value = &cmd_args[output_idx + 1];
 
         // Should contain the download directory
@@ -145,8 +148,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_best_format() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.format_preset = FormatPreset::Best;
+        let settings = Settings {
+            format_preset: FormatPreset::Best,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -158,8 +163,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_audio_only_format() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.format_preset = FormatPreset::AudioOnly;
+        let settings = Settings {
+            format_preset: FormatPreset::AudioOnly,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -170,8 +177,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_hd1080p_format() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.format_preset = FormatPreset::HD1080p;
+        let settings = Settings {
+            format_preset: FormatPreset::HD1080p,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -186,8 +195,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_mp4_output() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.output_format = OutputFormat::MP4;
+        let settings = Settings {
+            output_format: OutputFormat::MP4,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -199,8 +210,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_mp3_output() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.output_format = OutputFormat::MP3;
+        let settings = Settings {
+            output_format: OutputFormat::MP3,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -213,8 +226,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_auto_output_no_merge_format() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.output_format = OutputFormat::Auto;
+        let settings = Settings {
+            output_format: OutputFormat::Auto,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -228,8 +243,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_with_subtitles() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.write_subtitles = true;
+        let settings = Settings {
+            write_subtitles: true,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -242,8 +259,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_without_subtitles() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.write_subtitles = false;
+        let settings = Settings {
+            write_subtitles: false,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -254,8 +273,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_with_thumbnail() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.write_thumbnail = true;
+        let settings = Settings {
+            write_thumbnail: true,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -266,8 +287,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_without_thumbnail() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.write_thumbnail = false;
+        let settings = Settings {
+            write_thumbnail: false,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -278,8 +301,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_with_metadata() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.add_metadata = true;
+        let settings = Settings {
+            add_metadata: true,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -290,8 +315,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_without_metadata() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.add_metadata = false;
+        let settings = Settings {
+            add_metadata: false,
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -304,12 +331,14 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_full_settings() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.format_preset = FormatPreset::HD720p;
-        settings.output_format = OutputFormat::Mkv;
-        settings.write_subtitles = true;
-        settings.write_thumbnail = true;
-        settings.add_metadata = true;
+        let settings = Settings {
+            format_preset: FormatPreset::HD720p,
+            output_format: OutputFormat::Mkv,
+            write_subtitles: true,
+            write_thumbnail: true,
+            add_metadata: true,
+            ..Default::default()
+        };
         let url = "https://youtube.com/watch?v=abc123";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
@@ -344,8 +373,10 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_with_custom_args() {
         let args = create_test_args("/downloads", "/archive.txt");
-        let mut settings = Settings::default();
-        settings.custom_ytdlp_args = "--cookies cookies.txt --retries 10".to_string();
+        let settings = Settings {
+            custom_ytdlp_args: "--cookies cookies.txt --retries 10".to_string(),
+            ..Default::default()
+        };
         let url = "https://example.com/video";
 
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);

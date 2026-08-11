@@ -1013,10 +1013,9 @@ impl SettingsMenu {
                     vec!["No", "Yes"],
                     "ASCII Indicators (for terminal compatibility)",
                 ),
-                IDX_RESET_STATS_ON_BATCH => (
-                    vec!["No", "Yes"],
-                    "Reset Stats When Starting New Batch",
-                ),
+                IDX_RESET_STATS_ON_BATCH => {
+                    (vec!["No", "Yes"], "Reset Stats When Starting New Batch")
+                }
                 _ => (vec![], ""),
             };
 
@@ -1654,7 +1653,7 @@ mod tests {
         assert!(!menu.settings.reset_stats_on_new_batch);
 
         // Verify AppState was updated
-        let app_settings = state.get_settings().unwrap();
+        let app_settings = state.get_settings().expect("failed to read settings");
         assert!(!app_settings.reset_stats_on_new_batch);
     }
 

@@ -676,10 +676,10 @@ mod tests {
     #[test]
     fn test_wrapped_height_mixed_line_lengths() {
         let lines = vec![
-            "Short".to_string(),                      // 1 line
-            "x".repeat(50),                           // 2 lines (50 / 40 = 2)
-            "".to_string(),                           // 1 line
-            "x".repeat(100),                          // 3 lines (100 / 40 = 3)
+            "Short".to_string(), // 1 line
+            "x".repeat(50),      // 2 lines (50 / 40 = 2)
+            "".to_string(),      // 1 line
+            "x".repeat(100),     // 3 lines (100 / 40 = 3)
         ];
         // Total: 1 + 2 + 1 + 3 = 7 lines
         assert_eq!(calculate_wrapped_height(&lines, 40), 7);

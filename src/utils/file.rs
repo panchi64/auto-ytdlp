@@ -216,9 +216,9 @@ mod tests {
         let links_path = temp_dir.path().join("links.txt");
 
         let content = "https://example.com/video1\nhttps://youtube.com/watch?v=abc123\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let links = get_links_from_file_at_path(&links_path).unwrap();
+        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
         assert_eq!(links.len(), 2);
         assert!(links.contains(&"https://example.com/video1".to_string()));
         assert!(links.contains(&"https://youtube.com/watch?v=abc123".to_string()));
@@ -230,9 +230,9 @@ mod tests {
         let links_path = temp_dir.path().join("links.txt");
 
         let content = "https://example.com/video1\nnot-a-valid-url\nhttps://example.com/video2\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let links = get_links_from_file_at_path(&links_path).unwrap();
+        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
         assert_eq!(links.len(), 2);
         assert!(!links.iter().any(|l| l == "not-a-valid-url"));
     }
@@ -242,9 +242,9 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         let links_path = temp_dir.path().join("links.txt");
 
-        fs::write(&links_path, "").unwrap();
+        fs::write(&links_path, "").expect("failed to write empty test links file");
 
-        let links = get_links_from_file_at_path(&links_path).unwrap();
+        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
         assert!(links.is_empty());
     }
 
@@ -254,9 +254,9 @@ mod tests {
         let links_path = temp_dir.path().join("links.txt");
 
         let content = "  https://example.com/video1  \n\n\n   \nhttps://example.com/video2\n\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let links = get_links_from_file_at_path(&links_path).unwrap();
+        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
         assert_eq!(links.len(), 2);
         assert_eq!(links[0], "https://example.com/video1");
         assert_eq!(links[1], "https://example.com/video2");
@@ -268,9 +268,9 @@ mod tests {
         let links_path = temp_dir.path().join("links.txt");
 
         let content = "https://example.com/video?title=%E4%B8%AD%E6%96%87\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let links = get_links_from_file_at_path(&links_path).unwrap();
+        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
         assert_eq!(links.len(), 1);
     }
 
@@ -281,13 +281,14 @@ mod tests {
 
         let content =
             "https://example.com/video1\ninvalid-url\nhttps://example.com/video2\nalso-invalid\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        let removed =
+            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
         assert_eq!(removed, 2);
 
         // Verify file content
-        let remaining = fs::read_to_string(&links_path).unwrap();
+        let remaining = fs::read_to_string(&links_path).expect("failed to read back links file");
         assert!(remaining.contains("https://example.com/video1"));
         assert!(remaining.contains("https://example.com/video2"));
         assert!(!remaining.contains("invalid-url"));
@@ -300,9 +301,10 @@ mod tests {
         let links_path = temp_dir.path().join("links.txt");
 
         let content = "https://example.com/video1\nhttps://example.com/video2\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        let removed =
+            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
         assert_eq!(removed, 0);
     }
 
@@ -312,9 +314,10 @@ mod tests {
         let links_path = temp_dir.path().join("links.txt");
 
         let content = "https://valid.com\nbad1\nbad2\nbad3\nhttps://also-valid.com\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        let removed =
+            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
         assert_eq!(removed, 3);
     }
 
@@ -336,9 +339,9 @@ mod tests {
         // Create a very long but valid URL
         let long_path = "a".repeat(500);
         let long_url = format!("https://example.com/{}", long_path);
-        fs::write(&links_path, &long_url).unwrap();
+        fs::write(&links_path, &long_url).expect("failed to write test links file");
 
-        let links = get_links_from_file_at_path(&links_path).unwrap();
+        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0], long_url);
     }
@@ -349,13 +352,14 @@ mod tests {
         let links_path = temp_dir.path().join("links.txt");
 
         let content = "https://example.com/a\nbad\nhttps://example.com/b\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        let removed = sanitize_links_file_at_path(&links_path).unwrap();
+        let removed =
+            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
         assert_eq!(removed, 1);
 
         // Original file should still contain valid URLs
-        let result = fs::read_to_string(&links_path).unwrap();
+        let result = fs::read_to_string(&links_path).expect("failed to read back links file");
         assert!(result.contains("https://example.com/a"));
         assert!(result.contains("https://example.com/b"));
         assert!(!result.contains("bad"));
@@ -368,9 +372,9 @@ mod tests {
         let temp_path = temp_dir.path().join("links.txt.tmp");
 
         let content = "https://example.com/a\nbad\n";
-        fs::write(&links_path, content).unwrap();
+        fs::write(&links_path, content).expect("failed to write test links file");
 
-        sanitize_links_file_at_path(&links_path).unwrap();
+        sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
 
         // No temp file should remain after the operation
         assert!(!temp_path.exists());

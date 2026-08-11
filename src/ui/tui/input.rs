@@ -502,8 +502,7 @@ fn handle_add_clipboard(state: &AppState) {
                 }
             }
             Err(e) => {
-                if let Err(log_err) =
-                    state.add_log(format!("Error adding clipboard links: {}", e))
+                if let Err(log_err) = state.add_log(format!("Error adding clipboard links: {}", e))
                 {
                     eprintln!("Error adding log: {}", log_err);
                 }
@@ -524,9 +523,7 @@ fn handle_ytdlp_update(state: &AppState) {
 
     let downloads_active = is_started && !is_completed && !is_paused;
     if downloads_active {
-        if let Err(e) =
-            state.add_log("Cannot update while downloads are active".to_string())
-        {
+        if let Err(e) = state.add_log("Cannot update while downloads are active".to_string()) {
             eprintln!("Error adding log: {}", e);
         }
         return;
@@ -537,35 +534,31 @@ fn handle_ytdlp_update(state: &AppState) {
     }
 
     let state_clone = state.clone();
-    thread::spawn(move || {
-        match Command::new("yt-dlp").arg("-U").output() {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
+    thread::spawn(move || match Command::new("yt-dlp").arg("-U").output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
 
-                for line in stdout.lines().chain(stderr.lines()) {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty()
-                        && let Err(e) = state_clone.add_log(trimmed.to_string())
-                    {
-                        eprintln!("Error adding log: {}", e);
-                    }
-                }
-
-                if output.status.success() {
-                    let _ = state_clone.show_toast("yt-dlp update complete");
-                } else {
-                    let _ = state_clone.show_toast("yt-dlp update failed");
+            for line in stdout.lines().chain(stderr.lines()) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty()
+                    && let Err(e) = state_clone.add_log(trimmed.to_string())
+                {
+                    eprintln!("Error adding log: {}", e);
                 }
             }
-            Err(e) => {
-                if let Err(log_err) =
-                    state_clone.add_log(format!("Failed to run yt-dlp -U: {}", e))
-                {
-                    eprintln!("Error adding log: {}", log_err);
-                }
+
+            if output.status.success() {
+                let _ = state_clone.show_toast("yt-dlp update complete");
+            } else {
                 let _ = state_clone.show_toast("yt-dlp update failed");
             }
+        }
+        Err(e) => {
+            if let Err(log_err) = state_clone.add_log(format!("Failed to run yt-dlp -U: {}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+            let _ = state_clone.show_toast("yt-dlp update failed");
         }
     });
 }
@@ -577,9 +570,7 @@ fn handle_retry_failed(state: &AppState) {
 
     let downloads_active = is_started && !is_completed && !is_paused;
     if downloads_active {
-        if let Err(e) =
-            state.add_log("Cannot retry while downloads are active".to_string())
-        {
+        if let Err(e) = state.add_log("Cannot retry while downloads are active".to_string()) {
             eprintln!("Error adding log: {}", e);
         }
         return;
@@ -684,35 +675,40 @@ mod tests {
 
     #[test]
     fn test_force_quit_state_pending_not_confirmed_without_time() {
-        let mut state = ForceQuitState::default();
-        state.pending = true;
+        let state = ForceQuitState {
+            pending: true,
+            ..Default::default()
+        };
         // Without setting time, is_confirmed should return false
         assert!(!state.is_confirmed());
     }
 
     #[test]
     fn test_force_quit_state_confirmed_within_timeout() {
-        let mut state = ForceQuitState::default();
-        state.pending = true;
-        state.time = Some(Instant::now());
+        let state = ForceQuitState {
+            pending: true,
+            time: Some(Instant::now()),
+        };
         // Should be confirmed within 2 seconds
         assert!(state.is_confirmed());
     }
 
     #[test]
     fn test_force_quit_state_not_confirmed_after_timeout() {
-        let mut state = ForceQuitState::default();
-        state.pending = true;
-        // Set time to more than 2 seconds ago
-        state.time = Some(Instant::now() - Duration::from_secs(3));
+        let state = ForceQuitState {
+            pending: true,
+            // Time is more than 2 seconds ago
+            time: Some(Instant::now() - Duration::from_secs(3)),
+        };
         assert!(!state.is_confirmed());
     }
 
     #[test]
     fn test_force_quit_state_check_timeout_resets_state() {
-        let mut state = ForceQuitState::default();
-        state.pending = true;
-        state.time = Some(Instant::now() - Duration::from_secs(3));
+        let mut state = ForceQuitState {
+            pending: true,
+            time: Some(Instant::now() - Duration::from_secs(3)),
+        };
 
         state.check_timeout();
 
@@ -722,10 +718,11 @@ mod tests {
 
     #[test]
     fn test_force_quit_state_check_timeout_preserves_valid_state() {
-        let mut state = ForceQuitState::default();
-        state.pending = true;
         let now = Instant::now();
-        state.time = Some(now);
+        let mut state = ForceQuitState {
+            pending: true,
+            time: Some(now),
+        };
 
         state.check_timeout();
 
@@ -932,7 +929,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::F(1), &state, &args, &mut nmc);
 
         assert!(ctx.show_help);
@@ -949,7 +952,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('q'), &state, &args, &mut nmc);
 
         assert!(download_state.await_downloads_on_exit);
@@ -966,7 +975,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc);
 
         assert!(force_quit_state.pending);
@@ -987,7 +1002,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Break));
@@ -1007,7 +1028,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('p'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
@@ -1023,7 +1050,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('/'), &state, &args, &mut nmc);
 
         assert!(ctx.filter_mode);
@@ -1042,7 +1075,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::F(2), &state, &args, &mut nmc);
 
         // F2 returns Unhandled so the caller can toggle settings menu
@@ -1059,7 +1098,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('z'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Unhandled));
@@ -1077,7 +1122,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
@@ -1096,13 +1147,21 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
 
         // Check that a "Cannot update" log was added
-        let snapshot = state.get_ui_snapshot().unwrap();
+        let snapshot = state
+            .get_ui_snapshot()
+            .expect("failed to build UI snapshot");
         assert!(
             snapshot
                 .logs
@@ -1123,7 +1182,13 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         let result = handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
         assert!(matches!(result, InputResult::Continue));
@@ -1138,12 +1203,12 @@ mod tests {
             .send(StateMessage::AddFailedDownload(
                 "https://example.com/video1".to_string(),
             ))
-            .unwrap();
+            .expect("failed to send AddFailedDownload");
         state
             .send(StateMessage::AddFailedDownload(
                 "https://example.com/video2".to_string(),
             ))
-            .unwrap();
+            .expect("failed to send AddFailedDownload");
         thread::sleep(Duration::from_millis(50));
 
         let args = create_test_args();
@@ -1153,18 +1218,26 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
         // Wait for message processing
         thread::sleep(Duration::from_millis(100));
 
         // Verify URLs were re-queued
-        let queue = state.get_queue().unwrap();
+        let queue = state.get_queue().expect("failed to read queue");
         assert_eq!(queue.len(), 2);
 
         // Failed count should be 0 after take
-        let snapshot = state.get_ui_snapshot().unwrap();
+        let snapshot = state
+            .get_ui_snapshot()
+            .expect("failed to build UI snapshot");
         assert_eq!(snapshot.failed_count, 0);
     }
 
@@ -1178,10 +1251,18 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
-        let snapshot = state.get_ui_snapshot().unwrap();
+        let snapshot = state
+            .get_ui_snapshot()
+            .expect("failed to build UI snapshot");
         assert!(
             snapshot
                 .logs
@@ -1203,10 +1284,18 @@ mod tests {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(&mut ctx, &mut download_state, &mut force_quit_state, &mut last_tick, tick_rate);
+        let mut nmc = create_test_nmc(
+            &mut ctx,
+            &mut download_state,
+            &mut force_quit_state,
+            &mut last_tick,
+            tick_rate,
+        );
         handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
 
-        let snapshot = state.get_ui_snapshot().unwrap();
+        let snapshot = state
+            .get_ui_snapshot()
+            .expect("failed to build UI snapshot");
         assert!(
             snapshot
                 .logs
