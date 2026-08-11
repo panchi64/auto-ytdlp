@@ -501,6 +501,12 @@ impl AppState {
         Ok(queues.queue.clone())
     }
 
+    /// Number of URLs waiting in the queue, without cloning it.
+    pub fn queue_len(&self) -> Result<usize> {
+        let queues = self.queues.lock()?;
+        Ok(queues.queue.len())
+    }
+
     /// Remove a URL from the queue at a specific index
     pub fn remove_from_queue(&self, index: usize) -> Result<Option<String>> {
         let mut queues = self.queues.lock()?;

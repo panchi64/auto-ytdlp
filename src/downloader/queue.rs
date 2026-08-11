@@ -42,7 +42,7 @@ use super::worker::download_worker;
 ///
 /// Workers will pause processing (but not exit) when the pause flag is set.
 pub fn process_queue(state: AppState, args: Args) {
-    if state.get_queue().unwrap_or_default().is_empty() {
+    if state.queue_len().unwrap_or(0) == 0 {
         if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
             eprintln!("Error setting completed: {}", e);
         }
@@ -83,7 +83,7 @@ pub fn process_queue(state: AppState, args: Args) {
             }
 
             // Check if we need to start processing and haven't created workers yet
-            if !workers_created && !state_clone.get_queue().unwrap_or_default().is_empty() {
+            if !workers_created && state_clone.queue_len().unwrap_or(0) > 0 {
                 // Create worker threads only when we're about to start processing
                 let concurrent_count = state_clone.get_concurrent().unwrap_or(1);
                 workers_created = true;
@@ -134,7 +134,7 @@ pub fn process_queue(state: AppState, args: Args) {
                             } else {
                                 thread::sleep(Duration::from_millis(100));
 
-                                if worker_state.get_queue().unwrap_or_default().is_empty()
+                                if worker_state.queue_len().unwrap_or(0) == 0
                                     && worker_state
                                         .get_active_downloads()
                                         .unwrap_or_default()
@@ -152,7 +152,7 @@ pub fn process_queue(state: AppState, args: Args) {
 
             // Check if we're done
             if workers_created
-                && state_clone.get_queue().unwrap_or_default().is_empty()
+                && state_clone.queue_len().unwrap_or(0) == 0
                 && state_clone
                     .get_active_downloads()
                     .unwrap_or_default()
@@ -198,7 +198,7 @@ pub fn process_queue(state: AppState, args: Args) {
             }
         }
 
-        let queue_empty = state_clone.get_queue().unwrap_or_default().is_empty();
+        let queue_empty = state_clone.queue_len().unwrap_or(0) == 0;
         let active_downloads_empty = state_clone
             .get_active_downloads()
             .unwrap_or_default()
@@ -282,7 +282,7 @@ mod tests {
         let args = create_test_args();
 
         // Ensure the queue is empty
-        assert!(state.get_queue().unwrap_or_default().is_empty());
+        assert_eq!(state.queue_len().unwrap_or(0), 0);
 
         // Process the empty queue
         process_queue(state.clone(), args);
@@ -423,7 +423,7 @@ mod tests {
         let state = AppState::new();
 
         // Ensure the queue is empty
-        assert!(state.get_queue().unwrap_or_default().is_empty());
+        assert_eq!(state.queue_len().unwrap_or(0), 0);
 
         // Pop from empty queue should return None
         let url = state.pop_queue();
