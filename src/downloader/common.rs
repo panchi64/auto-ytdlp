@@ -21,8 +21,9 @@ use super::progress_parser::{PROGRESS_MARKER_END, PROGRESS_MARKER_START};
 ///
 /// A vector of strings containing all command arguments for yt-dlp
 pub fn build_ytdlp_command_args(args: &Args, settings: &Settings, url: &str) -> Vec<String> {
-    // Use cached output template (computed once, reused for all downloads)
-    let output_template = args.output_template();
+    // Resolved per download so directory changes made in the settings menu
+    // take effect without a restart
+    let output_template = args.output_template(settings);
 
     // Start with the archive file argument
     let mut cmd_args = vec![
@@ -31,7 +32,7 @@ pub fn build_ytdlp_command_args(args: &Args, settings: &Settings, url: &str) -> 
     ];
 
     // Add settings-based arguments
-    cmd_args.extend(settings.get_ytdlp_args(output_template));
+    cmd_args.extend(settings.get_ytdlp_args(&output_template));
 
     // Add custom progress template for structured progress parsing
     // Format: |PROGRESS|status|percent|speed|eta|downloaded|total|frag_idx|frag_count|PROGRESS_END|
@@ -63,7 +64,7 @@ pub fn validate_dependencies() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::settings::{FormatPreset, OutputFormat, Settings};
+    use crate::utils::settings::{FormatPreset, OutputFormat, Settings, settings_with_dir};
     use clap::Parser;
 
     /// Helper function to create Args for testing
@@ -138,6 +139,31 @@ mod tests {
         assert!(output_value.contains("%(title)s"));
         assert!(output_value.contains("%(id)s"));
         assert!(output_value.contains("%(ext)s"));
+    }
+
+    #[test]
+    fn test_build_ytdlp_command_args_output_uses_download_dir_setting() {
+        // No -d flag, so the setting decides where files land
+        let args = Args::parse_from(["test", "-f", "/archive.txt"]);
+        let settings = settings_with_dir("/configured/downloads");
+        let url = "https://example.com/video";
+
+        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
+
+        let output_idx = cmd_args.iter().position(|a| a == "--output").unwrap();
+        assert!(cmd_args[output_idx + 1].starts_with("/configured/downloads"));
+    }
+
+    #[test]
+    fn test_build_ytdlp_command_args_download_dir_flag_wins() {
+        let args = create_test_args("/from/flag", "/archive.txt");
+        let settings = settings_with_dir("/from/settings");
+        let url = "https://example.com/video";
+
+        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
+
+        let output_idx = cmd_args.iter().position(|a| a == "--output").unwrap();
+        assert!(cmd_args[output_idx + 1].starts_with("/from/flag"));
     }
 
     // ==================== Format Preset Testing ====================

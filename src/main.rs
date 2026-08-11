@@ -23,7 +23,20 @@ fn main() -> Result<()> {
 
     state.set_concurrent(args.concurrent)?;
 
-    fs::create_dir_all(&args.download_dir)?;
+    let settings = state.get_settings().unwrap_or_default();
+    let download_dir = args.resolve_download_dir(&settings);
+    if let Err(error) = fs::create_dir_all(&download_dir) {
+        // In TUI mode this must not be fatal: the directory can come from the
+        // saved setting, and aborting here would leave no way to correct it
+        // from inside the app.
+        if args.auto {
+            return Err(error.into());
+        }
+        state.log_error(
+            &format!("Download directory {:?}", download_dir),
+            format!("{} - change it with F2", error),
+        )?;
+    }
 
     if !Path::new(LINKS_FILE).exists() {
         File::create(LINKS_FILE)?;

@@ -90,7 +90,7 @@ Processes the queue without a UI and exits when complete. Useful for scripts and
 ```
 -a, --auto                         Run in automated mode without TUI
 -c, --concurrent <CONCURRENT>      Max concurrent downloads [default: 4]
--d, --download-dir <DOWNLOAD_DIR>  Download directory [default: ./yt_dlp_downloads]
+-d, --download-dir <DOWNLOAD_DIR>  Download directory (overrides the saved setting)
 -f, --archive-file <ARCHIVE_FILE>  Archive file path [default: ./download_archive.txt]
 -h, --help                         Print help
 -V, --version                      Print version
@@ -100,6 +100,11 @@ Processes the queue without a UI and exits when complete. Useful for scripts and
 ```bash
 auto-ytdlp --auto --concurrent 8 --download-dir ~/Videos
 ```
+
+The download directory is resolved in this order: the `--download-dir` flag, then the
+**Download Directory** setting (F2), then the default `./yt_dlp_downloads`. Both sources
+expand a leading `~`. When the flag is passed, the settings panel shows the flag's
+directory and marks it `(--download-dir)`, since the flag wins for that run.
 
 ## TUI Controls
 
@@ -151,6 +156,7 @@ Settings persist across sessions at `~/.config/auto-ytdlp/settings.json` (Linux/
 |---------|---------|-------------|
 | Format Preset | Best | Video quality: Best, Audio Only, 1080p, 720p, 480p, 360p |
 | Output Format | Auto | Container: Auto, MP4, MKV, MP3, WEBM |
+| Download Directory | `./yt_dlp_downloads` | Folder media files are saved to (`~` expands to your home directory) |
 | Write Subtitles | Off | Download available subtitles (all languages) |
 | Write Thumbnail | Off | Save video thumbnail as a separate image |
 | Add Metadata | Off | Embed title, artist, date, etc. into the file |
@@ -172,6 +178,9 @@ Apply a full configuration profile from the settings panel:
 - **Audio Archive** - Audio-only MP3 with metadata (for music libraries)
 - **Fast Download** - Best quality with 8 concurrent workers, no extras
 - **Bandwidth Saver** - 480p, 2 workers, 2M rate limit, network retry with 5s delay
+
+Presets and **Reset to Defaults** both keep your download directory — they never
+relocate where media is saved.
 
 ## File Management
 

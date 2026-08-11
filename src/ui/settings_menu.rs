@@ -6,40 +6,44 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
+use std::path::PathBuf;
 
 use crate::{
     app_state::AppState,
+    args::DEFAULT_DOWNLOAD_DIR,
     utils::settings::{FormatPreset, OutputFormat, Settings, SettingsPreset},
 };
 
 /// Number of regular settings items (before special actions)
-const SETTINGS_COUNT: usize = 14;
+const SETTINGS_COUNT: usize = 15;
 
 /// Menu item indices
 const IDX_FORMAT_PRESET: usize = 0;
 const IDX_OUTPUT_FORMAT: usize = 1;
-const IDX_WRITE_SUBTITLES: usize = 2;
-const IDX_WRITE_THUMBNAIL: usize = 3;
-const IDX_ADD_METADATA: usize = 4;
-const IDX_SPONSORBLOCK: usize = 5;
-const IDX_CONCURRENT: usize = 6;
-const IDX_RATE_LIMIT: usize = 7;
-const IDX_NETWORK_RETRY: usize = 8;
-const IDX_RETRY_DELAY: usize = 9;
-const IDX_COOKIES_BROWSER: usize = 10;
-const IDX_ASCII_INDICATORS: usize = 11;
-const IDX_RESET_STATS_ON_BATCH: usize = 12;
-const IDX_CUSTOM_ARGS: usize = 13;
-const IDX_APPLY_PRESET: usize = 14;
-const IDX_RESET_DEFAULTS: usize = 15;
+const IDX_DOWNLOAD_DIR: usize = 2;
+const IDX_WRITE_SUBTITLES: usize = 3;
+const IDX_WRITE_THUMBNAIL: usize = 4;
+const IDX_ADD_METADATA: usize = 5;
+const IDX_SPONSORBLOCK: usize = 6;
+const IDX_CONCURRENT: usize = 7;
+const IDX_RATE_LIMIT: usize = 8;
+const IDX_NETWORK_RETRY: usize = 9;
+const IDX_RETRY_DELAY: usize = 10;
+const IDX_COOKIES_BROWSER: usize = 11;
+const IDX_ASCII_INDICATORS: usize = 12;
+const IDX_RESET_STATS_ON_BATCH: usize = 13;
+const IDX_CUSTOM_ARGS: usize = 14;
+const IDX_APPLY_PRESET: usize = 15;
+const IDX_RESET_DEFAULTS: usize = 16;
 
 /// Total number of menu items
-const TOTAL_MENU_ITEMS: usize = 16;
+const TOTAL_MENU_ITEMS: usize = 17;
 
 /// Descriptions for each setting
 const SETTING_DESCRIPTIONS: [&str; TOTAL_MENU_ITEMS] = [
     "Video quality preset - Best downloads highest available quality",
     "Container format - Auto lets yt-dlp choose based on source",
+    "Folder media files are saved to (~ expands to your home directory)",
     "Download subtitles if available (disabled for audio-only)",
     "Save video thumbnail as separate image file",
     "Embed metadata (title, artist, etc.) into the file",
@@ -53,7 +57,7 @@ const SETTING_DESCRIPTIONS: [&str; TOTAL_MENU_ITEMS] = [
     "Reset download counters when starting a new batch (S key)",
     "Extra yt-dlp flags (e.g., --no-playlist)",
     "Apply a preset configuration for common use cases",
-    "Reset all settings to their default values",
+    "Reset all settings to their default values (keeps the download directory)",
 ];
 
 /// Helper function to create a settings list item with consistent styling
@@ -70,6 +74,32 @@ fn create_setting_item<'a>(name: &'a str, value: &'a str) -> ListItem<'a> {
 /// Helper to convert bool to Yes/No string
 fn bool_to_yes_no(value: bool) -> &'static str {
     if value { "Yes" } else { "No" }
+}
+
+/// Which end of an over-long value to keep when shortening it for display
+#[derive(Clone, Copy, PartialEq)]
+enum Keep {
+    /// Keep the beginning (argument lists read from the left)
+    Start,
+    /// Keep the end (the most specific part of a path)
+    End,
+}
+
+/// Shorten a value for display, never splitting a multi-byte character
+fn truncate_for_display(text: &str, max_chars: usize, keep: Keep) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+
+    let budget = max_chars.saturating_sub(3);
+    match keep {
+        Keep::Start => format!("{}...", chars[..budget].iter().collect::<String>()),
+        Keep::End => format!(
+            "...{}",
+            chars[chars.len() - budget..].iter().collect::<String>()
+        ),
+    }
 }
 
 /// Helper function to create an action item (Apply Preset, Reset, etc.)
@@ -106,11 +136,18 @@ pub struct SettingsMenu {
     preset_index: usize,
     /// Validation error message for custom args
     validation_error: Option<String>,
+    /// Download directory forced by `--download-dir` for this run, if any.
+    /// The setting is still editable (it applies on the next run without the
+    /// flag), but the menu must show which directory is actually in use.
+    cli_download_dir: Option<PathBuf>,
 }
 
 impl SettingsMenu {
     /// Create a new settings menu
-    pub fn new(state: &AppState) -> Self {
+    ///
+    /// `cli_download_dir` is the resolved `--download-dir` value, which
+    /// overrides the download directory setting for the current run.
+    pub fn new(state: &AppState, cli_download_dir: Option<PathBuf>) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
@@ -122,9 +159,29 @@ impl SettingsMenu {
             option_index: 0,
             custom_input: String::new(),
             input_mode: false,
+            cli_download_dir,
             sub_menu: SubMenu::None,
             preset_index: 0,
             validation_error: None,
+        }
+    }
+
+    /// Value shown for the Download Directory row
+    ///
+    /// Reports the directory downloads actually go to, so the row never claims
+    /// a location that `--download-dir` is overriding.
+    fn download_dir_display(&self) -> String {
+        if let Some(cli_dir) = &self.cli_download_dir {
+            return format!(
+                "{} (--download-dir)",
+                truncate_for_display(&cli_dir.to_string_lossy(), 20, Keep::End)
+            );
+        }
+
+        if self.settings.download_dir.is_empty() {
+            format!("{} (default)", DEFAULT_DOWNLOAD_DIR)
+        } else {
+            truncate_for_display(&self.settings.download_dir, 34, Keep::End)
         }
     }
 
@@ -187,8 +244,9 @@ impl SettingsMenu {
                 true
             }
             KeyCode::Enter => {
-                // Apply the selected preset
-                self.settings = presets[self.preset_index].apply();
+                // Apply the selected preset (keeps the configured download directory)
+                self.settings = presets[self.preset_index].apply(&self.settings);
+                let _ = self.settings.save();
                 let _ = state.update_settings(self.settings.clone());
                 self.sub_menu = SubMenu::None;
                 true
@@ -205,8 +263,12 @@ impl SettingsMenu {
                 true
             }
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                // Reset to defaults
-                self.settings = Settings::default();
+                // Reset to defaults, keeping the download directory so a reset
+                // never silently relocates the user's media (presets keep it too)
+                self.settings = Settings {
+                    download_dir: self.settings.download_dir.clone(),
+                    ..Settings::default()
+                };
                 let _ = self.settings.save();
                 let _ = state.update_settings(self.settings.clone());
                 self.sub_menu = SubMenu::None;
@@ -258,6 +320,12 @@ impl SettingsMenu {
                                 };
                             }
                             self.editing = true;
+                        }
+                        IDX_DOWNLOAD_DIR => {
+                            // Download Directory - enter text input mode
+                            self.custom_input = self.settings.download_dir.clone();
+                            self.validation_error = None;
+                            self.input_mode = true;
                         }
                         IDX_WRITE_SUBTITLES => {
                             // Write Subtitles
@@ -536,6 +604,20 @@ impl SettingsMenu {
                                 }
                             }
                         }
+                        IDX_DOWNLOAD_DIR => {
+                            // Download directory - validate (and create) before accepting
+                            let trimmed = self.custom_input.trim().to_string();
+                            match Settings::validate_download_dir(&trimmed) {
+                                Ok(()) => {
+                                    self.settings.download_dir = trimmed;
+                                    self.validation_error = None;
+                                }
+                                Err(msg) => {
+                                    self.validation_error = Some(msg);
+                                    return true; // Don't close input mode
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -556,11 +638,11 @@ impl SettingsMenu {
                 true
             }
             KeyCode::Char(c) => {
-                // For custom args, allow any printable character
+                // For custom args and the download directory, allow any printable character
                 // For rate limit, allow alphanumeric and '.' (e.g., "1.5M")
                 // For numeric fields, only allow digits
                 if let Some(selected) = self.list_state.selected() {
-                    if selected == IDX_CUSTOM_ARGS {
+                    if selected == IDX_CUSTOM_ARGS || selected == IDX_DOWNLOAD_DIR {
                         self.custom_input.push(c);
                         self.validation_error = None;
                     } else if selected == IDX_RATE_LIMIT {
@@ -580,9 +662,9 @@ impl SettingsMenu {
     /// Adjust option index to valid range based on current setting
     fn adjust_option_index(&mut self) {
         // Max option indices for each setting (0-indexed)
-        // Settings: Format, Output, Subtitles, Thumbnail, Metadata, SponsorBlock, Concurrent, RateLimit, Retry, Delay, Cookies, ASCII, ResetStats, CustomArgs
-        // Note: Custom args, Apply Preset, Reset are handled via input_mode/sub_menu, not editing
-        const MAX_OPTIONS: [usize; SETTINGS_COUNT] = [5, 4, 1, 1, 1, 1, 4, 6, 1, 4, 7, 1, 1, 0];
+        // Settings: Format, Output, DownloadDir, Subtitles, Thumbnail, Metadata, SponsorBlock, Concurrent, RateLimit, Retry, Delay, Cookies, ASCII, ResetStats, CustomArgs
+        // Note: Download dir, custom args, Apply Preset, Reset are handled via input_mode/sub_menu, not editing
+        const MAX_OPTIONS: [usize; SETTINGS_COUNT] = [5, 4, 0, 1, 1, 1, 1, 4, 6, 1, 4, 7, 1, 1, 0];
 
         if let Some(i) = self.list_state.selected()
             && i < MAX_OPTIONS.len()
@@ -753,7 +835,7 @@ impl SettingsMenu {
         } else {
             // Render the main settings dialog (list of settings)
             let popup_width = 65;
-            let popup_height = 23;
+            let popup_height = 24;
             let dialog_x = (area.width.saturating_sub(popup_width)) / 2;
             let dialog_y = (area.height.saturating_sub(popup_height)) / 2;
             let main_dialog_area = Rect::new(dialog_x, dialog_y, popup_width, popup_height);
@@ -779,12 +861,11 @@ impl SettingsMenu {
                     Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
                 }
             };
+            let download_dir_display = self.download_dir_display();
             let custom_args_display = if self.settings.custom_ytdlp_args.is_empty() {
                 "(none)".to_string()
-            } else if self.settings.custom_ytdlp_args.len() > 30 {
-                format!("{}...", &self.settings.custom_ytdlp_args[..27])
             } else {
-                self.settings.custom_ytdlp_args.clone()
+                truncate_for_display(&self.settings.custom_ytdlp_args, 30, Keep::Start)
             };
 
             let mut items = vec![
@@ -796,6 +877,7 @@ impl SettingsMenu {
                     "Output Format",
                     self.output_format_to_string(&self.settings.output_format),
                 ),
+                create_setting_item("Download Directory", &download_dir_display),
                 create_setting_item(
                     "Write Subtitles",
                     bool_to_yes_no(self.settings.write_subtitles),
@@ -922,8 +1004,11 @@ impl SettingsMenu {
         frame.render_widget(Clear, popup_area);
 
         let content = vec![
-            Line::from(""),
             Line::from("Reset all settings to defaults?"),
+            Line::from(Span::styled(
+                "The download directory is kept",
+                Style::default().fg(Color::DarkGray),
+            )),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Y", Style::default().fg(Color::Green)),
@@ -1013,10 +1098,9 @@ impl SettingsMenu {
                     vec!["No", "Yes"],
                     "ASCII Indicators (for terminal compatibility)",
                 ),
-                IDX_RESET_STATS_ON_BATCH => (
-                    vec!["No", "Yes"],
-                    "Reset Stats When Starting New Batch",
-                ),
+                IDX_RESET_STATS_ON_BATCH => {
+                    (vec!["No", "Yes"], "Reset Stats When Starting New Batch")
+                }
                 _ => (vec![], ""),
             };
 
@@ -1061,7 +1145,12 @@ impl SettingsMenu {
     fn render_input_popup(&mut self, frame: &mut Frame, screen_area: Rect) {
         let is_custom_args = self.list_state.selected() == Some(IDX_CUSTOM_ARGS);
         let is_rate_limit = self.list_state.selected() == Some(IDX_RATE_LIMIT);
-        let popup_width = if is_custom_args { 60 } else { 40 };
+        let is_download_dir = self.list_state.selected() == Some(IDX_DOWNLOAD_DIR);
+        let popup_width = if is_custom_args || is_download_dir {
+            60
+        } else {
+            40
+        };
         let popup_height = if self.validation_error.is_some() {
             5
         } else {
@@ -1080,6 +1169,7 @@ impl SettingsMenu {
             Some(IDX_RATE_LIMIT) => "Enter Rate Limit (e.g., 750K, 1.5M)",
             Some(IDX_RETRY_DELAY) => "Enter Retry Delay (seconds)",
             Some(IDX_CUSTOM_ARGS) => "Custom yt-dlp Arguments",
+            Some(IDX_DOWNLOAD_DIR) => "Download Directory (empty = default)",
             _ => "Enter Value",
         };
 
@@ -1115,6 +1205,12 @@ impl SettingsMenu {
         // Help text for this popup
         let help_text = if is_custom_args {
             "Type arguments | Enter: Save | Esc: Cancel"
+        } else if is_download_dir {
+            if self.cli_download_dir.is_some() {
+                "--download-dir wins this run | Enter: Save | Esc: Cancel"
+            } else {
+                "e.g., ~/Videos | Enter: Save | Esc: Cancel"
+            }
         } else if is_rate_limit {
             "e.g., 500K, 1.5M | Enter: Confirm | Esc: Cancel"
         } else {
@@ -1187,19 +1283,24 @@ mod tests {
         state
     }
 
+    // Helper to create a menu with no --download-dir override
+    fn test_menu(state: &AppState) -> SettingsMenu {
+        SettingsMenu::new(state, None)
+    }
+
     // ==================== Visibility Toggle Tests ====================
 
     #[test]
     fn test_settings_menu_initial_not_visible() {
         let state = create_test_state();
-        let menu = SettingsMenu::new(&state);
+        let menu = test_menu(&state);
         assert!(!menu.is_visible());
     }
 
     #[test]
     fn test_settings_menu_toggle_opens() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
 
         menu.toggle();
 
@@ -1209,7 +1310,7 @@ mod tests {
     #[test]
     fn test_settings_menu_toggle_closes() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
 
         menu.toggle(); // Open
         menu.toggle(); // Close
@@ -1220,7 +1321,7 @@ mod tests {
     #[test]
     fn test_settings_menu_toggle_resets_state() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
 
         // Set some state
         menu.editing = true;
@@ -1242,7 +1343,7 @@ mod tests {
     #[test]
     fn test_settings_menu_navigation_down() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Initially at 0
@@ -1256,7 +1357,7 @@ mod tests {
     #[test]
     fn test_settings_menu_navigation_up() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Navigate down first
@@ -1273,7 +1374,7 @@ mod tests {
     #[test]
     fn test_settings_menu_navigation_up_at_top() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Already at 0
@@ -1286,7 +1387,7 @@ mod tests {
     #[test]
     fn test_settings_menu_navigation_down_at_bottom() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Navigate to bottom
@@ -1301,7 +1402,7 @@ mod tests {
     #[test]
     fn test_settings_menu_esc_closes() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         assert!(menu.is_visible());
@@ -1316,7 +1417,7 @@ mod tests {
     #[test]
     fn test_settings_menu_boolean_toggle_write_thumbnail() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Navigate to Write Thumbnail (index 3)
@@ -1341,7 +1442,7 @@ mod tests {
     #[test]
     fn test_settings_menu_boolean_toggle_network_retry() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Navigate to Network Retry (index 6)
@@ -1404,7 +1505,7 @@ mod tests {
 
     #[test]
     fn test_preset_best_quality_applies_correct_settings() {
-        let settings = SettingsPreset::BestQuality.apply();
+        let settings = SettingsPreset::BestQuality.apply(&Settings::default());
 
         assert_eq!(settings.format_preset, FormatPreset::Best);
         assert_eq!(settings.output_format, OutputFormat::Auto);
@@ -1417,7 +1518,7 @@ mod tests {
 
     #[test]
     fn test_preset_audio_archive_applies_correct_settings() {
-        let settings = SettingsPreset::AudioArchive.apply();
+        let settings = SettingsPreset::AudioArchive.apply(&Settings::default());
 
         assert_eq!(settings.format_preset, FormatPreset::AudioOnly);
         assert_eq!(settings.output_format, OutputFormat::MP3);
@@ -1427,7 +1528,7 @@ mod tests {
 
     #[test]
     fn test_preset_fast_download_applies_correct_settings() {
-        let settings = SettingsPreset::FastDownload.apply();
+        let settings = SettingsPreset::FastDownload.apply(&Settings::default());
 
         assert_eq!(settings.format_preset, FormatPreset::Best);
         assert!(!settings.write_subtitles);
@@ -1439,7 +1540,7 @@ mod tests {
 
     #[test]
     fn test_preset_bandwidth_saver_applies_correct_settings() {
-        let settings = SettingsPreset::BandwidthSaver.apply();
+        let settings = SettingsPreset::BandwidthSaver.apply(&Settings::default());
 
         assert_eq!(settings.format_preset, FormatPreset::SD480p);
         assert_eq!(settings.concurrent_downloads, 2);
@@ -1451,7 +1552,7 @@ mod tests {
     #[test]
     fn test_reset_confirmation_esc_cancels() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
         menu.sub_menu = SubMenu::ResetConfirmation;
 
@@ -1464,7 +1565,7 @@ mod tests {
     #[test]
     fn test_reset_confirmation_n_cancels() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
         menu.sub_menu = SubMenu::ResetConfirmation;
 
@@ -1477,7 +1578,7 @@ mod tests {
     #[test]
     fn test_reset_confirmation_y_resets() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Modify settings
@@ -1499,7 +1600,7 @@ mod tests {
     #[test]
     fn test_format_preset_to_string() {
         let state = create_test_state();
-        let menu = SettingsMenu::new(&state);
+        let menu = test_menu(&state);
 
         assert_eq!(menu.format_preset_to_string(&FormatPreset::Best), "Best");
         assert_eq!(
@@ -1518,7 +1619,7 @@ mod tests {
     #[test]
     fn test_output_format_to_string() {
         let state = create_test_state();
-        let menu = SettingsMenu::new(&state);
+        let menu = test_menu(&state);
 
         assert_eq!(menu.output_format_to_string(&OutputFormat::Auto), "Auto");
         assert_eq!(menu.output_format_to_string(&OutputFormat::MP4), "MP4");
@@ -1529,7 +1630,7 @@ mod tests {
     #[test]
     fn test_output_format_mp3_string_varies_by_preset() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
 
         // Default (not audio only)
         assert_eq!(
@@ -1566,7 +1667,7 @@ mod tests {
     #[test]
     fn test_handle_input_returns_false_when_not_visible() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
 
         // Menu is not visible
         let result = menu.handle_input(key_event(KeyCode::Down), &state);
@@ -1579,7 +1680,7 @@ mod tests {
     #[test]
     fn test_reset_stats_setting_defaults_to_enabled() {
         let state = create_test_state();
-        let menu = SettingsMenu::new(&state);
+        let menu = test_menu(&state);
 
         // Default should be true (per-session mode)
         assert!(menu.settings.reset_stats_on_new_batch);
@@ -1588,7 +1689,7 @@ mod tests {
     #[test]
     fn test_reset_stats_setting_can_be_disabled() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Navigate to Reset Stats on Batch setting
@@ -1615,7 +1716,7 @@ mod tests {
     #[test]
     fn test_reset_stats_setting_can_be_enabled() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Start with setting disabled
@@ -1642,7 +1743,7 @@ mod tests {
     #[test]
     fn test_reset_stats_setting_persists_to_app_state() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Navigate to Reset Stats on Batch and toggle it off
@@ -1662,7 +1763,7 @@ mod tests {
     fn test_all_presets_include_reset_stats_setting() {
         // All presets should have the reset_stats_on_new_batch field set
         for preset in SettingsPreset::all() {
-            let settings = preset.apply();
+            let settings = preset.apply(&Settings::default());
             // All presets default to per-session mode (true)
             assert!(
                 settings.reset_stats_on_new_batch,
@@ -1677,7 +1778,7 @@ mod tests {
     #[test]
     fn test_sponsorblock_toggle_on() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         menu.settings.sponsorblock = false;
@@ -1697,7 +1798,7 @@ mod tests {
     #[test]
     fn test_sponsorblock_toggle_off() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         menu.settings.sponsorblock = true;
@@ -1719,7 +1820,7 @@ mod tests {
     #[test]
     fn test_rate_limit_preset_selection() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         menu.list_state.select(Some(IDX_RATE_LIMIT));
@@ -1742,7 +1843,7 @@ mod tests {
     #[test]
     fn test_rate_limit_unlimited_clears_value() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         // Set a rate limit first
@@ -1766,7 +1867,7 @@ mod tests {
     #[test]
     fn test_rate_limit_custom_input() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         menu.list_state.select(Some(IDX_RATE_LIMIT));
@@ -1796,7 +1897,7 @@ mod tests {
     #[test]
     fn test_cookies_browser_selection() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         menu.list_state.select(Some(IDX_COOKIES_BROWSER));
@@ -1817,7 +1918,7 @@ mod tests {
     #[test]
     fn test_cookies_browser_chrome() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         menu.list_state.select(Some(IDX_COOKIES_BROWSER));
@@ -1834,7 +1935,7 @@ mod tests {
     #[test]
     fn test_cookies_browser_none_clears() {
         let state = create_test_state();
-        let mut menu = SettingsMenu::new(&state);
+        let mut menu = test_menu(&state);
         menu.toggle();
 
         menu.settings.cookies_from_browser = "firefox".to_string();
@@ -1856,8 +1957,8 @@ mod tests {
     #[test]
     fn test_total_menu_items_count() {
         // Verify SETTINGS_COUNT and TOTAL_MENU_ITEMS are correct
-        assert_eq!(SETTINGS_COUNT, 14);
-        assert_eq!(TOTAL_MENU_ITEMS, 16);
+        assert_eq!(SETTINGS_COUNT, 15);
+        assert_eq!(TOTAL_MENU_ITEMS, 17);
         assert_eq!(IDX_APPLY_PRESET, SETTINGS_COUNT);
         assert_eq!(IDX_RESET_DEFAULTS, SETTINGS_COUNT + 1);
     }
@@ -1865,5 +1966,211 @@ mod tests {
     #[test]
     fn test_setting_descriptions_count() {
         assert_eq!(SETTING_DESCRIPTIONS.len(), TOTAL_MENU_ITEMS);
+    }
+
+    // ==================== Download Directory Tests ====================
+
+    /// Build a menu opened on the download directory item
+    fn download_dir_menu(state: &AppState) -> SettingsMenu {
+        let mut menu = test_menu(state);
+        menu.toggle();
+        menu.list_state.select(Some(IDX_DOWNLOAD_DIR));
+        menu
+    }
+
+    #[test]
+    fn test_download_dir_enter_opens_input_mode() {
+        let state = create_test_state();
+        let mut menu = download_dir_menu(&state);
+
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(menu.input_mode);
+        assert!(!menu.editing);
+        assert!(menu.custom_input.is_empty());
+    }
+
+    #[test]
+    fn test_download_dir_input_accepts_path_characters() {
+        let state = create_test_state();
+        let mut menu = download_dir_menu(&state);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        for c in "~/My Videos-1".chars() {
+            menu.handle_input(key_event(KeyCode::Char(c)), &state);
+        }
+
+        assert_eq!(menu.custom_input, "~/My Videos-1");
+    }
+
+    #[test]
+    fn test_download_dir_saves_valid_path() {
+        let temp_dir = std::env::temp_dir().join("auto_ytdlp_menu_download_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let state = create_test_state();
+        let mut menu = download_dir_menu(&state);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.custom_input = temp_dir.to_string_lossy().to_string();
+
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(!menu.input_mode);
+        assert!(menu.validation_error.is_none());
+        assert_eq!(menu.settings.download_dir, temp_dir.to_string_lossy());
+        // Accepted without being created - creation happens at download time
+        assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn test_download_dir_rejects_path_with_missing_parents() {
+        let missing = std::env::temp_dir().join("auto_ytdlp_no_such_tree/a/b/c");
+
+        let state = create_test_state();
+        let mut menu = download_dir_menu(&state);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.custom_input = missing.to_string_lossy().to_string();
+
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(menu.input_mode);
+        assert!(menu.validation_error.is_some());
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn test_download_dir_rejects_path_that_is_a_file() {
+        let temp_file = std::env::temp_dir().join("auto_ytdlp_menu_not_a_dir.txt");
+        std::fs::write(&temp_file, b"not a directory").expect("Failed to create test file");
+
+        let state = create_test_state();
+        let mut menu = download_dir_menu(&state);
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.custom_input = temp_file.to_string_lossy().to_string();
+
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        // Stays in input mode so the user can correct the path
+        assert!(menu.input_mode);
+        assert!(menu.validation_error.is_some());
+        assert!(menu.settings.download_dir.is_empty());
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_download_dir_empty_input_clears_setting() {
+        let state = create_test_state();
+        let mut menu = download_dir_menu(&state);
+        menu.settings.download_dir = "/some/dir".to_string();
+
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.custom_input = "   ".to_string();
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        assert!(menu.settings.download_dir.is_empty());
+        assert!(menu.validation_error.is_none());
+    }
+
+    #[test]
+    fn test_preset_keeps_download_dir() {
+        let state = create_test_state();
+        let mut menu = test_menu(&state);
+        menu.toggle();
+        menu.settings.download_dir = "/media/videos".to_string();
+
+        menu.list_state.select(Some(IDX_APPLY_PRESET));
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.handle_input(key_event(KeyCode::Enter), &state); // Apply first preset
+
+        assert_eq!(menu.settings.download_dir, "/media/videos");
+    }
+
+    #[test]
+    fn test_reset_to_defaults_keeps_download_dir() {
+        let state = create_test_state();
+        let mut menu = test_menu(&state);
+        menu.toggle();
+        menu.settings.download_dir = "/media/videos".to_string();
+        menu.settings.concurrent_downloads = 8;
+
+        menu.list_state.select(Some(IDX_RESET_DEFAULTS));
+        menu.handle_input(key_event(KeyCode::Enter), &state); // Open confirmation
+        menu.handle_input(key_event(KeyCode::Char('y')), &state);
+
+        assert_eq!(menu.settings.download_dir, "/media/videos");
+        // Everything else is back to defaults
+        assert_eq!(
+            menu.settings.concurrent_downloads,
+            Settings::default().concurrent_downloads
+        );
+    }
+
+    #[test]
+    fn test_preset_persists_to_disk() {
+        let state = create_test_state();
+        let mut menu = test_menu(&state);
+        menu.toggle();
+
+        menu.list_state.select(Some(IDX_APPLY_PRESET));
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+        menu.preset_index = 1; // Audio Archive
+        menu.handle_input(key_event(KeyCode::Enter), &state);
+
+        let saved = Settings::load().expect("Settings should load after applying a preset");
+        assert_eq!(saved.format_preset, menu.settings.format_preset);
+        assert_eq!(saved.output_format, menu.settings.output_format);
+    }
+
+    // ==================== Display Helper Tests ====================
+
+    #[test]
+    fn test_download_dir_display_reports_cli_override() {
+        let state = create_test_state();
+        let mut menu = SettingsMenu::new(&state, Some(PathBuf::from("/tmp/scratch")));
+        menu.settings.download_dir = "/media/videos".to_string();
+
+        let display = menu.download_dir_display();
+
+        assert!(display.contains("/tmp/scratch"));
+        assert!(display.contains("--download-dir"));
+        assert!(!display.contains("/media/videos"));
+    }
+
+    #[test]
+    fn test_download_dir_display_without_override() {
+        let state = create_test_state();
+        let mut menu = test_menu(&state);
+        assert!(menu.download_dir_display().contains("(default)"));
+
+        menu.settings.download_dir = "/media/videos".to_string();
+        assert_eq!(menu.download_dir_display(), "/media/videos");
+    }
+
+    #[test]
+    fn test_truncate_for_display_keeps_requested_end() {
+        assert_eq!(
+            truncate_for_display("/short/path", 20, Keep::End),
+            "/short/path"
+        );
+        assert_eq!(
+            truncate_for_display("/a/very/long/path/to/some/videos", 15, Keep::End),
+            ".../some/videos"
+        );
+        assert_eq!(
+            truncate_for_display("--user-agent Some Very Long Agent", 15, Keep::Start),
+            "--user-agent..."
+        );
+    }
+
+    #[test]
+    fn test_truncate_for_display_handles_multibyte() {
+        // Byte-slicing this at 27 bytes would land mid-character and panic
+        let value = "--paths home:/Users/me/Vidéos/dump";
+
+        let truncated = truncate_for_display(value, 30, Keep::Start);
+
+        assert!(truncated.ends_with("..."));
+        assert_eq!(truncated.chars().count(), 30);
     }
 }

@@ -60,7 +60,11 @@ impl SettingsPreset {
     }
 
     /// Create settings configured for this preset
-    pub fn apply(&self) -> Settings {
+    ///
+    /// Presets only cover download behaviour, so the download directory from
+    /// `current` is carried over instead of being reset.
+    pub fn apply(&self, current: &Settings) -> Settings {
+        let download_dir = current.download_dir.clone();
         match self {
             SettingsPreset::BestQuality => Settings {
                 format_preset: FormatPreset::Best,
@@ -77,6 +81,7 @@ impl SettingsPreset {
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
+                download_dir,
             },
             SettingsPreset::AudioArchive => Settings {
                 format_preset: FormatPreset::AudioOnly,
@@ -93,6 +98,7 @@ impl SettingsPreset {
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
+                download_dir,
             },
             SettingsPreset::FastDownload => Settings {
                 format_preset: FormatPreset::Best,
@@ -109,6 +115,7 @@ impl SettingsPreset {
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
+                download_dir,
             },
             SettingsPreset::BandwidthSaver => Settings {
                 format_preset: FormatPreset::SD480p,
@@ -125,6 +132,7 @@ impl SettingsPreset {
                 use_ascii_indicators: false,
                 custom_ytdlp_args: String::new(),
                 reset_stats_on_new_batch: true,
+                download_dir,
             },
         }
     }
@@ -234,6 +242,11 @@ pub struct Settings {
     /// When false: counters accumulate across batches in a session
     #[serde(default = "default_true")]
     pub reset_stats_on_new_batch: bool,
+    /// Directory media files are downloaded to, empty to use the built-in
+    /// default (or whatever `--download-dir` was passed on the command line).
+    /// A leading `~` is expanded to the user's home directory.
+    #[serde(default)]
+    pub download_dir: String,
 }
 
 /// Default function for serde to use true as default
@@ -258,18 +271,89 @@ impl Default for Settings {
             use_ascii_indicators: false,
             custom_ytdlp_args: String::new(),
             reset_stats_on_new_batch: true,
+            download_dir: String::new(),
         }
+    }
+}
+
+/// Expand a leading `~` in a path to the user's home directory
+///
+/// Paths without a leading `~` are returned unchanged. Returns `None` only when
+/// the path starts with `~` but the home directory cannot be determined (for
+/// example a service started without HOME) - callers must not fall back to the
+/// literal path, or a directory actually named `~` gets created.
+///
+/// `~user` is not expanded; resolving another user's home directory is not
+/// supported, so such a path is returned unchanged.
+pub fn expand_tilde(path: &str) -> Option<PathBuf> {
+    let trimmed = path.trim();
+
+    let Some(rest) = trimmed.strip_prefix('~') else {
+        return Some(PathBuf::from(trimmed));
+    };
+
+    // Accept any platform separator after "~" so "~\Videos" works on Windows
+    let rest = match rest.chars().next() {
+        None => "",
+        Some(c) if std::path::is_separator(c) => rest.trim_start_matches(std::path::is_separator),
+        Some(_) => return Some(PathBuf::from(trimmed)),
+    };
+
+    let home = dirs::home_dir()?;
+    Some(if rest.is_empty() {
+        home
+    } else {
+        home.join(rest)
+    })
+}
+
+/// Settings file used by unit tests
+///
+/// Tests drive the real save/load paths, so without this they would overwrite
+/// the developer's own `~/.config/auto-ytdlp/settings.json`. The file is
+/// per-thread - cargo runs each test on its own thread, so tests that save
+/// settings cannot clobber each other's expectations.
+#[cfg(test)]
+fn test_settings_path() -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static PATH: PathBuf = {
+            let dir = std::env::temp_dir().join("auto-ytdlp-test-config");
+            fs::create_dir_all(&dir).ok();
+            dir.join(format!(
+                "settings-{}.json",
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            ))
+        };
+    }
+    PATH.with(|path| path.clone())
+}
+
+/// Settings with only the download directory configured
+#[cfg(test)]
+pub fn settings_with_dir(dir: &str) -> Settings {
+    Settings {
+        download_dir: dir.to_string(),
+        ..Settings::default()
     }
 }
 
 impl Settings {
     /// Get the settings file path
     fn get_settings_path() -> PathBuf {
-        let mut config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.push("auto-ytdlp");
-        fs::create_dir_all(&config_dir).ok();
-        config_dir.push("settings.json");
-        config_dir
+        #[cfg(test)]
+        return test_settings_path();
+
+        #[cfg(not(test))]
+        {
+            let mut config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+            config_dir.push("auto-ytdlp");
+            fs::create_dir_all(&config_dir).ok();
+            config_dir.push("settings.json");
+            config_dir
+        }
     }
 
     /// Validate custom yt-dlp arguments for conflicts
@@ -298,6 +382,62 @@ impl Settings {
         }
 
         Ok(())
+    }
+
+    /// Validate a download directory entered by the user
+    ///
+    /// An empty value is valid and means "fall back to the default directory".
+    /// A non-empty value is expanded (`~`) and checked, but never created: this
+    /// runs on the TUI thread, so it must not block on a slow mount or leave a
+    /// stray directory behind. The directory is created at download time.
+    pub fn validate_download_dir(dir: &str) -> std::result::Result<(), String> {
+        if dir.trim().is_empty() {
+            return Ok(());
+        }
+
+        let Some(path) = expand_tilde(dir) else {
+            return Err("Cannot determine your home directory - use a full path".to_string());
+        };
+
+        if path.exists() {
+            return if path.is_dir() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "'{}' exists but is not a directory",
+                    path.display()
+                ))
+            };
+        }
+
+        // Not created yet: require the immediate parent to exist, so a typo in
+        // the parent path is rejected instead of creating a whole new tree
+        // somewhere the user did not mean.
+        match path.parent() {
+            Some(parent) if parent.is_dir() => Ok(()),
+            Some(parent) => Err(format!("'{}' does not exist", parent.display())),
+            None => Err(format!("'{}' is not a valid directory", path.display())),
+        }
+    }
+
+    /// Get the configured download directory, if one is set
+    ///
+    /// Returns `None` when the setting is empty or is a `~` path that cannot be
+    /// expanded, meaning the caller should fall back to the command-line value
+    /// or the built-in default.
+    pub fn resolved_download_dir(&self) -> Option<PathBuf> {
+        if self.download_dir.trim().is_empty() {
+            return None;
+        }
+
+        let expanded = expand_tilde(&self.download_dir);
+        if expanded.is_none() {
+            eprintln!(
+                "Warning: cannot expand '{}' (no home directory); using the default download directory",
+                self.download_dir
+            );
+        }
+        expanded
     }
 
     /// Parse custom arguments into a vector of strings
@@ -632,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_preset_best_quality() {
-        let settings = SettingsPreset::BestQuality.apply();
+        let settings = SettingsPreset::BestQuality.apply(&Settings::default());
         assert_eq!(settings.format_preset, FormatPreset::Best);
         assert_eq!(settings.output_format, OutputFormat::Auto);
         assert!(settings.write_subtitles);
@@ -644,7 +784,7 @@ mod tests {
 
     #[test]
     fn test_preset_audio_archive() {
-        let settings = SettingsPreset::AudioArchive.apply();
+        let settings = SettingsPreset::AudioArchive.apply(&Settings::default());
         assert_eq!(settings.format_preset, FormatPreset::AudioOnly);
         assert_eq!(settings.output_format, OutputFormat::MP3);
         assert!(!settings.write_subtitles);
@@ -654,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_preset_fast_download() {
-        let settings = SettingsPreset::FastDownload.apply();
+        let settings = SettingsPreset::FastDownload.apply(&Settings::default());
         assert_eq!(settings.format_preset, FormatPreset::Best);
         assert!(!settings.write_subtitles);
         assert!(!settings.write_thumbnail);
@@ -665,7 +805,7 @@ mod tests {
 
     #[test]
     fn test_preset_bandwidth_saver() {
-        let settings = SettingsPreset::BandwidthSaver.apply();
+        let settings = SettingsPreset::BandwidthSaver.apply(&Settings::default());
         assert_eq!(settings.format_preset, FormatPreset::SD480p);
         assert!(!settings.write_subtitles);
         assert!(!settings.write_thumbnail);
@@ -744,13 +884,13 @@ mod tests {
 
     #[test]
     fn test_preset_bandwidth_saver_has_rate_limit() {
-        let settings = SettingsPreset::BandwidthSaver.apply();
+        let settings = SettingsPreset::BandwidthSaver.apply(&Settings::default());
         assert_eq!(settings.rate_limit, "2M");
     }
 
     #[test]
     fn test_preset_best_quality_no_rate_limit() {
-        let settings = SettingsPreset::BestQuality.apply();
+        let settings = SettingsPreset::BestQuality.apply(&Settings::default());
         assert!(settings.rate_limit.is_empty());
     }
 
@@ -781,7 +921,7 @@ mod tests {
     #[test]
     fn test_all_presets_sponsorblock_false() {
         for preset in SettingsPreset::all() {
-            let settings = preset.apply();
+            let settings = preset.apply(&Settings::default());
             assert!(
                 !settings.sponsorblock,
                 "Preset {:?} should have sponsorblock = false",
@@ -814,10 +954,167 @@ mod tests {
         assert!(!args.contains(&"--cookies-from-browser".to_string()));
     }
 
+    // ==================== Download Directory Tests ====================
+
+    #[test]
+    fn test_download_dir_default_empty() {
+        let settings = Settings::default();
+        assert!(settings.download_dir.is_empty());
+        assert_eq!(settings.resolved_download_dir(), None);
+    }
+
+    #[test]
+    fn test_resolved_download_dir_when_set() {
+        assert_eq!(
+            settings_with_dir("/media/videos").resolved_download_dir(),
+            Some(PathBuf::from("/media/videos"))
+        );
+    }
+
+    #[test]
+    fn test_resolved_download_dir_whitespace_only_is_none() {
+        assert_eq!(settings_with_dir("   ").resolved_download_dir(), None);
+    }
+
+    #[test]
+    fn test_expand_tilde_home_only() {
+        let home = dirs::home_dir().expect("Home directory should be available in tests");
+        assert_eq!(expand_tilde("~"), Some(home));
+    }
+
+    #[test]
+    fn test_expand_tilde_with_subdirectory() {
+        let home = dirs::home_dir().expect("Home directory should be available in tests");
+        assert_eq!(
+            expand_tilde("~/Videos/clips"),
+            Some(home.join("Videos/clips"))
+        );
+    }
+
+    #[test]
+    fn test_expand_tilde_accepts_platform_separator() {
+        // Windows users type "~\Videos"; both separators must expand
+        let expanded = expand_tilde(&format!("~{}Videos", std::path::MAIN_SEPARATOR))
+            .expect("Home directory should be available in tests");
+
+        assert!(!expanded.to_string_lossy().starts_with('~'));
+        assert!(expanded.ends_with("Videos"));
+    }
+
+    #[test]
+    fn test_expand_tilde_leaves_absolute_paths_alone() {
+        assert_eq!(
+            expand_tilde("/media/videos"),
+            Some(PathBuf::from("/media/videos"))
+        );
+        assert_eq!(
+            expand_tilde("relative/dir"),
+            Some(PathBuf::from("relative/dir"))
+        );
+    }
+
+    #[test]
+    fn test_expand_tilde_leaves_other_users_home_alone() {
+        // "~user" is not supported and must be passed through unchanged
+        assert_eq!(
+            expand_tilde("~someone/videos"),
+            Some(PathBuf::from("~someone/videos"))
+        );
+    }
+
+    #[test]
+    fn test_validate_download_dir_empty_is_ok() {
+        assert!(Settings::validate_download_dir("").is_ok());
+        assert!(Settings::validate_download_dir("   ").is_ok());
+    }
+
+    #[test]
+    fn test_validate_download_dir_accepts_missing_dir_with_existing_parent() {
+        let dir = std::env::temp_dir().join("auto_ytdlp_validate_download_dir");
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(Settings::validate_download_dir(&dir.to_string_lossy()).is_ok());
+        // Validation must not touch the filesystem
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn test_validate_download_dir_rejects_missing_parents() {
+        let dir = std::env::temp_dir().join("auto_ytdlp_missing_tree/a/b");
+        let _ = fs::remove_dir_all(
+            dir.parent()
+                .and_then(|p| p.parent())
+                .expect("temp path should have grandparent"),
+        );
+
+        let result = Settings::validate_download_dir(&dir.to_string_lossy());
+
+        assert!(result.is_err());
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn test_validate_download_dir_accepts_existing_dir() {
+        let dir = std::env::temp_dir().join("auto_ytdlp_validate_existing");
+        fs::create_dir_all(&dir).expect("Failed to create test directory");
+
+        assert!(Settings::validate_download_dir(&dir.to_string_lossy()).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_download_dir_rejects_file() {
+        let file = std::env::temp_dir().join("auto_ytdlp_validate_not_a_dir.txt");
+        fs::write(&file, b"not a directory").expect("Failed to create test file");
+
+        let result = Settings::validate_download_dir(&file.to_string_lossy());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not a directory"));
+
+        let _ = fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_preset_preserves_download_dir() {
+        let current = settings_with_dir("/media/videos");
+
+        for preset in SettingsPreset::all() {
+            let settings = preset.apply(&current);
+            assert_eq!(
+                settings.download_dir,
+                "/media/videos",
+                "Preset {:?} should keep the configured download directory",
+                preset.name()
+            );
+        }
+    }
+
+    #[test]
+    fn test_settings_deserialize_without_download_dir() {
+        // Settings files written before this option existed must still load
+        let json = r#"{
+            "format_preset": "Best",
+            "output_format": "Auto",
+            "write_subtitles": false,
+            "write_thumbnail": false,
+            "add_metadata": false,
+            "concurrent_downloads": 4,
+            "network_retry": false,
+            "retry_delay": 2
+        }"#;
+
+        let settings: Settings =
+            serde_json::from_str(json).expect("Legacy settings JSON should deserialize");
+
+        assert!(settings.download_dir.is_empty());
+    }
+
     #[test]
     fn test_all_presets_cookies_empty() {
         for preset in SettingsPreset::all() {
-            let settings = preset.apply();
+            let settings = preset.apply(&Settings::default());
             assert!(
                 settings.cookies_from_browser.is_empty(),
                 "Preset {:?} should have cookies_from_browser empty",

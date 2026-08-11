@@ -107,7 +107,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
     }
 
     // Create settings menu
-    let mut settings_menu = SettingsMenu::new(&state);
+    let mut settings_menu = SettingsMenu::new(&state, args.flag_download_dir());
 
     // UI rendering loop
     let tick_rate = Duration::from_millis(100);
@@ -192,7 +192,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
                 InputResult::Unhandled => {
                     // Handle F2 for settings menu toggle
                     if key.code == crossterm::event::KeyCode::F(2) {
-                        settings_menu = SettingsMenu::new(&state);
+                        settings_menu = SettingsMenu::new(&state, args.flag_download_dir());
                         settings_menu.toggle();
                     }
                 }
