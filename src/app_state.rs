@@ -608,17 +608,16 @@ impl AppState {
             0 // unused when not resetting
         };
 
-        let mut stats = self.stats.lock()?;
-        stats.completed_tasks = 0;
-        stats.progress = 0.0;
-
-        // Reset total counters to current queue size so the progress bar
-        // starts at 0% with the correct denominator
+        // Reset the counters as a unit: zeroing the completed count while the
+        // denominator keeps accumulating would leave progress unable to reach
+        // 100%. When stats are cumulative, both sides carry over instead.
         if reset_stats {
+            let mut stats = self.stats.lock()?;
+            stats.completed_tasks = 0;
+            stats.progress = 0.0;
             stats.total_tasks = queue_len;
             stats.initial_total_tasks = queue_len;
         }
-        drop(stats);
 
         // Reset retry counter, clear toast, and clear failed downloads
         self.reset_retries()?;
@@ -2022,8 +2021,8 @@ mod tests {
             .expect("failed to build UI snapshot");
         assert_eq!(snapshot.total_tasks, 3);
         assert_eq!(snapshot.initial_total_tasks, 3);
-        // But completed_tasks is always reset
-        assert_eq!(snapshot.completed_tasks, 0);
+        // completed_tasks carries over with the totals, so progress stays coherent
+        assert_eq!(snapshot.completed_tasks, 2);
     }
 
     #[test]
@@ -2086,8 +2085,8 @@ mod tests {
             .expect("failed to build UI snapshot");
         assert_eq!(snapshot.initial_total_tasks, 5);
         assert_eq!(snapshot.total_tasks, 5);
-        // completed_tasks was reset
-        assert_eq!(snapshot.completed_tasks, 0);
+        // completed_tasks carries over too, so finishing url4/url5 reaches 5/5
+        assert_eq!(snapshot.completed_tasks, 3);
     }
 
     #[test]

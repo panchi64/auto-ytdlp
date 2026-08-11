@@ -10,6 +10,36 @@ use crate::ui::settings_menu::SettingsMenu;
 
 use super::UiContext;
 
+/// Calculate the number of rows a single line occupies once wrapped.
+///
+/// Mirrors ratatui's `Wrap { trim: true }`: text breaks at whitespace, words
+/// longer than the row are split, and widths are measured in display cells
+/// (so double-width glyphs count as two).
+fn wrapped_line_height(line: &str, available_width: usize) -> u16 {
+    let mut rows: u16 = 1;
+    let mut used = 0usize;
+
+    for word in line.split_whitespace() {
+        let width = Span::raw(word).width();
+
+        if used > 0 {
+            if used + 1 + width <= available_width {
+                used += 1 + width;
+                continue;
+            }
+            // Doesn't fit after the current content: start a new row.
+            rows = rows.saturating_add(1);
+        }
+
+        // A word wider than the row spills over onto further rows.
+        let overflow_rows = width.saturating_sub(1) / available_width;
+        rows = rows.saturating_add(overflow_rows as u16);
+        used = width - overflow_rows * available_width;
+    }
+
+    rows
+}
+
 /// Calculate the total height needed to render wrapped lines.
 ///
 /// Accounts for text wrapping when lines exceed the available width.
@@ -19,14 +49,7 @@ fn calculate_wrapped_height(lines: &[String], available_width: usize) -> u16 {
     }
     lines
         .iter()
-        .map(|line| {
-            let chars = line.chars().count();
-            if chars == 0 {
-                1u16
-            } else {
-                chars.div_ceil(available_width).max(1) as u16
-            }
-        })
+        .map(|line| wrapped_line_height(line, available_width))
         .sum()
 }
 
@@ -708,11 +731,20 @@ mod tests {
 
     #[test]
     fn test_wrapped_height_unicode_characters() {
-        // Unicode characters should be counted by char, not bytes
-        let line = "🎵".repeat(10); // 10 emoji characters
+        // Widths are measured in display cells, matching what the renderer does
+        let line = "🎵".repeat(10); // 10 double-width emoji = 20 cells
         let lines = vec![line];
-        // 10 chars in 5-char width = 2 lines
-        assert_eq!(calculate_wrapped_height(&lines, 5), 2);
+        // 20 cells in 5-cell width = 4 lines
+        assert_eq!(calculate_wrapped_height(&lines, 5), 4);
+    }
+
+    #[test]
+    fn test_wrapped_height_breaks_on_word_boundaries() {
+        // Word wrapping pushes a word that doesn't fit onto the next row, so the
+        // height exceeds the naive ceil(chars / width) estimate of 2.
+        let lines =
+            vec!["Starting download: https://www.youtube.com/watch?v=abcdefghij".to_string()];
+        assert_eq!(calculate_wrapped_height(&lines, 40), 3);
     }
 
     #[test]

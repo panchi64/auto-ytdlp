@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -305,9 +306,38 @@ pub fn handle_normal_mode_input(
     }
 }
 
+/// Whether workers are actively pulling URLs from the queue.
+///
+/// A paused session is not running: workers stop popping new URLs while paused.
+fn downloads_running(state: &AppState) -> bool {
+    state.is_started().unwrap_or(false)
+        && !state.is_paused().unwrap_or(false)
+        && !state.is_completed().unwrap_or(false)
+}
+
+/// Whether any yt-dlp process may still be executing.
+///
+/// Pausing only stops workers from popping *new* URLs — subprocesses already
+/// spawned keep downloading — so operations that disturb the yt-dlp binary or
+/// the failed-download list must treat a paused session as still in flight.
+fn downloads_in_flight(state: &AppState) -> bool {
+    state.is_started().unwrap_or(false) && !state.is_completed().unwrap_or(false)
+}
+
 fn handle_start_stop(state: &AppState, args: &Args, download_state: &mut DownloadState) {
     if let Ok(is_started) = state.is_started() {
         if !is_started {
+            // The started flag is set by the controller, so it lags this keypress
+            // slightly; a live thread handle is the authoritative "already running"
+            // signal and keeps a fast second S from spawning a duplicate controller.
+            if download_state
+                .download_thread_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished())
+            {
+                return;
+            }
+
             // Start downloads
             match validate_dependencies() {
                 Ok(()) => {
@@ -359,26 +389,26 @@ fn handle_start_stop(state: &AppState, args: &Args, download_state: &mut Downloa
                 eprintln!("Error adding log: {}", e);
             }
 
-            // Wait for downloads to finish
-            if let Some(handle) = download_state.download_thread_handle.take() {
-                eprintln!("Stopping downloads: Waiting for active downloads to complete...");
-                if let Err(e) = handle.join() {
-                    let err_msg = format!("Error joining download thread on stop: {:?}", e);
-                    if let Err(log_err) = state.add_log(err_msg.clone()) {
-                        eprintln!("Error adding log: {}", log_err);
-                    }
-                    eprintln!("{}", err_msg);
-                } else {
-                    if let Err(e) = state.add_log("Downloads stopped gracefully.".to_string()) {
-                        eprintln!("Error adding log: {}", e);
-                    }
-                    eprintln!("Downloads stopped gracefully.");
-                }
-            }
-
-            // Clear logs after a short delay when manually stopping downloads
+            // Wait for downloads to finish off the UI thread: joining here would
+            // freeze rendering and input until every yt-dlp process exits.
+            let handle = download_state.download_thread_handle.take();
             let state_clone = state.clone();
             thread::spawn(move || {
+                if let Some(handle) = handle {
+                    if let Err(e) = handle.join() {
+                        if let Err(log_err) = state_clone
+                            .add_log(format!("Error joining download thread on stop: {:?}", e))
+                        {
+                            eprintln!("Error adding log: {}", log_err);
+                        }
+                    } else if let Err(e) =
+                        state_clone.add_log("Downloads stopped gracefully.".to_string())
+                    {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+
+                // Clear logs after a short delay when manually stopping downloads
                 thread::sleep(Duration::from_secs(2));
                 if let Err(e) = state_clone.clear_logs() {
                     eprintln!("Error clearing logs: {}", e);
@@ -407,11 +437,7 @@ fn handle_pause_resume(state: &AppState, last_tick: &mut Instant, tick_rate: Dur
 }
 
 fn handle_reload(state: &AppState, last_tick: &mut Instant, tick_rate: Duration) {
-    let is_started = state.is_started().unwrap_or(false);
-    let is_paused = state.is_paused().unwrap_or(false);
-    let is_completed = state.is_completed().unwrap_or(false);
-
-    if !is_started || is_paused || is_completed {
+    if !downloads_running(state) {
         if let Err(e) = state.reset_for_new_run() {
             eprintln!("Error resetting state: {}", e);
         }
@@ -483,22 +509,21 @@ fn handle_add_clipboard(state: &AppState) {
     match contents_result {
         Ok(contents) => match add_clipboard_links(state, &contents) {
             Ok(links_added) => {
-                if links_added > 0 {
+                let msg = if links_added > 0 {
                     if let Err(e) = state.send(StateMessage::SetCompleted(false)) {
                         eprintln!("Error setting completed flag: {}", e);
                     }
-                    let is_active = state.is_started().unwrap_or(false)
-                        && !state.is_paused().unwrap_or(false)
-                        && !state.is_completed().unwrap_or(false);
-                    let msg = if is_active {
+                    if downloads_running(state) {
                         format!("Queued {} new URLs", links_added)
                     } else {
                         format!("Added {} URLs", links_added)
-                    };
-                    let _ = state.show_toast(&msg);
-                    if let Err(e) = state.add_log(msg) {
-                        eprintln!("Error adding log: {}", e);
                     }
+                } else {
+                    "No new URLs found in clipboard".to_string()
+                };
+                let _ = state.show_toast(&msg);
+                if let Err(e) = state.add_log(msg) {
+                    eprintln!("Error adding log: {}", e);
                 }
             }
             Err(e) => {
@@ -516,14 +541,23 @@ fn handle_add_clipboard(state: &AppState) {
     }
 }
 
-fn handle_ytdlp_update(state: &AppState) {
-    let is_started = state.is_started().unwrap_or(false);
-    let is_completed = state.is_completed().unwrap_or(false);
-    let is_paused = state.is_paused().unwrap_or(false);
+/// Guards against overlapping `yt-dlp -U` runs: two updaters rewriting the same
+/// binary concurrently can leave a corrupt executable on PATH.
+static YTDLP_UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-    let downloads_active = is_started && !is_completed && !is_paused;
-    if downloads_active {
+fn handle_ytdlp_update(state: &AppState) {
+    if downloads_in_flight(state) {
         if let Err(e) = state.add_log("Cannot update while downloads are active".to_string()) {
+            eprintln!("Error adding log: {}", e);
+        }
+        return;
+    }
+
+    if YTDLP_UPDATE_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        if let Err(e) = state.add_log("yt-dlp update already in progress".to_string()) {
             eprintln!("Error adding log: {}", e);
         }
         return;
@@ -534,42 +568,42 @@ fn handle_ytdlp_update(state: &AppState) {
     }
 
     let state_clone = state.clone();
-    thread::spawn(move || match Command::new("yt-dlp").arg("-U").output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
+    thread::spawn(move || {
+        let result = Command::new("yt-dlp").arg("-U").output();
+        YTDLP_UPDATE_IN_FLIGHT.store(false, Ordering::SeqCst);
+        match result {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
 
-            for line in stdout.lines().chain(stderr.lines()) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty()
-                    && let Err(e) = state_clone.add_log(trimmed.to_string())
-                {
-                    eprintln!("Error adding log: {}", e);
+                for line in stdout.lines().chain(stderr.lines()) {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty()
+                        && let Err(e) = state_clone.add_log(trimmed.to_string())
+                    {
+                        eprintln!("Error adding log: {}", e);
+                    }
+                }
+
+                if output.status.success() {
+                    let _ = state_clone.show_toast("yt-dlp update complete");
+                } else {
+                    let _ = state_clone.show_toast("yt-dlp update failed");
                 }
             }
-
-            if output.status.success() {
-                let _ = state_clone.show_toast("yt-dlp update complete");
-            } else {
+            Err(e) => {
+                if let Err(log_err) = state_clone.add_log(format!("Failed to run yt-dlp -U: {}", e))
+                {
+                    eprintln!("Error adding log: {}", log_err);
+                }
                 let _ = state_clone.show_toast("yt-dlp update failed");
             }
-        }
-        Err(e) => {
-            if let Err(log_err) = state_clone.add_log(format!("Failed to run yt-dlp -U: {}", e)) {
-                eprintln!("Error adding log: {}", log_err);
-            }
-            let _ = state_clone.show_toast("yt-dlp update failed");
         }
     });
 }
 
 fn handle_retry_failed(state: &AppState) {
-    let is_started = state.is_started().unwrap_or(false);
-    let is_completed = state.is_completed().unwrap_or(false);
-    let is_paused = state.is_paused().unwrap_or(false);
-
-    let downloads_active = is_started && !is_completed && !is_paused;
-    if downloads_active {
+    if downloads_in_flight(state) {
         if let Err(e) = state.add_log("Cannot retry while downloads are active".to_string()) {
             eprintln!("Error adding log: {}", e);
         }
@@ -589,6 +623,10 @@ fn handle_retry_failed(state: &AppState) {
                         eprintln!("Error re-queuing URL: {}", e);
                     }
                 }
+                // There is pending work again, so the run is no longer complete.
+                if let Err(e) = state.send(StateMessage::SetCompleted(false)) {
+                    eprintln!("Error setting completed flag: {}", e);
+                }
                 let _ = state.show_toast(format!("Re-queued {} failed downloads", count));
             }
         }
@@ -601,11 +639,7 @@ fn handle_retry_failed(state: &AppState) {
 }
 
 fn handle_edit_mode(state: &AppState, ctx: &mut UiContext) {
-    let is_active = state.is_started().unwrap_or(false)
-        && !state.is_paused().unwrap_or(false)
-        && !state.is_completed().unwrap_or(false);
-
-    if !is_active {
+    if !downloads_running(state) {
         let queue_len = state.get_queue().map(|q| q.len()).unwrap_or(0);
         if queue_len > 0 {
             ctx.queue_edit_mode = true;
@@ -646,20 +680,38 @@ mod tests {
         Args::parse_from(["test"])
     }
 
-    // Helper to create NormalModeContext for testing
-    fn create_test_nmc<'a>(
-        ctx: &'a mut UiContext,
-        download_state: &'a mut DownloadState,
-        force_quit_state: &'a mut ForceQuitState,
-        last_tick: &'a mut Instant,
+    /// Owns everything a `NormalModeContext` borrows, so a test declares one
+    /// value instead of five locals plus a five-argument constructor call, and
+    /// can inspect the same fields afterwards.
+    struct TestNmc {
+        ctx: UiContext,
+        download_state: DownloadState,
+        force_quit_state: ForceQuitState,
+        last_tick: Instant,
         tick_rate: Duration,
-    ) -> NormalModeContext<'a> {
-        NormalModeContext {
-            ctx,
-            download_state,
-            force_quit_state,
-            last_tick,
-            tick_rate,
+    }
+
+    impl Default for TestNmc {
+        fn default() -> Self {
+            Self {
+                ctx: create_test_context(),
+                download_state: DownloadState::default(),
+                force_quit_state: ForceQuitState::default(),
+                last_tick: Instant::now(),
+                tick_rate: Duration::from_millis(100),
+            }
+        }
+    }
+
+    impl TestNmc {
+        fn context(&mut self) -> NormalModeContext<'_> {
+            NormalModeContext {
+                ctx: &mut self.ctx,
+                download_state: &mut self.download_state,
+                force_quit_state: &mut self.force_quit_state,
+                last_tick: &mut self.last_tick,
+                tick_rate: self.tick_rate,
+            }
         }
     }
 
@@ -923,22 +975,11 @@ mod tests {
     fn test_normal_mode_f1_shows_help() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::F(1), &state, &args, &mut nmc);
+        let result = handle_normal_mode_input(KeyCode::F(1), &state, &args, &mut nmc.context());
 
-        assert!(ctx.show_help);
+        assert!(nmc.ctx.show_help);
         assert!(matches!(result, InputResult::Continue));
     }
 
@@ -946,22 +987,12 @@ mod tests {
     fn test_normal_mode_q_graceful_quit() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('q'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('q'), &state, &args, &mut nmc.context());
 
-        assert!(download_state.await_downloads_on_exit);
+        assert!(nmc.download_state.await_downloads_on_exit);
         assert!(matches!(result, InputResult::Break));
     }
 
@@ -969,23 +1000,13 @@ mod tests {
     fn test_normal_mode_shift_q_initiates_force_quit() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc.context());
 
-        assert!(force_quit_state.pending);
-        assert!(force_quit_state.time.is_some());
+        assert!(nmc.force_quit_state.pending);
+        assert!(nmc.force_quit_state.time.is_some());
         assert!(matches!(result, InputResult::Continue));
     }
 
@@ -993,23 +1014,16 @@ mod tests {
     fn test_normal_mode_shift_q_confirms_force_quit() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState {
-            pending: true,
-            time: Some(Instant::now()),
+        let mut nmc = TestNmc {
+            force_quit_state: ForceQuitState {
+                pending: true,
+                time: Some(Instant::now()),
+            },
+            ..Default::default()
         };
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('Q'), &state, &args, &mut nmc.context());
 
         assert!(matches!(result, InputResult::Break));
     }
@@ -1022,20 +1036,10 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('p'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('p'), &state, &args, &mut nmc.context());
 
         assert!(matches!(result, InputResult::Continue));
     }
@@ -1044,24 +1048,14 @@ mod tests {
     fn test_normal_mode_slash_enters_filter_mode() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('/'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('/'), &state, &args, &mut nmc.context());
 
-        assert!(ctx.filter_mode);
-        assert!(ctx.filter_text.is_empty());
-        assert!(ctx.filtered_indices.is_empty());
+        assert!(nmc.ctx.filter_mode);
+        assert!(nmc.ctx.filter_text.is_empty());
+        assert!(nmc.ctx.filtered_indices.is_empty());
         assert!(matches!(result, InputResult::Continue));
     }
 
@@ -1069,20 +1063,9 @@ mod tests {
     fn test_normal_mode_f2_returns_unhandled() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::F(2), &state, &args, &mut nmc);
+        let result = handle_normal_mode_input(KeyCode::F(2), &state, &args, &mut nmc.context());
 
         // F2 returns Unhandled so the caller can toggle settings menu
         assert!(matches!(result, InputResult::Unhandled));
@@ -1092,20 +1075,10 @@ mod tests {
     fn test_normal_mode_unknown_key_unhandled() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('z'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('z'), &state, &args, &mut nmc.context());
 
         assert!(matches!(result, InputResult::Unhandled));
     }
@@ -1116,20 +1089,10 @@ mod tests {
     fn test_normal_mode_u_handled() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc.context());
 
         assert!(matches!(result, InputResult::Continue));
     }
@@ -1141,20 +1104,10 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('u'), &state, &args, &mut nmc.context());
 
         assert!(matches!(result, InputResult::Continue));
 
@@ -1176,20 +1129,10 @@ mod tests {
     fn test_normal_mode_t_handled() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        let result = handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
+        let result =
+            handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc.context());
 
         assert!(matches!(result, InputResult::Continue));
     }
@@ -1212,20 +1155,9 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
+        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc.context());
 
         // Wait for message processing
         thread::sleep(Duration::from_millis(100));
@@ -1245,20 +1177,9 @@ mod tests {
     fn test_normal_mode_t_no_failed_logs_message() {
         let state = create_test_state();
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
+        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc.context());
 
         let snapshot = state
             .get_ui_snapshot()
@@ -1278,20 +1199,9 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         let args = create_test_args();
-        let mut ctx = create_test_context();
-        let mut download_state = DownloadState::default();
-        let mut force_quit_state = ForceQuitState::default();
-        let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let mut nmc = TestNmc::default();
 
-        let mut nmc = create_test_nmc(
-            &mut ctx,
-            &mut download_state,
-            &mut force_quit_state,
-            &mut last_tick,
-            tick_rate,
-        );
-        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc);
+        handle_normal_mode_input(KeyCode::Char('t'), &state, &args, &mut nmc.context());
 
         let snapshot = state
             .get_ui_snapshot()

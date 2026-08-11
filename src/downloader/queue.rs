@@ -7,6 +7,23 @@ use crate::{
 
 use super::worker::download_worker;
 
+/// Returns whether the queue is empty, treating a lock failure as "not empty".
+///
+/// A failed read must never be mistaken for "nothing left to do", which would
+/// make the controller declare the batch complete while URLs are still queued.
+fn queue_is_empty(state: &AppState) -> bool {
+    state.get_queue().map(|q| q.is_empty()).unwrap_or(false)
+}
+
+/// Returns whether there are no active downloads, treating a lock failure as
+/// "downloads still active" for the same reason as [`queue_is_empty`].
+fn active_downloads_empty(state: &AppState) -> bool {
+    state
+        .get_active_downloads()
+        .map(|a| a.is_empty())
+        .unwrap_or(false)
+}
+
 /// Processes the download queue using multiple worker threads.
 ///
 /// This function is the main orchestrator of the download process. It:
@@ -42,15 +59,32 @@ use super::worker::download_worker;
 ///
 /// Workers will pause processing (but not exit) when the pause flag is set.
 pub fn process_queue(state: AppState, args: Args) {
-    if state.get_queue().unwrap_or_default().is_empty() {
-        if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
-            eprintln!("Error setting completed: {}", e);
+    match state.get_queue() {
+        Ok(queue) => {
+            if queue.is_empty() {
+                if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
+                    eprintln!("Error setting completed: {}", e);
+                }
+                return;
+            }
         }
-        return;
+        Err(e) => {
+            // A lock failure is not an empty queue: bail out without claiming the
+            // batch finished, so queued URLs are not silently dropped.
+            if let Err(log_err) = state.log_error("Queue read failed", format!("{}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+            return;
+        }
     }
 
     if let Err(e) = state.reset_for_new_run() {
         eprintln!("Error resetting state: {}", e);
+    }
+
+    // Mark the run as started only after the reset, which clears the flag.
+    if let Err(e) = state.send(StateMessage::SetStarted(true)) {
+        eprintln!("Error setting started: {}", e);
     }
 
     // Create a single controller thread instead of immediately creating all worker threads
@@ -58,7 +92,7 @@ pub fn process_queue(state: AppState, args: Args) {
     let args_clone = args.clone();
 
     let controller = thread::spawn(move || {
-        let mut worker_handles = vec![];
+        let mut worker_handles: Vec<thread::JoinHandle<()>> = vec![];
         let mut workers_created = false;
 
         loop {
@@ -82,9 +116,11 @@ pub fn process_queue(state: AppState, args: Args) {
                 continue;
             }
 
-            // Check if we need to start processing and haven't created workers yet
-            if !workers_created && !state_clone.get_queue().unwrap_or_default().is_empty() {
-                // Create worker threads only when we're about to start processing
+            // Spawn workers when there is queued work and none are alive. Workers
+            // exit once the queue drains, so URLs added later (clipboard, retry)
+            // need a fresh batch rather than a one-shot "created" latch.
+            let workers_alive = worker_handles.iter().any(|handle| !handle.is_finished());
+            if !workers_alive && !queue_is_empty(&state_clone) {
                 let concurrent_count = state_clone.get_concurrent().unwrap_or(1);
                 workers_created = true;
 
@@ -134,11 +170,8 @@ pub fn process_queue(state: AppState, args: Args) {
                             } else {
                                 thread::sleep(Duration::from_millis(100));
 
-                                if worker_state.get_queue().unwrap_or_default().is_empty()
-                                    && worker_state
-                                        .get_active_downloads()
-                                        .unwrap_or_default()
-                                        .is_empty()
+                                if queue_is_empty(&worker_state)
+                                    && active_downloads_empty(&worker_state)
                                 {
                                     // Only break if we're truly done and not just between tasks
                                     break;
@@ -152,11 +185,8 @@ pub fn process_queue(state: AppState, args: Args) {
 
             // Check if we're done
             if workers_created
-                && state_clone.get_queue().unwrap_or_default().is_empty()
-                && state_clone
-                    .get_active_downloads()
-                    .unwrap_or_default()
-                    .is_empty()
+                && queue_is_empty(&state_clone)
+                && active_downloads_empty(&state_clone)
             {
                 break;
             }
@@ -198,11 +228,8 @@ pub fn process_queue(state: AppState, args: Args) {
             }
         }
 
-        let queue_empty = state_clone.get_queue().unwrap_or_default().is_empty();
-        let active_downloads_empty = state_clone
-            .get_active_downloads()
-            .unwrap_or_default()
-            .is_empty();
+        let queue_empty = queue_is_empty(&state_clone);
+        let downloads_drained = active_downloads_empty(&state_clone);
 
         // Update final status based on whether it was a force quit or not
         if state_clone.is_force_quit().unwrap_or(false) {
@@ -213,7 +240,7 @@ pub fn process_queue(state: AppState, args: Args) {
             }
             // Do not set SetCompleted(true) on force quit, even if queue became empty by chance.
             // The state should reflect an interruption.
-        } else if queue_empty && active_downloads_empty {
+        } else if queue_empty && downloads_drained {
             if let Err(e) = state_clone.send(StateMessage::SetCompleted(true)) {
                 eprintln!("Error setting completed: {}", e);
             }

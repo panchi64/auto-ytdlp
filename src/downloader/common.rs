@@ -66,45 +66,50 @@ mod tests {
     use crate::utils::settings::{FormatPreset, OutputFormat, Settings};
     use clap::Parser;
 
+    const TEST_URL: &str = "https://example.com/video";
+
     /// Helper function to create Args for testing
     fn create_test_args(download_dir: &str, archive_file: &str) -> Args {
         Args::parse_from(["test", "-d", download_dir, "-f", archive_file])
+    }
+
+    /// Builds the yt-dlp args for `settings`, so each test states only the
+    /// setting under test and the flags it expects.
+    fn args_for(settings: Settings) -> Vec<String> {
+        build_ytdlp_command_args(
+            &create_test_args("/downloads", "/archive.txt"),
+            &settings,
+            TEST_URL,
+        )
+    }
+
+    /// True when `value` appears among the built args.
+    fn has(cmd_args: &[String], value: &str) -> bool {
+        cmd_args.iter().any(|arg| arg == value)
     }
 
     // ==================== Basic Command Building ====================
 
     #[test]
     fn test_build_ytdlp_command_args_includes_archive_file() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings::default();
-        let url = "https://example.com/video";
+        let cmd_args = args_for(Settings::default());
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--download-archive".to_string()));
-        assert!(cmd_args.contains(&"/archive.txt".to_string()));
+        assert!(has(&cmd_args, "--download-archive"));
+        assert!(has(&cmd_args, "/archive.txt"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_includes_url() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings::default();
-        let url = "https://example.com/video";
+        let cmd_args = args_for(Settings::default());
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert_eq!(cmd_args.last(), Some(&url.to_string()));
+        assert_eq!(cmd_args.last(), Some(&TEST_URL.to_string()));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_includes_progress_template() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings::default();
-        let url = "https://example.com/video";
+        let cmd_args = args_for(Settings::default());
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--progress-template".to_string()));
+        assert!(has(&cmd_args, "--progress-template"));
 
         // Find the progress template value
         let template_idx = cmd_args
@@ -121,12 +126,9 @@ mod tests {
     #[test]
     fn test_build_ytdlp_command_args_includes_output_template() {
         let args = create_test_args("/my/downloads", "/archive.txt");
-        let settings = Settings::default();
-        let url = "https://example.com/video";
+        let cmd_args = build_ytdlp_command_args(&args, &Settings::default(), TEST_URL);
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--output".to_string()));
+        assert!(has(&cmd_args, "--output"));
 
         // Find the output template value
         let output_idx = cmd_args
@@ -147,183 +149,136 @@ mod tests {
 
     #[test]
     fn test_build_ytdlp_command_args_best_format() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             format_preset: FormatPreset::Best,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--format".to_string()));
-        assert!(cmd_args.contains(&"bestvideo*+bestaudio/best".to_string()));
+        assert!(has(&cmd_args, "--format"));
+        assert!(has(&cmd_args, "bestvideo*+bestaudio/best"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_audio_only_format() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             format_preset: FormatPreset::AudioOnly,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"bestaudio/best".to_string()));
+        assert!(has(&cmd_args, "bestaudio/best"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_hd1080p_format() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             format_preset: FormatPreset::HD1080p,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(
-            cmd_args.contains(&"bestvideo[height<=1080]+bestaudio/best[height<=1080]".to_string())
-        );
+        assert!(has(
+            &cmd_args,
+            "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+        ));
     }
 
     // ==================== Output Format Testing ====================
 
     #[test]
     fn test_build_ytdlp_command_args_mp4_output() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             output_format: OutputFormat::MP4,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--merge-output-format".to_string()));
-        assert!(cmd_args.contains(&"mp4".to_string()));
+        assert!(has(&cmd_args, "--merge-output-format"));
+        assert!(has(&cmd_args, "mp4"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_mp3_output() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             output_format: OutputFormat::MP3,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--extract-audio".to_string()));
-        assert!(cmd_args.contains(&"--audio-format".to_string()));
-        assert!(cmd_args.contains(&"mp3".to_string()));
+        assert!(has(&cmd_args, "--extract-audio"));
+        assert!(has(&cmd_args, "--audio-format"));
+        assert!(has(&cmd_args, "mp3"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_auto_output_no_merge_format() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             output_format: OutputFormat::Auto,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
-
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
+        });
 
         // Auto should not add any --merge-output-format
-        assert!(!cmd_args.contains(&"--merge-output-format".to_string()));
+        assert!(!has(&cmd_args, "--merge-output-format"));
     }
 
     // ==================== Optional Flags Testing ====================
 
     #[test]
     fn test_build_ytdlp_command_args_with_subtitles() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             write_subtitles: true,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--write-auto-subs".to_string()));
-        assert!(cmd_args.contains(&"--sub-langs".to_string()));
-        assert!(cmd_args.contains(&"all".to_string()));
+        assert!(has(&cmd_args, "--write-auto-subs"));
+        assert!(has(&cmd_args, "--sub-langs"));
+        assert!(has(&cmd_args, "all"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_without_subtitles() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             write_subtitles: false,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(!cmd_args.contains(&"--write-auto-subs".to_string()));
+        assert!(!has(&cmd_args, "--write-auto-subs"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_with_thumbnail() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             write_thumbnail: true,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--write-thumbnail".to_string()));
+        assert!(has(&cmd_args, "--write-thumbnail"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_without_thumbnail() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             write_thumbnail: false,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(!cmd_args.contains(&"--write-thumbnail".to_string()));
+        assert!(!has(&cmd_args, "--write-thumbnail"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_with_metadata() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             add_metadata: true,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--add-metadata".to_string()));
+        assert!(has(&cmd_args, "--add-metadata"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_without_metadata() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             add_metadata: false,
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(!cmd_args.contains(&"--add-metadata".to_string()));
+        assert!(!has(&cmd_args, "--add-metadata"));
     }
 
     // ==================== Combined Settings Testing ====================
@@ -344,46 +299,39 @@ mod tests {
         let cmd_args = build_ytdlp_command_args(&args, &settings, url);
 
         // Verify all expected flags are present
-        assert!(cmd_args.contains(&"--download-archive".to_string()));
-        assert!(cmd_args.contains(&"--format".to_string()));
-        assert!(
-            cmd_args.contains(&"bestvideo[height<=720]+bestaudio/best[height<=720]".to_string())
-        );
-        assert!(cmd_args.contains(&"--merge-output-format".to_string()));
-        assert!(cmd_args.contains(&"mkv".to_string()));
-        assert!(cmd_args.contains(&"--write-auto-subs".to_string()));
-        assert!(cmd_args.contains(&"--write-thumbnail".to_string()));
-        assert!(cmd_args.contains(&"--add-metadata".to_string()));
-        assert!(cmd_args.contains(&"--newline".to_string()));
-        assert!(cmd_args.contains(&"--progress-template".to_string()));
+        assert!(has(&cmd_args, "--download-archive"));
+        assert!(has(&cmd_args, "--format"));
+        assert!(has(
+            &cmd_args,
+            "bestvideo[height<=720]+bestaudio/best[height<=720]"
+        ));
+        assert!(has(&cmd_args, "--merge-output-format"));
+        assert!(has(&cmd_args, "mkv"));
+        assert!(has(&cmd_args, "--write-auto-subs"));
+        assert!(has(&cmd_args, "--write-thumbnail"));
+        assert!(has(&cmd_args, "--add-metadata"));
+        assert!(has(&cmd_args, "--newline"));
+        assert!(has(&cmd_args, "--progress-template"));
         assert_eq!(cmd_args.last(), Some(&url.to_string()));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_always_includes_newline() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings::default();
-        let url = "https://example.com/video";
+        let cmd_args = args_for(Settings::default());
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--newline".to_string()));
+        assert!(has(&cmd_args, "--newline"));
     }
 
     #[test]
     fn test_build_ytdlp_command_args_with_custom_args() {
-        let args = create_test_args("/downloads", "/archive.txt");
-        let settings = Settings {
+        let cmd_args = args_for(Settings {
             custom_ytdlp_args: "--cookies cookies.txt --retries 10".to_string(),
             ..Default::default()
-        };
-        let url = "https://example.com/video";
+        });
 
-        let cmd_args = build_ytdlp_command_args(&args, &settings, url);
-
-        assert!(cmd_args.contains(&"--cookies".to_string()));
-        assert!(cmd_args.contains(&"cookies.txt".to_string()));
-        assert!(cmd_args.contains(&"--retries".to_string()));
-        assert!(cmd_args.contains(&"10".to_string()));
+        assert!(has(&cmd_args, "--cookies"));
+        assert!(has(&cmd_args, "cookies.txt"));
+        assert!(has(&cmd_args, "--retries"));
+        assert!(has(&cmd_args, "10"));
     }
 }
