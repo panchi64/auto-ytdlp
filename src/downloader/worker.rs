@@ -2,6 +2,7 @@ use std::{
     fs,
     io::{BufRead, BufReader},
     process::{Command, Stdio},
+    thread,
     time::Instant,
 };
 
@@ -19,6 +20,11 @@ use super::{
 
 /// Minimum interval between progress updates to reduce lock contention (250ms)
 const PROGRESS_UPDATE_INTERVAL_MS: u64 = 250;
+
+/// Cap on retained stderr. The pipe is always drained in full; only what is kept
+/// for the error message is bounded, so a runaway warning loop cannot grow the
+/// buffer without limit.
+const STDERR_CAPTURE_LIMIT: usize = 8 * 1024;
 
 #[inline]
 fn should_abort(state: &AppState) -> bool {
@@ -131,6 +137,23 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                 break;
             }
         };
+        // Drain stderr on its own thread. yt-dlp can emit more than a pipe
+        // buffer of warnings, and once that buffer fills it blocks on write -
+        // it then stops producing stdout and never exits, hanging this worker
+        // and the whole batch behind it.
+        let stderr_drain = cmd.stderr.take().map(|stderr| {
+            thread::spawn(move || {
+                let mut captured = String::new();
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    if captured.len() < STDERR_CAPTURE_LIMIT {
+                        captured.push_str(&line);
+                        captured.push('\n');
+                    }
+                }
+                captured
+            })
+        });
+
         let reader = BufReader::new(stdout);
         let mut is_network_error = false;
         let mut last_progress_update = Instant::now();
@@ -217,15 +240,31 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             break;
         }
 
+        // stdout is exhausted, so yt-dlp is done writing; collecting stderr now
+        // cannot block, and it is where yt-dlp reports the actual failure.
+        let stderr_output = stderr_drain
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default();
+        if stderr_output.lines().any(check_network_error) {
+            is_network_error = true;
+        }
+
         match cmd.wait() {
             Ok(status) => {
                 if status.success() {
                     success = true;
                     break;
                 } else {
+                    let detail = stderr_output
+                        .lines()
+                        .rfind(|line| line.contains("ERROR"))
+                        .unwrap_or("");
                     log_msg(
                         &state,
-                        format!("yt-dlp exited with error for {}: {}", url, status),
+                        format!(
+                            "yt-dlp exited with error for {}: {} {}",
+                            url, status, detail
+                        ),
                     );
                     if !settings.network_retry || !is_network_error || retry_count >= max_retries {
                         break;

@@ -10,9 +10,7 @@ use ratatui::{
 
 use super::{
     SettingsMenu, SubMenu,
-    display::{
-        Keep, bool_to_yes_no, create_action_item, create_setting_item, truncate_for_display,
-    },
+    display::{create_action_item, create_setting_item},
     table::{SETTINGS, SETTINGS_COUNT},
 };
 
@@ -53,7 +51,10 @@ impl SettingsMenu {
 
         frame.render_widget(Clear, main_dialog_area);
 
-        let values = self.setting_values();
+        let values: Vec<String> = SETTINGS[..SETTINGS_COUNT]
+            .iter()
+            .map(|setting| setting.value.map(|render| render(self)).unwrap_or_default())
+            .collect();
         let mut items: Vec<ListItem> = SETTINGS[..SETTINGS_COUNT]
             .iter()
             .zip(values.iter())
@@ -99,47 +100,5 @@ impl SettingsMenu {
         let help =
             Paragraph::new(Text::from(help_text)).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(help, chunks[2]);
-    }
-
-    /// Value column for each editable row, in table order
-    fn setting_values(&self) -> [String; SETTINGS_COUNT] {
-        let cookies_display = if self.settings.cookies_from_browser.is_empty() {
-            "None".to_string()
-        } else {
-            // Capitalize first letter for display
-            let mut c = self.settings.cookies_from_browser.chars();
-            match c.next() {
-                None => "None".to_string(),
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-            }
-        };
-
-        [
-            self.format_preset_to_string(&self.settings.format_preset)
-                .to_string(),
-            self.output_format_to_string(&self.settings.output_format)
-                .to_string(),
-            self.download_dir_display(),
-            bool_to_yes_no(self.settings.write_subtitles).to_string(),
-            bool_to_yes_no(self.settings.write_thumbnail).to_string(),
-            bool_to_yes_no(self.settings.add_metadata).to_string(),
-            bool_to_yes_no(self.settings.sponsorblock).to_string(),
-            self.settings.concurrent_downloads.to_string(),
-            if self.settings.rate_limit.is_empty() {
-                "Unlimited".to_string()
-            } else {
-                self.settings.rate_limit.clone()
-            },
-            bool_to_yes_no(self.settings.network_retry).to_string(),
-            format!("{} seconds", self.settings.retry_delay),
-            cookies_display,
-            bool_to_yes_no(self.settings.use_ascii_indicators).to_string(),
-            bool_to_yes_no(self.settings.reset_stats_on_new_batch).to_string(),
-            if self.settings.custom_ytdlp_args.is_empty() {
-                "(none)".to_string()
-            } else {
-                truncate_for_display(&self.settings.custom_ytdlp_args, 30, Keep::Start)
-            },
-        ]
     }
 }

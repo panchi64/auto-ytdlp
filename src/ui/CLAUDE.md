@@ -16,11 +16,19 @@ The main TUI implementation:
 ### settings_menu/
 F2 overlay for configuring download options.
 
-**`table.rs` is the single place to add a setting.** The `SETTINGS` descriptor array
-carries each item's label, description, kind (`Bool`/`Enum`/`Text`/`Action`) and its
-audio-only override. It replaced five separate `match` blocks over the menu index, so
-adding a setting used to mean editing five functions. Only the enum read/write arms in
-`input.rs` and `apply.rs` still need per-setting code, because each maps a distinct type.
+**`table.rs` is where a setting is declared.** The `SETTINGS` descriptor array carries
+each item's label, description, kind (`Bool`/`Enum`/`Text`/`Action`), audio-only
+override, and the `value` fn that renders its column. It replaced five separate `match`
+blocks over the menu index plus a positional value array.
+
+Adding a setting still touches four places, and all four are index-keyed rather than
+positional, so a mismatch is a compile error or a visibly wrong row rather than a silent
+misalignment:
+
+1. `table.rs` — a new `IDX_*` constant, a `SETTINGS` entry, and a bump to `SETTINGS_COUNT`
+2. `display.rs` — a `values::*` formatter for the new row
+3. `input.rs` and `apply.rs` — the read/write arms, which cannot be table-driven because each maps a distinct enum
+4. `render/popups.rs` — `edit_popup_options`, if the row is an `Enum` needing choice labels
 
 The rest: `mod.rs` (the `SettingsMenu` struct, `persist`), `input.rs` (navigation),
 `edit.rs` (value cycling), `apply.rs` (writing the setting back), `display.rs` (list item

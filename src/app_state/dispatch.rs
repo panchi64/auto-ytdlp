@@ -170,6 +170,9 @@ impl AppState {
     }
 
     fn handle_load_links(&self, links: Vec<String>) -> Result<()> {
+        // Read before the other locks: the established order is settings → queues → stats
+        let reset_stats = self.settings.lock()?.reset_stats_on_new_batch;
+
         let mut queues = self.queues.lock()?;
         queues.queue = VecDeque::from(links);
 
@@ -178,7 +181,14 @@ impl AppState {
 
         let mut stats = self.stats.lock()?;
         stats.total_tasks = queue_len;
-        stats.initial_total_tasks = queue_len;
+        // In cumulative mode the completed count carries across batches, so the
+        // denominator has to cover it too; overwriting it with just the new
+        // queue length would push the progress ratio past 100%.
+        stats.initial_total_tasks = if reset_stats {
+            queue_len
+        } else {
+            stats.completed_tasks + queue_len
+        };
         Ok(())
     }
 

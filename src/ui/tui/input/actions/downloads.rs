@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crate::app_state::{AppState, StateMessage};
 use crate::args::Args;
 use crate::downloader::{common::validate_dependencies, queue::process_queue};
-use crate::utils::file::get_links_from_file;
+use crate::utils::file::load_links_into_queue;
 
 use super::super::DownloadState;
 
@@ -24,6 +24,17 @@ pub(in crate::ui::tui::input) fn downloads_running(state: &AppState) -> bool {
 /// the failed-download list must treat a paused session as still in flight.
 pub(in crate::ui::tui::input) fn downloads_in_flight(state: &AppState) -> bool {
     state.is_started().unwrap_or(false) && !state.is_completed().unwrap_or(false)
+}
+
+/// Whether every yt-dlp subprocess has exited.
+///
+/// A lock failure reads as "not drained" so a watcher waits rather than
+/// declaring the batch finished while processes are still running.
+fn active_downloads_drained(state: &AppState) -> bool {
+    state
+        .get_active_downloads()
+        .map(|active| active.is_empty())
+        .unwrap_or(false)
 }
 
 pub(in crate::ui::tui::input) fn handle_start_stop(
@@ -95,23 +106,17 @@ pub(in crate::ui::tui::input) fn handle_start_stop(
                 eprintln!("Error adding log: {}", e);
             }
 
-            // Wait for downloads to finish off the UI thread: joining here would
-            // freeze rendering and input until every yt-dlp process exits.
-            let handle = download_state.download_thread_handle.take();
+            // Watch for the drain off the UI thread: joining here would freeze
+            // rendering and input until every yt-dlp process exits. The handle
+            // deliberately stays in `download_state` - a graceful quit joins it,
+            // and the duplicate-controller guard above reads it.
             let state_clone = state.clone();
             thread::spawn(move || {
-                if let Some(handle) = handle {
-                    if let Err(e) = handle.join() {
-                        if let Err(log_err) = state_clone
-                            .add_log(format!("Error joining download thread on stop: {:?}", e))
-                        {
-                            eprintln!("Error adding log: {}", log_err);
-                        }
-                    } else if let Err(e) =
-                        state_clone.add_log("Downloads stopped gracefully.".to_string())
-                    {
-                        eprintln!("Error adding log: {}", e);
-                    }
+                while !active_downloads_drained(&state_clone) {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                if let Err(e) = state_clone.add_log("Downloads stopped gracefully.".to_string()) {
+                    eprintln!("Error adding log: {}", e);
                 }
 
                 // Clear logs after a short delay when manually stopping downloads
@@ -156,16 +161,7 @@ pub(in crate::ui::tui::input) fn handle_reload(
             eprintln!("Error resetting state: {}", e);
         }
 
-        match get_links_from_file() {
-            Ok(links) => {
-                if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
-                    eprintln!("Error sending links: {}", e);
-                }
-            }
-            Err(e) => {
-                eprintln!("Error loading links: {}", e);
-            }
-        }
+        load_links_into_queue(state, false);
 
         if let Err(e) = state.add_log("Links refreshed from file".to_string()) {
             eprintln!("Error adding log: {}", e);

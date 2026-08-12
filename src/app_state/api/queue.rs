@@ -21,6 +21,12 @@ impl AppState {
         Ok(queues.queue.len())
     }
 
+    /// Number of downloads in progress, without cloning the set.
+    pub fn active_download_count(&self) -> Result<usize> {
+        let queues = self.queues.lock()?;
+        Ok(queues.active_downloads.len())
+    }
+
     /// Remove a URL from the queue at a specific index
     pub fn remove_from_queue(&self, index: usize) -> Result<Option<String>> {
         let mut queues = self.queues.lock()?;

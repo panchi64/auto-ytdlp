@@ -20,13 +20,17 @@ impl AppState {
     pub fn update_progress(&self) -> Result<()> {
         let mut stats = self.stats.lock()?;
         if stats.initial_total_tasks > 0 {
-            stats.progress = stats.completed_tasks as f64 / stats.initial_total_tasks as f64;
+            // Clamped because the gauge asserts 0.0..=1.0: a denominator that
+            // falls behind the completed count would panic the render thread
+            // and leave the terminal in raw mode.
+            stats.progress =
+                (stats.completed_tasks as f64 / stats.initial_total_tasks as f64).clamp(0.0, 1.0);
         } else {
             stats.progress = 0.0;
         }
 
         let flags = self.flags.lock()?;
-        let is_completed = stats.completed_tasks == stats.initial_total_tasks
+        let is_completed = stats.completed_tasks >= stats.initial_total_tasks
             && stats.initial_total_tasks > 0
             && flags.started
             && !flags.completed;
@@ -72,7 +76,8 @@ impl AppState {
 
         // Reset the counters as a unit: zeroing the completed count while the
         // denominator keeps accumulating would leave progress unable to reach
-        // 100%. When stats are cumulative, both sides carry over instead.
+        // 100%. When stats are cumulative, both sides carry over untouched
+        // instead, and later additions grow the denominator.
         if reset_stats {
             let mut stats = self.stats.lock()?;
             stats.completed_tasks = 0;

@@ -63,7 +63,7 @@ pub fn handle_edit_mode_input(
                 ctx.queue_selected_index += 1;
             }
         }
-        KeyCode::Char('d') | KeyCode::Delete => {
+        KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete => {
             if let Some(index) = selected
                 && let Ok(Some(removed)) = state.remove_from_queue(index)
             {

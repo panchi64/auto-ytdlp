@@ -86,5 +86,89 @@ impl SettingsMenu {
     }
 }
 
+/// Value column renderers, one per settings row.
+///
+/// These hang off the descriptor table so a new setting brings its own
+/// formatter instead of being appended to a positional array that has to stay
+/// aligned by hand.
+pub(super) mod values {
+    use super::{Keep, SettingsMenu, bool_to_yes_no, truncate_for_display};
+
+    pub(in crate::ui::settings_menu) fn format_preset(menu: &SettingsMenu) -> String {
+        menu.format_preset_to_string(&menu.settings.format_preset)
+            .to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn output_format(menu: &SettingsMenu) -> String {
+        menu.output_format_to_string(&menu.settings.output_format)
+            .to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn download_dir(menu: &SettingsMenu) -> String {
+        menu.download_dir_display()
+    }
+
+    pub(in crate::ui::settings_menu) fn write_subtitles(menu: &SettingsMenu) -> String {
+        bool_to_yes_no(menu.settings.write_subtitles).to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn write_thumbnail(menu: &SettingsMenu) -> String {
+        bool_to_yes_no(menu.settings.write_thumbnail).to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn add_metadata(menu: &SettingsMenu) -> String {
+        bool_to_yes_no(menu.settings.add_metadata).to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn sponsorblock(menu: &SettingsMenu) -> String {
+        bool_to_yes_no(menu.settings.sponsorblock).to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn concurrent(menu: &SettingsMenu) -> String {
+        menu.settings.concurrent_downloads.to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn rate_limit(menu: &SettingsMenu) -> String {
+        if menu.settings.rate_limit.is_empty() {
+            "Unlimited".to_string()
+        } else {
+            menu.settings.rate_limit.clone()
+        }
+    }
+
+    pub(in crate::ui::settings_menu) fn network_retry(menu: &SettingsMenu) -> String {
+        bool_to_yes_no(menu.settings.network_retry).to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn retry_delay(menu: &SettingsMenu) -> String {
+        format!("{} seconds", menu.settings.retry_delay)
+    }
+
+    pub(in crate::ui::settings_menu) fn cookies_browser(menu: &SettingsMenu) -> String {
+        let browser = &menu.settings.cookies_from_browser;
+        let mut chars = browser.chars();
+        match chars.next() {
+            None => "None".to_string(),
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        }
+    }
+
+    pub(in crate::ui::settings_menu) fn ascii_indicators(menu: &SettingsMenu) -> String {
+        bool_to_yes_no(menu.settings.use_ascii_indicators).to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn reset_stats(menu: &SettingsMenu) -> String {
+        bool_to_yes_no(menu.settings.reset_stats_on_new_batch).to_string()
+    }
+
+    pub(in crate::ui::settings_menu) fn custom_args(menu: &SettingsMenu) -> String {
+        if menu.settings.custom_ytdlp_args.is_empty() {
+            "(none)".to_string()
+        } else {
+            truncate_for_display(&menu.settings.custom_ytdlp_args, 30, Keep::Start)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

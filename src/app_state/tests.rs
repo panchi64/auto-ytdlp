@@ -908,6 +908,69 @@ fn test_cumulative_mode_accumulates_across_batches() {
 }
 
 #[test]
+fn test_cumulative_reload_keeps_progress_within_bounds() {
+    // A smaller second batch used to overwrite initial_total_tasks with just the
+    // new queue length while completed_tasks carried over, so the ratio climbed
+    // past 1.0 and panicked Gauge::ratio on the next frame.
+    let state = AppState::new();
+
+    let mut settings = state.get_settings().expect("failed to read settings");
+    settings.reset_stats_on_new_batch = false;
+    state
+        .update_settings(settings)
+        .expect("failed to update settings");
+
+    state
+        .send(StateMessage::LoadLinks(vec![
+            "url1".to_string(),
+            "url2".to_string(),
+            "url3".to_string(),
+        ]))
+        .expect("failed to send LoadLinks");
+    for _ in 0..3 {
+        state
+            .send(StateMessage::IncrementCompleted)
+            .expect("failed to send IncrementCompleted");
+    }
+    wait_for_processing();
+
+    // Reload a shorter list, as pressing R after trimming links.txt would
+    state
+        .reset_for_new_run()
+        .expect("failed to reset state for a new run");
+    state
+        .send(StateMessage::LoadLinks(vec![
+            "url4".to_string(),
+            "url5".to_string(),
+        ]))
+        .expect("failed to send LoadLinks");
+    wait_for_processing();
+
+    let snapshot = state
+        .get_ui_snapshot()
+        .expect("failed to build UI snapshot");
+    assert_eq!(snapshot.completed_tasks, 3);
+    assert_eq!(
+        snapshot.initial_total_tasks, 5,
+        "denominator must cover the carried-over completed count"
+    );
+
+    state
+        .send(StateMessage::IncrementCompleted)
+        .expect("failed to send IncrementCompleted");
+    wait_for_processing();
+
+    let snapshot = state
+        .get_ui_snapshot()
+        .expect("failed to build UI snapshot");
+    assert!(
+        (0.0..=1.0).contains(&snapshot.progress),
+        "progress {} is outside the range Gauge::ratio accepts",
+        snapshot.progress
+    );
+}
+
+#[test]
 fn test_per_session_mode_fresh_count_each_batch() {
     let state = AppState::new();
 

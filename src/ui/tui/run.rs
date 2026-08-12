@@ -14,10 +14,10 @@ use ratatui::{Terminal, prelude::CrosstermBackend};
 
 use crate::ui::settings_menu::SettingsMenu;
 use crate::{
-    app_state::{AppState, StateMessage, UiSnapshot},
+    app_state::{AppState, UiSnapshot},
     args::Args,
     downloader::common::validate_dependencies,
-    utils::file::{get_links_from_file, sanitize_links_file},
+    utils::file::load_links_into_queue,
 };
 
 use super::input::{
@@ -53,36 +53,7 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
         }
     }
 
-    // Sanitize links file and load valid links
-    match sanitize_links_file() {
-        Ok(removed) => {
-            if removed > 0
-                && let Err(e) =
-                    state.add_log(format!("Removed {} invalid URLs from links.txt", removed))
-            {
-                eprintln!("Error adding log: {}", e);
-            }
-        }
-        Err(e) => {
-            if let Err(log_err) = state.add_log(format!("Error sanitizing links file: {}", e)) {
-                eprintln!("Error adding log: {}", log_err);
-            }
-        }
-    }
-
-    // Load any existing links
-    match get_links_from_file() {
-        Ok(links) => {
-            if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
-                eprintln!("Error sending links: {}", e);
-            }
-        }
-        Err(e) => {
-            if let Err(log_err) = state.add_log(format!("Error loading links: {}", e)) {
-                eprintln!("Error adding log: {}", log_err);
-            }
-        }
-    }
+    load_links_into_queue(&state, true);
 
     let mut settings_menu = SettingsMenu::new(&state, args.flag_download_dir());
 

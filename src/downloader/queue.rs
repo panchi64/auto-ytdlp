@@ -12,15 +12,15 @@ use super::worker::download_worker;
 /// A failed read must never be mistaken for "nothing left to do", which would
 /// make the controller declare the batch complete while URLs are still queued.
 fn queue_is_empty(state: &AppState) -> bool {
-    state.get_queue().map(|q| q.is_empty()).unwrap_or(false)
+    state.queue_len().map(|len| len == 0).unwrap_or(false)
 }
 
 /// Returns whether there are no active downloads, treating a lock failure as
 /// "downloads still active" for the same reason as [`queue_is_empty`].
 fn active_downloads_empty(state: &AppState) -> bool {
     state
-        .get_active_downloads()
-        .map(|a| a.is_empty())
+        .active_download_count()
+        .map(|count| count == 0)
         .unwrap_or(false)
 }
 
@@ -29,9 +29,9 @@ fn active_downloads_empty(state: &AppState) -> bool {
 /// Workers exit once the queue is empty and nothing is downloading, or on shutdown
 /// or force quit. The pause flag makes them sleep rather than exit.
 pub fn process_queue(state: AppState, args: Args) {
-    match state.get_queue() {
-        Ok(queue) => {
-            if queue.is_empty() {
+    match state.queue_len() {
+        Ok(len) => {
+            if len == 0 {
                 if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
                     eprintln!("Error setting completed: {}", e);
                 }

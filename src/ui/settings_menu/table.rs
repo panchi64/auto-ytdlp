@@ -1,8 +1,11 @@
-//! One row per menu item: label, description, and how it is edited.
+//! One row per menu item: label, description, value column, and how it is edited.
 //!
 //! Every part of the menu that used to switch on a bare index - descriptions,
-//! option ceilings, which rows toggle, and the audio-only exceptions - reads
-//! this table instead.
+//! option ceilings, which rows toggle, the audio-only exceptions, and the
+//! rendered value - reads this table instead.
+
+use super::SettingsMenu;
+use super::display::values;
 
 /// Number of regular settings items (before special actions)
 pub(super) const SETTINGS_COUNT: usize = 15;
@@ -47,6 +50,8 @@ pub(super) struct Setting {
     pub(super) kind: SettingKind,
     /// Replaces the kind's option ceiling while `FormatPreset::AudioOnly` is active
     pub(super) audio_only_max: Option<usize>,
+    /// Renders the value column. `None` for action rows, which have no value.
+    pub(super) value: Option<fn(&SettingsMenu) -> String>,
 }
 
 impl Setting {
@@ -74,6 +79,7 @@ pub(super) const SETTINGS: [Setting; TOTAL_MENU_ITEMS] = [
         description: "Video quality preset - Best downloads highest available quality",
         kind: SettingKind::Enum(5),
         audio_only_max: None,
+        value: Some(values::format_preset),
     },
     Setting {
         label: "Output Format",
@@ -81,12 +87,14 @@ pub(super) const SETTINGS: [Setting; TOTAL_MENU_ITEMS] = [
         kind: SettingKind::Enum(4),
         // Audio-only offers just Auto/MP3
         audio_only_max: Some(1),
+        value: Some(values::output_format),
     },
     Setting {
         label: "Download Directory",
         description: "Folder media files are saved to (~ expands to your home directory)",
         kind: SettingKind::Text,
         audio_only_max: None,
+        value: Some(values::download_dir),
     },
     Setting {
         label: "Write Subtitles",
@@ -94,84 +102,98 @@ pub(super) const SETTINGS: [Setting; TOTAL_MENU_ITEMS] = [
         kind: SettingKind::Bool,
         // Subtitles make no sense without video, so audio-only pins this to "No"
         audio_only_max: Some(0),
+        value: Some(values::write_subtitles),
     },
     Setting {
         label: "Write Thumbnail",
         description: "Save video thumbnail as separate image file",
         kind: SettingKind::Bool,
         audio_only_max: None,
+        value: Some(values::write_thumbnail),
     },
     Setting {
         label: "Add Metadata",
         description: "Embed metadata (title, artist, etc.) into the file",
         kind: SettingKind::Bool,
         audio_only_max: None,
+        value: Some(values::add_metadata),
     },
     Setting {
         label: "SponsorBlock",
         description: "Remove sponsor segments from YouTube videos using SponsorBlock",
         kind: SettingKind::Bool,
         audio_only_max: None,
+        value: Some(values::sponsorblock),
     },
     Setting {
         label: "Concurrent Downloads",
         description: "Number of simultaneous downloads (higher = faster, more bandwidth)",
         kind: SettingKind::Enum(4),
         audio_only_max: None,
+        value: Some(values::concurrent),
     },
     Setting {
         label: "Rate Limit",
         description: "Limit download speed (e.g., 500K, 2M) - Unlimited uses full bandwidth",
         kind: SettingKind::Enum(6),
         audio_only_max: None,
+        value: Some(values::rate_limit),
     },
     Setting {
         label: "Network Retry",
         description: "Automatically retry downloads that fail due to network errors",
         kind: SettingKind::Bool,
         audio_only_max: None,
+        value: Some(values::network_retry),
     },
     Setting {
         label: "Retry Delay",
         description: "Seconds to wait before retrying a failed download",
         kind: SettingKind::Enum(4),
         audio_only_max: None,
+        value: Some(values::retry_delay),
     },
     Setting {
         label: "Cookies from Browser",
         description: "Use browser cookies for age-restricted or authenticated content",
         kind: SettingKind::Enum(7),
         audio_only_max: None,
+        value: Some(values::cookies_browser),
     },
     Setting {
         label: "ASCII Indicators",
         description: "Use text indicators [OK] instead of emoji for compatibility",
         kind: SettingKind::Bool,
         audio_only_max: None,
+        value: Some(values::ascii_indicators),
     },
     Setting {
         label: "Reset Stats on Batch",
         description: "Reset download counters when starting a new batch (S key)",
         kind: SettingKind::Bool,
         audio_only_max: None,
+        value: Some(values::reset_stats),
     },
     Setting {
         label: "Custom yt-dlp Args",
         description: "Extra yt-dlp flags (e.g., --no-playlist)",
         kind: SettingKind::Text,
         audio_only_max: None,
+        value: Some(values::custom_args),
     },
     Setting {
         label: "Apply Preset...",
         description: "Apply a preset configuration for common use cases",
         kind: SettingKind::Action,
         audio_only_max: None,
+        value: None,
     },
     Setting {
         label: "Reset to Defaults...",
         description: "Reset all settings to their default values (keeps the download directory)",
         kind: SettingKind::Action,
         audio_only_max: None,
+        value: None,
     },
 ];
 

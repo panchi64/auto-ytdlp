@@ -7,7 +7,7 @@ use arboard::Clipboard;
 
 use crate::app_state::{AppState, StateMessage};
 use crate::errors::AppError;
-use crate::utils::file::{add_clipboard_links, get_links_from_file, sanitize_links_file};
+use crate::utils::file::{add_clipboard_links, load_links_into_queue};
 
 use super::downloads::{downloads_in_flight, downloads_running};
 
@@ -16,38 +16,19 @@ pub(in crate::ui::tui::input) fn handle_load_file(
     last_tick: &mut Instant,
     tick_rate: Duration,
 ) {
-    // First sanitize the links file
-    match sanitize_links_file() {
-        Ok(removed) => {
-            if removed > 0
-                && let Err(e) =
-                    state.add_log(format!("Removed {} invalid URLs from links.txt", removed))
-            {
-                eprintln!("Error adding log: {}", e);
-            }
+    // Reloading replaces the whole queue, and a URL being downloaded right now is
+    // still in links.txt (it is only stripped on success), so loading mid-run
+    // would re-queue it and hand a second worker the same download.
+    if downloads_running(state) {
+        if let Err(e) = state.add_log("Cannot load links while downloads are active".to_string()) {
+            eprintln!("Error adding log: {}", e);
         }
-        Err(e) => {
-            if let Err(log_err) = state.add_log(format!("Error sanitizing links file: {}", e)) {
-                eprintln!("Error adding log: {}", log_err);
-            }
-        }
+        return;
     }
 
-    // Then load links from the file
-    match get_links_from_file() {
-        Ok(links) => {
-            if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
-                eprintln!("Error sending links: {}", e);
-            }
-            if let Err(e) = state.add_log("Links loaded from file".to_string()) {
-                eprintln!("Error adding log: {}", e);
-            }
-        }
-        Err(e) => {
-            if let Err(log_err) = state.add_log(format!("Error loading links: {}", e)) {
-                eprintln!("Error adding log: {}", log_err);
-            }
-        }
+    load_links_into_queue(state, true);
+    if let Err(e) = state.add_log("Links loaded from file".to_string()) {
+        eprintln!("Error adding log: {}", e);
     }
     *last_tick = Instant::now() - tick_rate;
 }

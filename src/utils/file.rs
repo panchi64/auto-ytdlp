@@ -54,22 +54,16 @@ pub fn get_links_from_file() -> Result<Vec<String>> {
         .collect())
 }
 
-/// Sanitizes the links.txt file by removing invalid URLs.
+/// Drops invalid URLs from links.txt, returning how many were removed.
 ///
-/// Reads the file, filters out invalid URLs, and writes the sanitized
-/// content back to the file.
-///
-/// # Returns
-///
-/// * `Result<usize>` - The number of invalid entries that were removed, or an error
-///
-/// # Example
-///
-/// ```
-/// let removed = sanitize_links_file()?;
-/// println!("Removed {} invalid URLs", removed);
-/// ```
-pub fn sanitize_links_file() -> Result<usize> {
+/// Takes the file lock: this is a read-modify-write, so without it a worker
+/// finishing mid-scan would have its removal undone by the stale snapshot.
+pub fn sanitize_links_file(state: &AppState) -> Result<usize> {
+    let guard = state.acquire_file_lock()?;
+    sanitize_links_file_internal(&guard)
+}
+
+fn sanitize_links_file_internal(_guard: &FileLockGuard<'_>) -> Result<usize> {
     let file_path = LINKS_FILE;
     let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
 
@@ -94,6 +88,37 @@ pub fn sanitize_links_file() -> Result<usize> {
     Ok(removed_count)
 }
 
+/// Replaces the download queue with the contents of links.txt.
+///
+/// `sanitize` drops invalid lines from the file first. Every failure is logged
+/// to the TUI rather than stderr, which is invisible under the alternate screen.
+pub fn load_links_into_queue(state: &AppState, sanitize: bool) {
+    let log = |message: String| {
+        if let Err(e) = state.add_log(message) {
+            eprintln!("Error adding log: {}", e);
+        }
+    };
+
+    if sanitize {
+        match sanitize_links_file(state) {
+            Ok(removed) if removed > 0 => {
+                log(format!("Removed {} invalid URLs from links.txt", removed))
+            }
+            Ok(_) => {}
+            Err(e) => log(format!("Error sanitizing links file: {}", e)),
+        }
+    }
+
+    match get_links_from_file() {
+        Ok(links) => {
+            if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
+                log(format!("Error loading links: {}", e));
+            }
+        }
+        Err(e) => log(format!("Error loading links: {}", e)),
+    }
+}
+
 /// Adds the URLs found in clipboard text to links.txt and the queue.
 ///
 /// Returns how many were new.
@@ -109,11 +134,14 @@ pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<
             .collect();
 
         let current_links = get_links_from_file()?;
-        let existing: std::collections::HashSet<_> = current_links.iter().collect();
+        let mut seen: std::collections::HashSet<String> = current_links.iter().cloned().collect();
 
+        // `seen` grows as we go, so a URL repeated inside the pasted text is
+        // only taken once - queueing it twice would spawn two yt-dlp processes
+        // writing the same file.
         let new: Vec<String> = parsed
             .into_iter()
-            .filter(|link| !existing.contains(link))
+            .filter(|link| seen.insert(link.clone()))
             .collect();
 
         if !new.is_empty() {
