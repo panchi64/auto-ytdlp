@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn queue_of(urls: &[&str]) -> VecDeque<String> {

@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::utils::settings::{FormatPreset, OutputFormat, Settings, settings_with_dir};
 use clap::Parser;
