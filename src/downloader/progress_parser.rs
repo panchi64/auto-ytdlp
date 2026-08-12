@@ -275,13 +275,12 @@ fn parse_fragment_progress(line: &str) -> Option<ProgressInfo> {
     }
 }
 
-/// Parses a percentage string (handles "XX.X%" format)
 fn parse_percent(s: &str) -> f64 {
     let s = s.trim().trim_end_matches('%').trim();
     s.parse().unwrap_or(0.0)
 }
 
-/// Parses an optional string field (handles "NA", "N/A", empty, etc.)
+/// yt-dlp writes "NA"/"N/A"/"Unknown"/"None" for fields it could not determine.
 fn parse_optional_string(s: &str) -> Option<String> {
     let s = s.trim();
     if s.is_empty() || s == "NA" || s == "N/A" || s == "Unknown" || s == "None" {
@@ -291,7 +290,6 @@ fn parse_optional_string(s: &str) -> Option<String> {
     }
 }
 
-/// Parses an optional u64 field
 fn parse_optional_u64(s: &str) -> Option<u64> {
     let s = s.trim();
     if s.is_empty() || s == "NA" || s == "N/A" || s == "None" {
@@ -301,7 +299,6 @@ fn parse_optional_u64(s: &str) -> Option<u64> {
     }
 }
 
-/// Parses an optional u32 field
 fn parse_optional_u32(s: &str) -> Option<u32> {
     let s = s.trim();
     if s.is_empty() || s == "NA" || s == "N/A" || s == "None" {

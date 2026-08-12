@@ -24,40 +24,10 @@ fn active_downloads_empty(state: &AppState) -> bool {
         .unwrap_or(false)
 }
 
-/// Processes the download queue using multiple worker threads.
+/// Spawns a controller thread that keeps N workers draining the download queue.
 ///
-/// This function is the main orchestrator of the download process. It:
-/// 1. Checks if the queue is empty and marks as completed if so
-/// 2. Resets application state for a new download run
-/// 3. Creates a controller thread to monitor the queue
-/// 4. Creates worker threads only when downloads are ready to start
-/// 5. Each worker thread pulls URLs from the queue and processes them
-/// 6. Handles pausing, shutdown, and force quit conditions
-/// 7. Waits for all worker threads to complete
-/// 8. Updates application state and logs completion status
-///
-/// # Parameters
-///
-/// * `state` - The application state containing the download queue
-/// * `args` - Command line arguments with download configuration
-///
-/// # Example
-///
-/// ```
-/// // Start processing the download queue in a separate thread
-/// let state_clone = state.clone();
-/// let args_clone = args.clone();
-/// thread::spawn(move || process_queue(state_clone, args_clone));
-/// ```
-///
-/// # Notes
-///
-/// Each worker thread will continue running until one of these conditions is met:
-/// - The queue is empty AND there are no active downloads
-/// - The application is shutting down
-/// - A force quit is requested
-///
-/// Workers will pause processing (but not exit) when the pause flag is set.
+/// Workers exit once the queue is empty and nothing is downloading, or on shutdown
+/// or force quit. The pause flag makes them sleep rather than exit.
 pub fn process_queue(state: AppState, args: Args) {
     match state.get_queue() {
         Ok(queue) => {

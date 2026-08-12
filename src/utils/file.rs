@@ -42,22 +42,7 @@ pub fn remove_link_from_file_sync(state: &AppState, url: &str) -> Result<()> {
     remove_link_from_file_internal(&guard, url)
 }
 
-/// Loads URLs from the 'links.txt' file without requiring an AppState.
-///
-/// Reads all lines from the links.txt file into a vector of strings.
-/// Creates an empty file if it doesn't exist.
-/// Filters out any entries that aren't valid URLs.
-///
-/// # Returns
-///
-/// * `Result<Vec<String>>` - Vector containing all valid URLs from the file or an error
-///
-/// # Example
-///
-/// ```
-/// let links = get_links_from_file()?;
-/// state.send(StateMessage::LoadLinks(links))?;
-/// ```
+/// Reads the valid URLs out of links.txt, skipping blanks and unparseable lines.
 pub fn get_links_from_file() -> Result<Vec<String>> {
     let content = fs::read_to_string(LINKS_FILE).map_err(AppError::Io)?;
 
@@ -109,31 +94,9 @@ pub fn sanitize_links_file() -> Result<usize> {
     Ok(removed_count)
 }
 
-/// Parses URLs from clipboard content and adds them to both the links.txt file
-/// and the application state.
+/// Adds the URLs found in clipboard text to links.txt and the queue.
 ///
-/// This function combines adding links to the file and updating the app state directly.
-///
-/// # Parameters
-///
-/// * `state` - Reference to the application state to update
-/// * `clipboard_content` - String content from the clipboard to parse
-///
-/// # Returns
-///
-/// * `Result<usize>` - The number of new URLs that were added, or an error
-///
-/// # Example
-///
-/// ```
-/// let ctx = ClipboardProvider::new()
-///     .map_err(|e| AppError::Clipboard(e.to_string()))?;
-///
-/// if let Ok(contents) = ctx.get_contents() {
-///     let links_added = add_clipboard_links(&state, &contents)?;
-///     state.add_log(format!("Added {} links", links_added))?;
-/// }
-/// ```
+/// Returns how many were new.
 pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<usize> {
     // Parse and deduplicate new links before writing to file
     let new_links: Vec<String> = {

@@ -6,26 +6,15 @@ use anyhow::{Error, Result};
 
 use super::progress_parser::{PROGRESS_MARKER_END, PROGRESS_MARKER_START};
 
-/// Builds the command arguments for yt-dlp based on provided settings and args
+/// Builds the yt-dlp command line for one URL.
 ///
-/// This centralizes the command construction logic to avoid duplication between
-/// different parts of the application that need to invoke yt-dlp.
-///
-/// # Parameters
-///
-/// * `args` - The command-line arguments containing paths
-/// * `settings` - The settings to use (passed in to avoid disk I/O per download)
-/// * `url` - The URL to download
-///
-/// # Returns
-///
-/// A vector of strings containing all command arguments for yt-dlp
+/// `settings` is passed in rather than loaded here so a batch of downloads does
+/// not hit the disk once per URL.
 pub fn build_ytdlp_command_args(args: &Args, settings: &Settings, url: &str) -> Vec<String> {
     // Resolved per download so directory changes made in the settings menu
     // take effect without a restart
     let output_template = args.output_template(settings);
 
-    // Start with the archive file argument
     let mut cmd_args = vec![
         "--download-archive".to_string(),
         args.archive_file.to_string_lossy().to_string(),

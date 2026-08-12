@@ -20,7 +20,6 @@ use super::{
 /// Minimum interval between progress updates to reduce lock contention (250ms)
 const PROGRESS_UPDATE_INTERVAL_MS: u64 = 250;
 
-/// Check if force quit has been requested
 #[inline]
 fn should_abort(state: &AppState) -> bool {
     state.is_force_quit().unwrap_or(false)
@@ -33,35 +32,11 @@ fn log_msg(state: &AppState, msg: impl Into<String>) {
     }
 }
 
-/// Downloads a single video from the provided URL using yt-dlp.
+/// Runs yt-dlp for one URL, streaming its progress into the app state and
+/// removing the URL from links.txt on success.
 ///
-/// This function handles the entire download process for a single URL:
-/// 1. Triggers the addition of a URL to the active downloads in the app state
-/// 2. Logs the start of the download
-/// 3. Spawns a yt-dlp process with appropriate arguments
-/// 4. Captures and logs relevant output from yt-dlp
-/// 5. Handles process completion, success/failure status
-/// 6. Triggers the updates to the download statistics in the app state
-/// 7. Triggers the removal of the downloaded URL from the links.txt file if successful
-///
-/// # Parameters
-///
-/// * `url` - The URL of the video to download
-/// * `state` - The application state to update during download
-/// * `args` - Command line arguments containing download settings
-///
-/// # Example
-///
-/// ```
-/// if let Some(url) = state_clone.pop_queue() {
-///     download_worker(url, state_clone.clone(), args_clone.clone());
-/// }
-/// ```
-///
-/// # Notes
-///
-/// This function will exit early if `force_quit` is set in the application state.
-/// It updates the progress and completed status in the app state after completion.
+/// Returns early if force quit is set, and retries network failures according to
+/// the retry settings.
 pub fn download_worker(url: String, state: AppState, args: Args) {
     if should_abort(&state) {
         return;
