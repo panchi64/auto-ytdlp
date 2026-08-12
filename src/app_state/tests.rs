@@ -765,11 +765,13 @@ fn test_new_batch_resets_counters_by_default() {
     state
         .send(StateMessage::IncrementCompleted)
         .expect("failed to send IncrementCompleted");
-    // Simulate workers draining the queue
-    state
-        .send(StateMessage::LoadLinks(vec![]))
-        .expect("failed to send LoadLinks(empty)");
     wait_for_processing();
+    // Drain the way workers do - LoadLinks would mean "a new batch was loaded"
+    while state
+        .pop_queue()
+        .expect("failed to pop from queue")
+        .is_some()
+    {}
 
     let snapshot = state
         .get_ui_snapshot()
@@ -1001,11 +1003,13 @@ fn test_per_session_mode_fresh_count_each_batch() {
     state
         .send(StateMessage::IncrementCompleted)
         .expect("failed to send IncrementCompleted");
-    // Simulate workers draining the queue
-    state
-        .send(StateMessage::LoadLinks(vec![]))
-        .expect("failed to send LoadLinks(empty)");
     wait_for_processing();
+    // Drain the way workers do - LoadLinks would mean "a new batch was loaded"
+    while state
+        .pop_queue()
+        .expect("failed to pop from queue")
+        .is_some()
+    {}
 
     let snapshot = state
         .get_ui_snapshot()
@@ -1175,3 +1179,162 @@ fn test_reset_for_new_run_clears_failed_downloads() {
 }
 
 // ========== StateMessage Variant Coverage Tests ==========
+
+// ==================== Progress Ratio Bounds ====================
+
+/// Loads a batch, finishes all of it, then loads a shorter one - the shape that
+/// used to leave completed_tasks above the denominator.
+fn finish_batch_then_load(reset_stats: bool, first: &[&str], second: &[&str]) -> UiSnapshot {
+    let state = AppState::new();
+    let mut settings = state.get_settings().expect("failed to read settings");
+    settings.reset_stats_on_new_batch = reset_stats;
+    state
+        .update_settings(settings)
+        .expect("failed to update settings");
+
+    state
+        .send(StateMessage::LoadLinks(
+            first.iter().map(|u| u.to_string()).collect(),
+        ))
+        .expect("failed to send LoadLinks");
+    for _ in first {
+        state
+            .send(StateMessage::IncrementCompleted)
+            .expect("failed to send IncrementCompleted");
+    }
+    wait_for_processing();
+
+    state
+        .send(StateMessage::LoadLinks(
+            second.iter().map(|u| u.to_string()).collect(),
+        ))
+        .expect("failed to send LoadLinks");
+    wait_for_processing();
+
+    state
+        .get_ui_snapshot()
+        .expect("failed to build UI snapshot")
+}
+
+#[test]
+fn test_reset_mode_starts_the_new_batch_from_zero() {
+    // Used to read "100% (5/3)" on a batch that had not started.
+    let snapshot = finish_batch_then_load(true, &["a", "b", "c", "d", "e"], &["x", "y", "z"]);
+
+    assert_eq!(snapshot.completed_tasks, 0);
+    assert_eq!(snapshot.initial_total_tasks, 3);
+    assert_eq!(snapshot.progress, 0.0);
+}
+
+#[test]
+fn test_cumulative_mode_denominator_covers_the_carried_count() {
+    let snapshot = finish_batch_then_load(false, &["a", "b", "c"], &["x", "y"]);
+
+    assert_eq!(snapshot.completed_tasks, 3);
+    assert_eq!(snapshot.initial_total_tasks, 5);
+}
+
+#[test]
+fn test_progress_never_leaves_the_range_the_gauge_accepts() {
+    // ratatui's Gauge::ratio asserts 0.0..=1.0 and panics the render thread
+    // otherwise, taking the terminal down with it.
+    for reset_stats in [true, false] {
+        for (first, second) in [
+            (&["a", "b", "c"][..], &["x", "y"][..]),
+            (&["a"][..], &[][..]),
+            (&["a", "b"][..], &["x", "y", "z"][..]),
+        ] {
+            let state = AppState::new();
+            let mut settings = state.get_settings().expect("failed to read settings");
+            settings.reset_stats_on_new_batch = reset_stats;
+            state
+                .update_settings(settings)
+                .expect("failed to update settings");
+
+            state
+                .send(StateMessage::LoadLinks(
+                    first.iter().map(|u| u.to_string()).collect(),
+                ))
+                .expect("failed to send LoadLinks");
+            for _ in first {
+                state
+                    .send(StateMessage::IncrementCompleted)
+                    .expect("failed to send IncrementCompleted");
+            }
+            wait_for_processing();
+            state
+                .send(StateMessage::LoadLinks(
+                    second.iter().map(|u| u.to_string()).collect(),
+                ))
+                .expect("failed to send LoadLinks");
+            for _ in second {
+                state
+                    .send(StateMessage::IncrementCompleted)
+                    .expect("failed to send IncrementCompleted");
+            }
+            wait_for_processing();
+
+            let snapshot = state
+                .get_ui_snapshot()
+                .expect("failed to build UI snapshot");
+            assert!(
+                (0.0..=1.0).contains(&snapshot.progress),
+                "reset_stats={} first={:?} second={:?} gave progress {}",
+                reset_stats,
+                first,
+                second,
+                snapshot.progress
+            );
+        }
+    }
+}
+
+// ==================== Controller Lifecycle Flag ====================
+
+#[test]
+fn test_controller_active_defaults_to_false_and_round_trips() {
+    let state = AppState::new();
+    assert!(
+        !state
+            .is_controller_active()
+            .expect("failed to read controller flag")
+    );
+
+    state
+        .set_controller_active(true)
+        .expect("failed to set controller flag");
+    assert!(
+        state
+            .is_controller_active()
+            .expect("failed to read controller flag")
+    );
+
+    state
+        .set_controller_active(false)
+        .expect("failed to clear controller flag");
+    assert!(
+        !state
+            .is_controller_active()
+            .expect("failed to read controller flag")
+    );
+}
+
+#[test]
+fn test_reset_for_new_run_leaves_the_controller_flag_alone() {
+    // The controller sets and clears it around its own lifetime; a reset in the
+    // middle must not pretend the controller has exited.
+    let state = AppState::new();
+    state
+        .set_controller_active(true)
+        .expect("failed to set controller flag");
+
+    state
+        .reset_for_new_run()
+        .expect("failed to reset state for a new run");
+
+    assert!(
+        state
+            .is_controller_active()
+            .expect("failed to read controller flag")
+    );
+}

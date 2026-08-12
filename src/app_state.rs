@@ -40,6 +40,12 @@ struct AppFlags {
     force_quit: bool,
     completed: bool,
     notification_sent: bool,
+    /// Whether the download controller thread is alive.
+    ///
+    /// `started` is cleared by the stop keypress while yt-dlp subprocesses are
+    /// still finishing, so it cannot answer "is anything still running?". This
+    /// is set before the controller spawns and cleared as it exits.
+    controller_active: bool,
 }
 
 /// A thread-safe application state manager for the script.

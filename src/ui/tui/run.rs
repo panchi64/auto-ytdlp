@@ -53,7 +53,11 @@ pub fn run_tui(state: AppState, args: Args) -> Result<()> {
         }
     }
 
-    load_links_into_queue(&state, true);
+    if let Err(e) = load_links_into_queue(&state, true)
+        && let Err(log_err) = state.add_log(format!("Could not load links.txt: {}", e))
+    {
+        eprintln!("Error adding log: {}", log_err);
+    }
 
     let mut settings_menu = SettingsMenu::new(&state, args.flag_download_dir());
 

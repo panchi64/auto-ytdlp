@@ -245,7 +245,15 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
         let stderr_output = stderr_drain
             .and_then(|handle| handle.join().ok())
             .unwrap_or_default();
-        if stderr_output.lines().any(check_network_error) {
+        // Only ERROR lines decide retryability. yt-dlp writes routine warnings
+        // like "WARNING: ... HTTP Error 404" while failing permanently for an
+        // unrelated reason, and check_network_error matches bare substrings, so
+        // feeding it warnings would retry dead URLs three times each.
+        if stderr_output
+            .lines()
+            .filter(|line| line.contains("ERROR"))
+            .any(check_network_error)
+        {
             is_network_error = true;
         }
 

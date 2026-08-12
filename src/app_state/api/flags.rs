@@ -27,6 +27,22 @@ impl AppState {
         Ok(flags.force_quit)
     }
 
+    /// Whether the download controller thread is alive.
+    ///
+    /// Set synchronously rather than through the channel: callers check it
+    /// immediately after a keypress, and a queued message would still read
+    /// stale.
+    pub fn set_controller_active(&self, value: bool) -> Result<()> {
+        let mut flags = self.flags.lock()?;
+        flags.controller_active = value;
+        Ok(())
+    }
+
+    pub fn is_controller_active(&self) -> Result<bool> {
+        let flags = self.flags.lock()?;
+        Ok(flags.controller_active)
+    }
+
     pub fn is_notification_sent(&self) -> Result<bool> {
         let flags = self.flags.lock()?;
         Ok(flags.notification_sent)

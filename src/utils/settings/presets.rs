@@ -39,13 +39,18 @@ impl SettingsPreset {
 
     /// Create settings configured for this preset
     ///
-    /// Presets only cover download behaviour, so the download directory from
-    /// `current` is carried over instead of being reset.
+    /// Presets only cover download behaviour, so the download directory and the
+    /// terminal/session preferences from `current` are carried over rather than
+    /// being reset.
     ///
     /// Each arm spells out every field, so these literals must be updated in
     /// lockstep with `impl Default for Settings`.
     pub fn apply(&self, current: &Settings) -> Settings {
+        // Carried over: these are terminal/session preferences, not download
+        // behaviour, and silently resetting them makes a preset look broken.
         let download_dir = current.download_dir.clone();
+        let use_ascii_indicators = current.use_ascii_indicators;
+        let reset_stats_on_new_batch = current.reset_stats_on_new_batch;
         match self {
             SettingsPreset::BestQuality => Settings {
                 format_preset: FormatPreset::Best,
@@ -59,9 +64,9 @@ impl SettingsPreset {
                 network_retry: true,
                 retry_delay: 2,
                 cookies_from_browser: String::new(),
-                use_ascii_indicators: false,
+                use_ascii_indicators,
                 custom_ytdlp_args: String::new(),
-                reset_stats_on_new_batch: true,
+                reset_stats_on_new_batch,
                 download_dir,
             },
             SettingsPreset::AudioArchive => Settings {
@@ -76,9 +81,9 @@ impl SettingsPreset {
                 network_retry: true,
                 retry_delay: 2,
                 cookies_from_browser: String::new(),
-                use_ascii_indicators: false,
+                use_ascii_indicators,
                 custom_ytdlp_args: String::new(),
-                reset_stats_on_new_batch: true,
+                reset_stats_on_new_batch,
                 download_dir,
             },
             SettingsPreset::FastDownload => Settings {
@@ -93,9 +98,9 @@ impl SettingsPreset {
                 network_retry: false,
                 retry_delay: 1,
                 cookies_from_browser: String::new(),
-                use_ascii_indicators: false,
+                use_ascii_indicators,
                 custom_ytdlp_args: String::new(),
-                reset_stats_on_new_batch: true,
+                reset_stats_on_new_batch,
                 download_dir,
             },
             SettingsPreset::BandwidthSaver => Settings {
@@ -110,9 +115,9 @@ impl SettingsPreset {
                 network_retry: true,
                 retry_delay: 5,
                 cookies_from_browser: String::new(),
-                use_ascii_indicators: false,
+                use_ascii_indicators,
                 custom_ytdlp_args: String::new(),
-                reset_stats_on_new_batch: true,
+                reset_stats_on_new_batch,
                 download_dir,
             },
         }

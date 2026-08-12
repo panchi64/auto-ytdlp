@@ -115,8 +115,13 @@ impl SettingsMenu {
     }
 
     /// Write the settings to disk and publish them to the shared state
+    ///
+    /// `concurrent_downloads` needs the extra hop: `process_queue` reads the
+    /// worker count from `get_concurrent()`, not from the settings struct, so
+    /// without this the row (and the Fast Download preset) would be inert.
     fn persist(&self, state: &AppState) {
         let _ = self.settings.save();
+        let _ = state.set_concurrent(self.settings.concurrent_downloads);
         let _ = state.update_settings(self.settings.clone());
     }
 }

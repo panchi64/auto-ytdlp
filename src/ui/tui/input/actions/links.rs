@@ -16,19 +16,30 @@ pub(in crate::ui::tui::input) fn handle_load_file(
     last_tick: &mut Instant,
     tick_rate: Duration,
 ) {
-    // Reloading replaces the whole queue, and a URL being downloaded right now is
+    // Loading replaces the whole queue, and a URL being downloaded right now is
     // still in links.txt (it is only stripped on success), so loading mid-run
-    // would re-queue it and hand a second worker the same download.
-    if downloads_running(state) {
+    // would re-queue it and hand a second worker the same download. Paused
+    // counts as in flight: the subprocess is still writing.
+    if downloads_in_flight(state) {
         if let Err(e) = state.add_log("Cannot load links while downloads are active".to_string()) {
             eprintln!("Error adding log: {}", e);
         }
         return;
     }
 
-    load_links_into_queue(state, true);
-    if let Err(e) = state.add_log("Links loaded from file".to_string()) {
-        eprintln!("Error adding log: {}", e);
+    // Only report success if the load actually happened - claiming otherwise
+    // sends the user off to press S on the stale queue.
+    match load_links_into_queue(state, true) {
+        Ok(count) => {
+            if let Err(e) = state.add_log(format!("Links loaded from file ({})", count)) {
+                eprintln!("Error adding log: {}", e);
+            }
+        }
+        Err(e) => {
+            if let Err(log_err) = state.add_log(format!("Could not load links: {}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+        }
     }
     *last_tick = Instant::now() - tick_rate;
 }

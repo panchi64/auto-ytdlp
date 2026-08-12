@@ -19,22 +19,18 @@ pub(in crate::ui::tui::input) fn downloads_running(state: &AppState) -> bool {
 
 /// Whether any yt-dlp process may still be executing.
 ///
-/// Pausing only stops workers from popping *new* URLs — subprocesses already
-/// spawned keep downloading — so operations that disturb the yt-dlp binary or
-/// the failed-download list must treat a paused session as still in flight.
-pub(in crate::ui::tui::input) fn downloads_in_flight(state: &AppState) -> bool {
-    state.is_started().unwrap_or(false) && !state.is_completed().unwrap_or(false)
-}
-
-/// Whether every yt-dlp subprocess has exited.
+/// Neither `started` nor `paused` can answer this. Pausing only stops workers
+/// popping *new* URLs - subprocesses already spawned keep downloading - and the
+/// stop keypress clears `started` while the drain is still under way. The
+/// controller flag covers both: it is set before the controller spawns and
+/// cleared only after every worker has been joined.
 ///
-/// A lock failure reads as "not drained" so a watcher waits rather than
-/// declaring the batch finished while processes are still running.
-fn active_downloads_drained(state: &AppState) -> bool {
-    state
-        .get_active_downloads()
-        .map(|active| active.is_empty())
-        .unwrap_or(false)
+/// A lock failure reads as "in flight" so a guard errs towards refusing rather
+/// than disturbing a live download.
+pub(in crate::ui::tui::input) fn downloads_in_flight(state: &AppState) -> bool {
+    state.is_controller_active().unwrap_or(true)
+        || (state.is_started().unwrap_or(false) && !state.is_completed().unwrap_or(false))
+        || state.active_download_count().map(|n| n > 0).unwrap_or(true)
 }
 
 pub(in crate::ui::tui::input) fn handle_start_stop(
@@ -52,6 +48,15 @@ pub(in crate::ui::tui::input) fn handle_start_stop(
                 .as_ref()
                 .is_some_and(|handle| !handle.is_finished())
             {
+                // Say so: after a stop the header reads STOPPED while the drain
+                // runs on for minutes, and a silent return looks like a dead key.
+                if let Err(e) = state.add_log(
+                    "Still finishing the previous run - downloads will not restart until it drains"
+                        .to_string(),
+                ) {
+                    eprintln!("Error adding log: {}", e);
+                }
+                let _ = state.show_toast("Still stopping the previous run");
                 return;
             }
 
@@ -112,7 +117,10 @@ pub(in crate::ui::tui::input) fn handle_start_stop(
             // and the duplicate-controller guard above reads it.
             let state_clone = state.clone();
             thread::spawn(move || {
-                while !active_downloads_drained(&state_clone) {
+                // Waits on the controller, not on the active-download set: that
+                // set is momentarily empty between two URLs, which would declare
+                // the drain finished while a worker was still spawning.
+                while downloads_in_flight(&state_clone) {
                     thread::sleep(Duration::from_millis(100));
                 }
                 if let Err(e) = state_clone.add_log("Downloads stopped gracefully.".to_string()) {
@@ -156,16 +164,32 @@ pub(in crate::ui::tui::input) fn handle_reload(
     last_tick: &mut Instant,
     tick_rate: Duration,
 ) {
-    if !downloads_running(state) {
-        if let Err(e) = state.reset_for_new_run() {
-            eprintln!("Error resetting state: {}", e);
-        }
-
-        load_links_into_queue(state, false);
-
-        if let Err(e) = state.add_log("Links refreshed from file".to_string()) {
+    // Guarded on in-flight, not running: a paused session still has yt-dlp
+    // subprocesses writing files, and replacing the queue would re-queue the URL
+    // one of them is already downloading.
+    if downloads_in_flight(state) {
+        if let Err(e) = state.add_log("Cannot reload links while downloads are active".to_string())
+        {
             eprintln!("Error adding log: {}", e);
         }
-        *last_tick = Instant::now() - tick_rate;
+        return;
     }
+
+    if let Err(e) = state.reset_for_new_run() {
+        eprintln!("Error resetting state: {}", e);
+    }
+
+    match load_links_into_queue(state, false) {
+        Ok(count) => {
+            if let Err(e) = state.add_log(format!("Links refreshed from file ({})", count)) {
+                eprintln!("Error adding log: {}", e);
+            }
+        }
+        Err(e) => {
+            if let Err(log_err) = state.add_log(format!("Could not refresh links: {}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+        }
+    }
+    *last_tick = Instant::now() - tick_rate;
 }

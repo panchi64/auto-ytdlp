@@ -81,3 +81,39 @@ fn test_check_network_error_partial_matches() {
         "Error message with SSL certificate issue"
     ));
 }
+
+// ==================== Retry Classification ====================
+
+/// Mirrors how the worker decides retryability from captured stderr: only ERROR
+/// lines count, because yt-dlp writes routine warnings that contain the same
+/// substrings check_network_error matches.
+fn stderr_is_retryable(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .filter(|line| line.contains("ERROR"))
+        .any(check_network_error)
+}
+
+#[test]
+fn test_warning_lines_do_not_make_a_permanent_failure_retryable() {
+    let stderr = "WARNING: [youtube] Unable to download webpage: HTTP Error 404\n\
+                  ERROR: Video unavailable. This video is private\n";
+    assert!(
+        !stderr_is_retryable(stderr),
+        "a private-video failure must not be retried because of a warning line"
+    );
+}
+
+#[test]
+fn test_error_lines_still_mark_network_failures_retryable() {
+    let stderr = "WARNING: [youtube] nsig extraction failed\n\
+                  ERROR: Unable to download webpage: <urlopen error timed out>\n";
+    assert!(stderr_is_retryable(stderr));
+}
+
+#[test]
+fn test_stderr_without_any_error_line_is_not_retryable() {
+    let stderr = "WARNING: Falling back to generic extractor\n\
+                  [info] Downloading 1 format(s)\n";
+    assert!(!stderr_is_retryable(stderr));
+}

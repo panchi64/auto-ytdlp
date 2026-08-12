@@ -14,9 +14,12 @@ pub struct Args {
     /// Run in automated mode without TUI
     #[arg(short, long)]
     pub auto: bool,
-    /// Max concurrent downloads
-    #[arg(short, long, default_value_t = 4)]
-    pub concurrent: usize,
+    /// Max concurrent downloads (overrides the saved setting)
+    ///
+    /// Optional rather than defaulted: a hard default here would overwrite the
+    /// saved `concurrent_downloads` on every launch, making the settings row inert.
+    #[arg(short, long)]
+    pub concurrent: Option<usize>,
     /// Download directory (overrides the saved setting)
     #[arg(short, long)]
     pub download_dir: Option<PathBuf>,
@@ -32,6 +35,11 @@ impl Args {
     /// built-in default. Both sources expand a leading `~`, since a shell that
     /// does not expand it (quoted arguments, cron, systemd) would otherwise
     /// create a directory literally named `~`.
+    /// Worker count to use: the `-c` flag if given, otherwise the saved setting
+    pub fn resolve_concurrent(&self, settings: &Settings) -> usize {
+        self.concurrent.unwrap_or(settings.concurrent_downloads)
+    }
+
     pub fn resolve_download_dir(&self, settings: &Settings) -> PathBuf {
         self.flag_download_dir()
             .or_else(|| settings.resolved_download_dir())

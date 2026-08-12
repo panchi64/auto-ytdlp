@@ -181,14 +181,17 @@ impl AppState {
 
         let mut stats = self.stats.lock()?;
         stats.total_tasks = queue_len;
-        // In cumulative mode the completed count carries across batches, so the
-        // denominator has to cover it too; overwriting it with just the new
-        // queue length would push the progress ratio past 100%.
-        stats.initial_total_tasks = if reset_stats {
-            queue_len
+        if reset_stats {
+            // Fresh count per batch: leaving the previous batch's completed count
+            // against the new denominator shows "100% (5/3)" before S is pressed.
+            stats.completed_tasks = 0;
+            stats.progress = 0.0;
+            stats.initial_total_tasks = queue_len;
         } else {
-            stats.completed_tasks + queue_len
-        };
+            // Cumulative: the completed count carries across batches, so the
+            // denominator has to cover it too or the ratio passes 100%.
+            stats.initial_total_tasks = stats.completed_tasks + queue_len;
+        }
         Ok(())
     }
 

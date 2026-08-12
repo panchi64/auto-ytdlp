@@ -57,6 +57,12 @@ pub fn process_queue(state: AppState, args: Args) {
         eprintln!("Error setting started: {}", e);
     }
 
+    // Marked before the spawn so a keypress landing in the next tick already
+    // sees a live controller
+    if let Err(e) = state.set_controller_active(true) {
+        eprintln!("Error marking controller active: {}", e);
+    }
+
     // Create a single controller thread instead of immediately creating all worker threads
     let state_clone = state.clone();
     let args_clone = args.clone();
@@ -229,6 +235,12 @@ pub fn process_queue(state: AppState, args: Args) {
         if let Err(e) = state_clone.send(StateMessage::SetStarted(false)) {
             eprintln!("Error setting started: {}", e);
         } // Always mark as not started
+
+        // Last thing the controller does: every worker has been joined by now,
+        // so anything gated on "is a download still running" opens here.
+        if let Err(e) = state_clone.set_controller_active(false) {
+            eprintln!("Error clearing controller active: {}", e);
+        }
 
         // Clear logs after a short delay, but only if not a force quit.
         // For force quit, we want to preserve the logs detailing the forceful termination.

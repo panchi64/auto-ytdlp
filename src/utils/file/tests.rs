@@ -289,3 +289,119 @@ fn test_deduplicate_links_trims_whitespace() {
     assert_eq!(new[0], "https://example.com/a");
     assert_eq!(new[1], "https://example.com/b");
 }
+
+// ==================== Real links.txt Pipeline ====================
+//
+// These drive the production functions against the per-thread test queue file,
+// rather than the path-parameterized copies above.
+
+fn write_queue_file(contents: &str) {
+    fs::write(links_file_path(), contents).expect("failed to write the test queue file");
+}
+
+fn read_queue_file() -> String {
+    fs::read_to_string(links_file_path()).expect("failed to read the test queue file")
+}
+
+fn test_state() -> AppState {
+    AppState::new()
+}
+
+#[test]
+fn test_clipboard_paste_dedupes_within_the_pasted_text() {
+    write_queue_file("");
+    let state = test_state();
+
+    let added = add_clipboard_links(
+        &state,
+        "https://example.com/a\nhttps://example.com/a\nhttps://example.com/b\n",
+    )
+    .expect("failed to add clipboard links");
+
+    assert_eq!(added, 2, "the repeated URL should only count once");
+    let file = read_queue_file();
+    assert_eq!(file.matches("https://example.com/a").count(), 1);
+    assert_eq!(file.matches("https://example.com/b").count(), 1);
+}
+
+#[test]
+fn test_clipboard_paste_skips_urls_already_in_the_file() {
+    write_queue_file("https://example.com/a\n");
+    let state = test_state();
+
+    let added = add_clipboard_links(&state, "https://example.com/a\nhttps://example.com/c\n")
+        .expect("failed to add clipboard links");
+
+    assert_eq!(added, 1);
+    assert_eq!(
+        read_queue_file().matches("https://example.com/a").count(),
+        1
+    );
+}
+
+#[test]
+fn test_sanitize_drops_invalid_lines_and_reports_the_count() {
+    write_queue_file("https://example.com/a\nnot a url\n\nhttps://example.com/b\n");
+    let state = test_state();
+
+    let removed = sanitize_links_file(&state).expect("failed to sanitize");
+
+    assert_eq!(removed, 1);
+    let file = read_queue_file();
+    assert!(!file.contains("not a url"));
+    assert!(file.contains("https://example.com/a"));
+    assert!(file.contains("https://example.com/b"));
+}
+
+#[test]
+fn test_sanitize_is_a_no_op_when_every_line_is_valid() {
+    write_queue_file("https://example.com/a\nhttps://example.com/b\n");
+    let state = test_state();
+
+    assert_eq!(sanitize_links_file(&state).expect("failed to sanitize"), 0);
+    assert_eq!(read_queue_file().lines().count(), 2);
+}
+
+#[test]
+fn test_load_links_into_queue_reports_the_count_it_loaded() {
+    write_queue_file("https://example.com/a\nhttps://example.com/b\n");
+    let state = test_state();
+
+    let count = load_links_into_queue(&state, true).expect("expected the load to succeed");
+
+    assert_eq!(count, 2);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(state.queue_len().expect("failed to read queue"), 2);
+}
+
+#[test]
+fn test_load_links_into_queue_errors_instead_of_reporting_success() {
+    // A missing queue file must surface as Err, or the caller logs "Links loaded
+    // from file" and the user acts on a stale queue.
+    let state = test_state();
+    write_queue_file("https://example.com/a\n");
+    load_links_into_queue(&state, false).expect("failed to seed the queue");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    fs::remove_file(links_file_path()).expect("failed to remove the test queue file");
+
+    assert!(
+        load_links_into_queue(&state, false).is_err(),
+        "a missing queue file must not report success"
+    );
+    // The previous queue is left untouched rather than silently emptied
+    assert_eq!(state.queue_len().expect("failed to read queue"), 1);
+}
+
+#[test]
+fn test_removing_a_link_leaves_the_rest_of_the_file_intact() {
+    write_queue_file("https://example.com/a\nhttps://example.com/b\nhttps://example.com/c\n");
+    let state = test_state();
+
+    remove_link_from_file_sync(&state, "https://example.com/b").expect("failed to remove link");
+
+    let file = read_queue_file();
+    assert!(!file.contains("https://example.com/b"));
+    assert!(file.contains("https://example.com/a"));
+    assert!(file.contains("https://example.com/c"));
+}

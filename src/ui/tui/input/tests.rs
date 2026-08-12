@@ -855,3 +855,152 @@ fn test_download_state_default() {
     assert!(state.download_thread_handle.is_none());
     assert!(!state.await_downloads_on_exit);
 }
+
+// ==================== Guard Predicate Coverage ====================
+
+/// Every key that must refuse to run while yt-dlp subprocesses may be alive.
+/// Each entry is the key and a fragment of the refusal it should log.
+const GUARDED_KEYS: [(char, &str); 4] = [
+    ('u', "Cannot update while downloads are active"),
+    ('t', "Cannot retry while downloads are active"),
+    ('f', "Cannot load links while downloads are active"),
+    ('r', "Cannot reload links while downloads are active"),
+];
+
+fn logs_contain(state: &AppState, fragment: &str) -> bool {
+    state
+        .get_ui_snapshot()
+        .expect("failed to build UI snapshot")
+        .logs
+        .iter()
+        .any(|line| line.contains(fragment))
+}
+
+#[test]
+fn test_guarded_keys_refuse_while_downloads_are_paused() {
+    // Pausing stops workers popping new URLs but leaves the spawned yt-dlp
+    // processes writing files, so a paused session is still in flight.
+    for (key, refusal) in GUARDED_KEYS {
+        let state = state_with_queue(&["url1", "url2"]);
+        let _ = state.send(StateMessage::SetStarted(true));
+        let _ = state.send(StateMessage::SetPaused(true));
+        thread::sleep(Duration::from_millis(50));
+
+        let args = create_test_args();
+        let mut nmc = TestNmc::default();
+        handle_normal_mode_input(KeyCode::Char(key), &state, &args, &mut nmc.context());
+
+        assert!(
+            logs_contain(&state, refusal),
+            "'{}' was allowed while paused",
+            key
+        );
+    }
+}
+
+#[test]
+fn test_guarded_keys_refuse_while_the_controller_is_draining() {
+    // After S-to-stop the started flag is already false, but the controller is
+    // still joining workers - the drain window the guards used to miss.
+    for (key, refusal) in GUARDED_KEYS {
+        let state = state_with_queue(&["url1", "url2"]);
+        state
+            .set_controller_active(true)
+            .expect("failed to mark controller active");
+        let _ = state.send(StateMessage::SetStarted(false));
+        thread::sleep(Duration::from_millis(50));
+
+        let args = create_test_args();
+        let mut nmc = TestNmc::default();
+        handle_normal_mode_input(KeyCode::Char(key), &state, &args, &mut nmc.context());
+
+        assert!(
+            logs_contain(&state, refusal),
+            "'{}' was allowed mid-drain",
+            key
+        );
+    }
+}
+
+#[test]
+fn test_guarded_keys_are_allowed_once_the_controller_has_exited() {
+    for (key, refusal) in GUARDED_KEYS {
+        let state = state_with_queue(&["url1", "url2"]);
+        state
+            .set_controller_active(false)
+            .expect("failed to clear controller active");
+        thread::sleep(Duration::from_millis(50));
+
+        let args = create_test_args();
+        let mut nmc = TestNmc::default();
+        handle_normal_mode_input(KeyCode::Char(key), &state, &args, &mut nmc.context());
+
+        assert!(
+            !logs_contain(&state, refusal),
+            "'{}' was refused while nothing was running",
+            key
+        );
+    }
+}
+
+#[test]
+fn test_edit_mode_refuses_while_downloads_are_paused() {
+    let state = state_with_queue(&["url1", "url2"]);
+    let _ = state.send(StateMessage::SetStarted(true));
+    let _ = state.send(StateMessage::SetPaused(true));
+    thread::sleep(Duration::from_millis(50));
+
+    let args = create_test_args();
+    let mut nmc = TestNmc::default();
+    handle_normal_mode_input(KeyCode::Char('e'), &state, &args, &mut nmc.context());
+
+    assert!(!nmc.ctx.queue_edit_mode, "edit mode opened while paused");
+    assert!(logs_contain(
+        &state,
+        "Cannot edit queue while downloads are active"
+    ));
+}
+
+// ==================== Delete Binding Case ====================
+
+#[test]
+fn test_edit_mode_delete_accepts_both_cases_and_the_delete_key() {
+    // The panel title and footer both advertise "D: Delete", so uppercase has to
+    // work; K/J already accept either case.
+    for key in [KeyCode::Char('d'), KeyCode::Char('D'), KeyCode::Delete] {
+        let state = state_with_queue(&["url1", "url2", "url3"]);
+        let mut ctx = drawn_context(3, 3);
+        ctx.queue_edit_mode = true;
+        ctx.queue_selected_index = 0;
+
+        handle_edit_mode_input(key, &state, &mut ctx);
+
+        assert_eq!(
+            state.queue_len().expect("failed to read queue"),
+            2,
+            "{:?} did not delete a row",
+            key
+        );
+    }
+}
+
+#[test]
+fn test_edit_mode_move_keys_accept_both_cases() {
+    for (key, expected_top) in [(KeyCode::Char('j'), "url2"), (KeyCode::Char('J'), "url2")] {
+        let state = state_with_queue(&["url1", "url2", "url3"]);
+        let mut ctx = drawn_context(3, 3);
+        ctx.queue_edit_mode = true;
+        // Display row 0 is the newest link, url3; move it down the panel
+        ctx.queue_selected_index = 0;
+
+        handle_edit_mode_input(key, &state, &mut ctx);
+
+        let queue = state.get_queue().expect("failed to read queue");
+        assert_eq!(
+            queue.back().map(String::as_str),
+            Some(expected_top),
+            "{:?} did not reorder the queue",
+            key
+        );
+    }
+}

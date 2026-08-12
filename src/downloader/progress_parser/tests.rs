@@ -454,3 +454,38 @@ fn test_parse_destination_non_download_prefix() {
         _ => panic!("Expected Destination"),
     }
 }
+
+// ==================== Non-ASCII Input ====================
+
+#[test]
+fn test_traditional_progress_survives_multibyte_char_before_percent() {
+    // An em dash immediately before the digits used to make the byte index walk
+    // land mid-character, panicking the worker thread instead of parsing.
+    let line = "[download] Destination: /dl/Sale\u{2014}50% off - [abc].mp4";
+    let _ = parse_ytdlp_line(line);
+}
+
+#[test]
+fn test_traditional_progress_parses_after_multibyte_prefix() {
+    let info = parse_traditional_progress("[download] Café — 45.2% of 100.00MiB at 1.50MiB/s")
+        .expect("expected a progress line");
+    assert_eq!(info.percent, 45.2);
+    assert_eq!(info.status, "downloading");
+}
+
+#[test]
+fn test_parse_ytdlp_line_handles_assorted_unicode_titles() {
+    // Every branch of the parser should tolerate arbitrary text without panicking
+    for line in [
+        "[download] 日本語のタイトル—100% of 5MiB",
+        "[download]  0.0% of ??? at Unknown ETA Unknown",
+        "[download] Downloading item 3 of 10 — ステップ",
+        "[Merger] Merging formats into \"vidéo—final.mkv\"",
+        "ERROR: Vidéo indisponible — 50%",
+        "[download] 100%",
+        "%",
+        "—%",
+    ] {
+        let _ = parse_ytdlp_line(line);
+    }
+}

@@ -8,7 +8,7 @@ fn test_default_values() {
     let args = Args::parse_from(["test"]);
 
     assert!(!args.auto);
-    assert_eq!(args.concurrent, 4);
+    assert_eq!(args.concurrent, None);
     assert_eq!(args.download_dir, None);
     assert_eq!(args.archive_file, PathBuf::from("./download_archive.txt"));
 }
@@ -28,13 +28,13 @@ fn test_auto_flag_long() {
 #[test]
 fn test_concurrent_flag_short() {
     let args = Args::parse_from(["test", "-c", "8"]);
-    assert_eq!(args.concurrent, 8);
+    assert_eq!(args.concurrent, Some(8));
 }
 
 #[test]
 fn test_concurrent_flag_long() {
     let args = Args::parse_from(["test", "--concurrent", "16"]);
-    assert_eq!(args.concurrent, 16);
+    assert_eq!(args.concurrent, Some(16));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn test_combined_flags() {
     ]);
 
     assert!(args.auto);
-    assert_eq!(args.concurrent, 12);
+    assert_eq!(args.concurrent, Some(12));
     assert_eq!(args.download_dir, Some(PathBuf::from("/downloads")));
     assert_eq!(args.archive_file, PathBuf::from("/archive.txt"));
 }
@@ -155,4 +155,41 @@ fn test_args_clone() {
     assert_eq!(cloned.concurrent, args.concurrent);
     assert_eq!(cloned.download_dir, args.download_dir);
     assert_eq!(cloned.archive_file, args.archive_file);
+}
+
+// ==================== Concurrent Resolution ====================
+
+#[test]
+fn test_concurrent_falls_back_to_the_saved_setting() {
+    // A hard CLI default here would overwrite the saved setting on every launch,
+    // which is what made the Concurrent Downloads row inert.
+    let args = Args::parse_from(["test"]);
+    let settings = Settings {
+        concurrent_downloads: 8,
+        ..Settings::default()
+    };
+
+    assert_eq!(args.resolve_concurrent(&settings), 8);
+}
+
+#[test]
+fn test_concurrent_flag_overrides_the_saved_setting() {
+    let args = Args::parse_from(["test", "-c", "2"]);
+    let settings = Settings {
+        concurrent_downloads: 8,
+        ..Settings::default()
+    };
+
+    assert_eq!(args.resolve_concurrent(&settings), 2);
+}
+
+#[test]
+fn test_concurrent_uses_the_settings_default_when_neither_is_set() {
+    let args = Args::parse_from(["test"]);
+    let settings = Settings::default();
+
+    assert_eq!(
+        args.resolve_concurrent(&settings),
+        settings.concurrent_downloads
+    );
 }

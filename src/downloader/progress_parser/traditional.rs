@@ -5,7 +5,14 @@ use super::scalars::parse_size_string;
 pub(super) fn parse_traditional_progress(line: &str) -> Option<ProgressInfo> {
     // Pattern: "[download]  XX.X% of YY.YYMiB at ZZ.ZZMiB/s ETA HH:MM:SS"
     let percent_end = line.find('%')?;
-    let percent_start = line[..percent_end].rfind(|c: char| !c.is_ascii_digit() && c != '.')? + 1;
+    // Walk back over the digits by char, not by byte: adding 1 to a byte index
+    // lands mid-character when the char before the number is multi-byte (a title
+    // like "Sale—50% off"), and slicing there panics.
+    let percent_start = line[..percent_end]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !c.is_ascii_digit() && *c != '.')
+        .map(|(idx, c)| idx + c.len_utf8())?;
 
     let percent_str = &line[percent_start..percent_end];
     let percent: f64 = percent_str.trim().parse().ok()?;

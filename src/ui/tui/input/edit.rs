@@ -3,7 +3,7 @@ use crossterm::event::KeyCode;
 use crate::app_state::AppState;
 use crate::ui::tui::flip_index;
 
-use super::actions::downloads_running;
+use super::actions::downloads_in_flight;
 use super::{InputResult, UiContext};
 
 /// Handle queue edit mode input
@@ -92,8 +92,10 @@ pub fn handle_edit_mode_input(
 }
 
 pub(in crate::ui::tui::input) fn handle_edit_mode(state: &AppState, ctx: &mut UiContext) {
-    if !downloads_running(state) {
-        let queue_len = state.get_queue().map(|q| q.len()).unwrap_or(0);
+    // In flight, not running: reordering or deleting while a paused worker still
+    // holds a URL would desync the queue from what is actually downloading.
+    if !downloads_in_flight(state) {
+        let queue_len = state.queue_len().unwrap_or(0);
         if queue_len > 0 {
             ctx.queue_edit_mode = true;
             // Start on the newest link, at the top of the panel

@@ -5,21 +5,51 @@ use std::fs;
 /// Default filename for the download queue
 pub const LINKS_FILE: &str = "links.txt";
 
+/// Queue file the operations below act on.
+///
+/// In test builds this is a per-thread temp file. Tests drive the real read and
+/// write paths, so without it they would fight each other over one shared
+/// `links.txt` in the working directory - and clobber the developer's own.
+#[cfg(test)]
+fn links_file_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static PATH: std::path::PathBuf = {
+            let dir = std::env::temp_dir().join("auto-ytdlp-test-links");
+            fs::create_dir_all(&dir).ok();
+            let path = dir.join(format!(
+                "links-{}.txt",
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::write(&path, "").ok();
+            path
+        };
+    }
+    PATH.with(|path| path.clone())
+}
+
+#[cfg(not(test))]
+fn links_file_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(LINKS_FILE)
+}
+
 /// Internal function to remove a link from file while holding the file lock.
 /// This prevents race conditions when multiple workers complete simultaneously.
 fn remove_link_from_file_internal(_guard: &FileLockGuard<'_>, url: &str) -> Result<()> {
-    let file_path = LINKS_FILE;
-    let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
+    let file_path = links_file_path();
+    let content = fs::read_to_string(&file_path).map_err(AppError::Io)?;
 
     // Use a temporary file for atomic writes
-    let temp_path = format!("{}.tmp", file_path);
+    let temp_path = file_path.with_extension("txt.tmp");
     let new_content: Vec<&str> = content
         .lines()
         .filter(|line| line.trim() != url.trim())
         .collect();
 
     fs::write(&temp_path, new_content.join("\n") + "\n").map_err(AppError::Io)?;
-    fs::rename(&temp_path, file_path).map_err(AppError::Io)?; // Atomic replace
+    fs::rename(&temp_path, &file_path).map_err(AppError::Io)?; // Atomic replace
 
     Ok(())
 }
@@ -44,7 +74,7 @@ pub fn remove_link_from_file_sync(state: &AppState, url: &str) -> Result<()> {
 
 /// Reads the valid URLs out of links.txt, skipping blanks and unparseable lines.
 pub fn get_links_from_file() -> Result<Vec<String>> {
-    let content = fs::read_to_string(LINKS_FILE).map_err(AppError::Io)?;
+    let content = fs::read_to_string(links_file_path()).map_err(AppError::Io)?;
 
     Ok(content
         .lines()
@@ -64,8 +94,8 @@ pub fn sanitize_links_file(state: &AppState) -> Result<usize> {
 }
 
 fn sanitize_links_file_internal(_guard: &FileLockGuard<'_>) -> Result<usize> {
-    let file_path = LINKS_FILE;
-    let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
+    let file_path = links_file_path();
+    let content = fs::read_to_string(&file_path).map_err(AppError::Io)?;
 
     // Single pass: count total non-empty lines and collect valid URLs
     let mut total_non_empty = 0usize;
@@ -80,43 +110,44 @@ fn sanitize_links_file_internal(_guard: &FileLockGuard<'_>) -> Result<usize> {
     let removed_count = total_non_empty - valid_lines.len();
 
     if removed_count > 0 {
-        let temp_path = format!("{}.tmp", file_path);
+        let temp_path = file_path.with_extension("txt.tmp");
         fs::write(&temp_path, valid_lines.join("\n") + "\n").map_err(AppError::Io)?;
-        fs::rename(&temp_path, file_path).map_err(AppError::Io)?;
+        fs::rename(&temp_path, &file_path).map_err(AppError::Io)?;
     }
 
     Ok(removed_count)
 }
 
-/// Replaces the download queue with the contents of links.txt.
+/// Replaces the download queue with the contents of links.txt, returning how
+/// many URLs were loaded.
 ///
-/// `sanitize` drops invalid lines from the file first. Every failure is logged
-/// to the TUI rather than stderr, which is invisible under the alternate screen.
-pub fn load_links_into_queue(state: &AppState, sanitize: bool) {
-    let log = |message: String| {
-        if let Err(e) = state.add_log(message) {
-            eprintln!("Error adding log: {}", e);
-        }
-    };
-
+/// `sanitize` drops invalid lines from the file first; a sanitize failure is
+/// logged but does not abort the load, since the file may still be readable.
+/// An `Err` here means the queue was left untouched - callers must not report
+/// success on it.
+pub fn load_links_into_queue(state: &AppState, sanitize: bool) -> Result<usize> {
     if sanitize {
         match sanitize_links_file(state) {
             Ok(removed) if removed > 0 => {
-                log(format!("Removed {} invalid URLs from links.txt", removed))
+                if let Err(e) =
+                    state.add_log(format!("Removed {} invalid URLs from links.txt", removed))
+                {
+                    eprintln!("Error adding log: {}", e);
+                }
             }
             Ok(_) => {}
-            Err(e) => log(format!("Error sanitizing links file: {}", e)),
+            Err(e) => {
+                if let Err(log_err) = state.add_log(format!("Error sanitizing links file: {}", e)) {
+                    eprintln!("Error adding log: {}", log_err);
+                }
+            }
         }
     }
 
-    match get_links_from_file() {
-        Ok(links) => {
-            if let Err(e) = state.send(StateMessage::LoadLinks(links)) {
-                log(format!("Error loading links: {}", e));
-            }
-        }
-        Err(e) => log(format!("Error loading links: {}", e)),
-    }
+    let links = get_links_from_file()?;
+    let count = links.len();
+    state.send(StateMessage::LoadLinks(links))?;
+    Ok(count)
 }
 
 /// Adds the URLs found in clipboard text to links.txt and the queue.
@@ -147,7 +178,7 @@ pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<
         if !new.is_empty() {
             let mut all_links = current_links;
             all_links.extend(new.iter().cloned());
-            fs::write(LINKS_FILE, all_links.join("\n") + "\n").map_err(AppError::Io)?;
+            fs::write(links_file_path(), all_links.join("\n") + "\n").map_err(AppError::Io)?;
         }
 
         drop(guard);

@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::app_state::AppState;
@@ -62,7 +62,10 @@ impl AppState {
     }
 
     /// Returns just the URLs of active downloads (for compatibility checks)
-    pub fn get_active_downloads(&self) -> Result<HashSet<String>> {
+    /// Test-only: production reads the count via `active_download_count`, but
+    /// tests assert *which* URLs are active.
+    #[cfg(test)]
+    pub fn get_active_downloads(&self) -> Result<std::collections::HashSet<String>> {
         let queues = self.queues.lock()?;
         Ok(queues.active_downloads.keys().cloned().collect())
     }
