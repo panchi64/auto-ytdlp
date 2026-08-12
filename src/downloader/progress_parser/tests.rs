@@ -1,3 +1,6 @@
+use super::scalars::{
+    parse_optional_string, parse_optional_u32, parse_optional_u64, parse_percent, parse_size_string,
+};
 use super::*;
 
 // ==================== Traditional Progress Parsing ====================

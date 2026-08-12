@@ -1,11 +1,13 @@
-//! Parser for yt-dlp output lines.
-//!
-//! Parses both structured progress template output and traditional yt-dlp output
-//! to extract download progress information.
-
 use std::time::Instant;
 
 use crate::app_state::DownloadProgress;
+
+mod scalars;
+mod template;
+mod traditional;
+
+use template::parse_progress_template;
+use traditional::{parse_fragment_progress, parse_traditional_progress};
 
 /// Represents a parsed line from yt-dlp output
 #[derive(Debug, Clone)]
@@ -105,44 +107,6 @@ pub fn parse_ytdlp_line(line: &str) -> ParsedOutput {
     ParsedOutput::Info(line.to_string())
 }
 
-/// Parses our custom progress template format
-fn parse_progress_template(line: &str) -> Option<ProgressInfo> {
-    // Format: |PROGRESS|status|percent|speed|eta|downloaded|total|frag_idx|frag_count|PROGRESS_END|
-    let start = line.find(PROGRESS_MARKER_START)? + PROGRESS_MARKER_START.len();
-    let end = line.find(PROGRESS_MARKER_END)?;
-
-    if end <= start {
-        return None;
-    }
-
-    let content = &line[start..end];
-    let parts: Vec<&str> = content.split('|').collect();
-
-    if parts.len() < 8 {
-        return None;
-    }
-
-    let status = parts[0].to_string();
-    let percent = parse_percent(parts[1]);
-    let speed = parse_optional_string(parts[2]);
-    let eta = parse_optional_string(parts[3]);
-    let downloaded_bytes = parse_optional_u64(parts[4]);
-    let total_bytes = parse_optional_u64(parts[5]);
-    let fragment_index = parse_optional_u32(parts[6]);
-    let fragment_count = parse_optional_u32(parts[7]);
-
-    Some(ProgressInfo {
-        status,
-        percent,
-        speed,
-        eta,
-        downloaded_bytes,
-        total_bytes,
-        fragment_index,
-        fragment_count,
-    })
-}
-
 /// Parses traditional [download] lines from yt-dlp
 fn parse_download_line(line: &str) -> ParsedOutput {
     // Handle "100% of X" completion line
@@ -173,163 +137,6 @@ fn parse_download_line(line: &str) -> ParsedOutput {
 
     // Other download info
     ParsedOutput::Info(line.to_string())
-}
-
-/// Parses traditional percentage-based progress lines
-fn parse_traditional_progress(line: &str) -> Option<ProgressInfo> {
-    // Pattern: "[download]  XX.X% of YY.YYMiB at ZZ.ZZMiB/s ETA HH:MM:SS"
-    let percent_end = line.find('%')?;
-    let percent_start = line[..percent_end].rfind(|c: char| !c.is_ascii_digit() && c != '.')? + 1;
-
-    let percent_str = &line[percent_start..percent_end];
-    let percent: f64 = percent_str.trim().parse().ok()?;
-
-    let mut info = ProgressInfo {
-        status: if percent >= 100.0 {
-            "finished"
-        } else {
-            "downloading"
-        }
-        .to_string(),
-        percent,
-        ..Default::default()
-    };
-
-    // Extract speed if present
-    if let Some(at_idx) = line.find(" at ") {
-        let speed_start = at_idx + 4;
-        if let Some(speed_end) = line[speed_start..].find(' ') {
-            info.speed = Some(line[speed_start..speed_start + speed_end].to_string());
-        } else {
-            // Speed is at end of line
-            info.speed = Some(line[speed_start..].trim().to_string());
-        }
-    }
-
-    // Extract ETA if present
-    if let Some(eta_idx) = line.find("ETA ") {
-        let eta_start = eta_idx + 4;
-        let eta_str = line[eta_start..].trim();
-        if !eta_str.is_empty() && eta_str != "Unknown" {
-            info.eta = Some(eta_str.to_string());
-        }
-    }
-
-    // Extract total size if present
-    if let Some(of_idx) = line.find(" of ") {
-        let size_start = of_idx + 4;
-        if let Some(size_end) = line[size_start..].find(' ') {
-            let size_str = &line[size_start..size_start + size_end];
-            info.total_bytes = parse_size_string(size_str);
-        }
-    }
-
-    Some(info)
-}
-
-/// Parses fragment-based progress (for HLS/DASH streams)
-fn parse_fragment_progress(line: &str) -> Option<ProgressInfo> {
-    // Pattern: "[download] Downloading item X of Y"
-    // Or: "[download] Got X fragments out of Y"
-    let mut info = ProgressInfo {
-        status: "downloading".to_string(),
-        ..Default::default()
-    };
-
-    // Try to extract "X of Y" pattern
-    if let Some(of_idx) = line.find(" of ") {
-        // Find the number before "of"
-        let before_of = &line[..of_idx];
-        let current: u32 = before_of
-            .chars()
-            .rev()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>()
-            .parse()
-            .ok()?;
-
-        // Find the number after "of"
-        let after_of = &line[of_idx + 4..];
-        let total: u32 = after_of
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .ok()?;
-
-        info.fragment_index = Some(current);
-        info.fragment_count = Some(total);
-
-        if total > 0 {
-            info.percent = (current as f64 / total as f64) * 100.0;
-        }
-    }
-
-    if info.fragment_index.is_some() {
-        Some(info)
-    } else {
-        None
-    }
-}
-
-fn parse_percent(s: &str) -> f64 {
-    let s = s.trim().trim_end_matches('%').trim();
-    s.parse().unwrap_or(0.0)
-}
-
-/// yt-dlp writes "NA"/"N/A"/"Unknown"/"None" for fields it could not determine.
-fn parse_optional_string(s: &str) -> Option<String> {
-    let s = s.trim();
-    if s.is_empty() || s == "NA" || s == "N/A" || s == "Unknown" || s == "None" {
-        None
-    } else {
-        Some(s.to_string())
-    }
-}
-
-fn parse_optional_u64(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() || s == "NA" || s == "N/A" || s == "None" {
-        None
-    } else {
-        s.parse().ok()
-    }
-}
-
-fn parse_optional_u32(s: &str) -> Option<u32> {
-    let s = s.trim();
-    if s.is_empty() || s == "NA" || s == "N/A" || s == "None" {
-        None
-    } else {
-        s.parse().ok()
-    }
-}
-
-/// Parses a size string like "100.50MiB" to bytes
-fn parse_size_string(s: &str) -> Option<u64> {
-    let s = s.trim();
-
-    // Try to find the numeric part
-    let num_end = s
-        .find(|c: char| !c.is_ascii_digit() && c != '.')
-        .unwrap_or(s.len());
-    let num_str = &s[..num_end];
-    let num: f64 = num_str.parse().ok()?;
-
-    let suffix = s[num_end..].to_lowercase();
-    let multiplier: f64 = match suffix.as_str() {
-        "b" | "" => 1.0,
-        "kib" | "kb" | "k" => 1024.0,
-        "mib" | "mb" | "m" => 1024.0 * 1024.0,
-        "gib" | "gb" | "g" => 1024.0 * 1024.0 * 1024.0,
-        "tib" | "tb" | "t" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
-        _ => return None,
-    };
-
-    Some((num * multiplier) as u64)
 }
 
 /// Converts ProgressInfo to DownloadProgress for display
