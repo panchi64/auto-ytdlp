@@ -1,4 +1,6 @@
 use super::*;
+use std::fs;
+use std::path::PathBuf;
 
 #[test]
 fn test_settings_default_values() {
