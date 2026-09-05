@@ -10,6 +10,7 @@ A concurrent video downloader built on [yt-dlp](https://github.com/yt-dlp/yt-dlp
 - **Interactive TUI** - Real-time progress bars, download speeds, ETAs, and log output
 - **Headless mode** - Run without a UI for scripting, cron jobs, and automation
 - **Queue management** - Reorder, filter, add, and remove URLs interactively
+- **Scrollable queue** - Newest links appear at the top and flash briefly; scroll with the keyboard or mouse wheel
 - **Settings panel** - Configure format, quality, subtitles, metadata, and more from within the TUI
 - **Settings presets** - One-click profiles for common workflows (Best Quality, Audio Archive, Fast Download, Bandwidth Saver)
 - **SponsorBlock** - Automatically remove sponsor segments from YouTube videos
@@ -108,6 +109,9 @@ directory and marks it `(--download-dir)`, since the flag wins for that run.
 
 ## TUI Controls
 
+The pending queue is drawn newest-first, so links you just added show up at the top.
+Downloads still run in the order they were queued.
+
 ### Main Controls
 
 | Key | Action |
@@ -121,6 +125,10 @@ directory and marks it `(--download-dir)`, since the flag wins for that run.
 | `F` | Reload and sanitize `links.txt` (removes invalid URLs) |
 | `E` | Enter queue edit mode |
 | `/` | Filter/search queue |
+| `Up/Down` | Scroll the pending queue one row |
+| `PgUp/PgDn` | Scroll the pending queue one page |
+| `Home/End` | Jump to the top/bottom of the pending queue |
+| Mouse wheel | Scroll the pending queue (only over the pending panel) |
 | `U` | Update yt-dlp (blocked during active downloads) |
 | `T` | Retry failed downloads |
 | `X` | Dismiss stale download indicators |
@@ -132,6 +140,9 @@ directory and marks it `(--download-dir)`, since the flag wins for that run.
 | Key | Action |
 |-----|--------|
 | `Up/Down` | Navigate items |
+| `PgUp/PgDn` | Move the selection one page |
+| `Home/End` | Jump to the first/last item |
+| Mouse wheel | Move the selection (the view follows it) |
 | `K` | Move selected item up |
 | `J` | Move selected item down |
 | `D` / `Delete` | Remove selected item |
