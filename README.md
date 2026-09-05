@@ -221,6 +221,10 @@ It's not just for archiving course videos however! This script can handle all so
 
 And hey, if you think of some cool feature to add, the code's right there for you to tinker with!
 
+## Changelog
+
+Release history is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
