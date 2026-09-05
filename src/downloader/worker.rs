@@ -2,6 +2,7 @@ use std::{
     fs,
     io::{BufRead, BufReader},
     process::{Command, Stdio},
+    thread,
     time::Instant,
 };
 
@@ -20,7 +21,11 @@ use super::{
 /// Minimum interval between progress updates to reduce lock contention (250ms)
 const PROGRESS_UPDATE_INTERVAL_MS: u64 = 250;
 
-/// Check if force quit has been requested
+/// Cap on retained stderr. The pipe is always drained in full; only what is kept
+/// for the error message is bounded, so a runaway warning loop cannot grow the
+/// buffer without limit.
+const STDERR_CAPTURE_LIMIT: usize = 8 * 1024;
+
 #[inline]
 fn should_abort(state: &AppState) -> bool {
     state.is_force_quit().unwrap_or(false)
@@ -33,35 +38,11 @@ fn log_msg(state: &AppState, msg: impl Into<String>) {
     }
 }
 
-/// Downloads a single video from the provided URL using yt-dlp.
+/// Runs yt-dlp for one URL, streaming its progress into the app state and
+/// removing the URL from links.txt on success.
 ///
-/// This function handles the entire download process for a single URL:
-/// 1. Triggers the addition of a URL to the active downloads in the app state
-/// 2. Logs the start of the download
-/// 3. Spawns a yt-dlp process with appropriate arguments
-/// 4. Captures and logs relevant output from yt-dlp
-/// 5. Handles process completion, success/failure status
-/// 6. Triggers the updates to the download statistics in the app state
-/// 7. Triggers the removal of the downloaded URL from the links.txt file if successful
-///
-/// # Parameters
-///
-/// * `url` - The URL of the video to download
-/// * `state` - The application state to update during download
-/// * `args` - Command line arguments containing download settings
-///
-/// # Example
-///
-/// ```
-/// if let Some(url) = state_clone.pop_queue() {
-///     download_worker(url, state_clone.clone(), args_clone.clone());
-/// }
-/// ```
-///
-/// # Notes
-///
-/// This function will exit early if `force_quit` is set in the application state.
-/// It updates the progress and completed status in the app state after completion.
+/// Returns early if force quit is set, and retries network failures according to
+/// the retry settings.
 pub fn download_worker(url: String, state: AppState, args: Args) {
     if should_abort(&state) {
         return;
@@ -156,6 +137,23 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
                 break;
             }
         };
+        // Drain stderr on its own thread. yt-dlp can emit more than a pipe
+        // buffer of warnings, and once that buffer fills it blocks on write -
+        // it then stops producing stdout and never exits, hanging this worker
+        // and the whole batch behind it.
+        let stderr_drain = cmd.stderr.take().map(|stderr| {
+            thread::spawn(move || {
+                let mut captured = String::new();
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    if captured.len() < STDERR_CAPTURE_LIMIT {
+                        captured.push_str(&line);
+                        captured.push('\n');
+                    }
+                }
+                captured
+            })
+        });
+
         let reader = BufReader::new(stdout);
         let mut is_network_error = false;
         let mut last_progress_update = Instant::now();
@@ -242,15 +240,39 @@ pub fn download_worker(url: String, state: AppState, args: Args) {
             break;
         }
 
+        // stdout is exhausted, so yt-dlp is done writing; collecting stderr now
+        // cannot block, and it is where yt-dlp reports the actual failure.
+        let stderr_output = stderr_drain
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default();
+        // Only ERROR lines decide retryability. yt-dlp writes routine warnings
+        // like "WARNING: ... HTTP Error 404" while failing permanently for an
+        // unrelated reason, and check_network_error matches bare substrings, so
+        // feeding it warnings would retry dead URLs three times each.
+        if stderr_output
+            .lines()
+            .filter(|line| line.contains("ERROR"))
+            .any(check_network_error)
+        {
+            is_network_error = true;
+        }
+
         match cmd.wait() {
             Ok(status) => {
                 if status.success() {
                     success = true;
                     break;
                 } else {
+                    let detail = stderr_output
+                        .lines()
+                        .rfind(|line| line.contains("ERROR"))
+                        .unwrap_or("");
                     log_msg(
                         &state,
-                        format!("yt-dlp exited with error for {}: {}", url, status),
+                        format!(
+                            "yt-dlp exited with error for {}: {} {}",
+                            url, status, detail
+                        ),
                     );
                     if !settings.network_retry || !is_network_error || retry_count >= max_retries {
                         break;
@@ -331,88 +353,4 @@ fn check_network_error(line: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ==================== Network Error Detection ====================
-
-    #[test]
-    fn test_check_network_error_unable_to_download() {
-        assert!(check_network_error("ERROR: Unable to download webpage"));
-        assert!(check_network_error(
-            "Unable to download webpage: HTTP Error 503"
-        ));
-    }
-
-    #[test]
-    fn test_check_network_error_http_error() {
-        assert!(check_network_error("HTTP Error 404: Not Found"));
-        assert!(check_network_error("ERROR: HTTP Error 500"));
-        assert!(check_network_error("Got HTTP Error 502 Bad Gateway"));
-    }
-
-    #[test]
-    fn test_check_network_error_connection() {
-        assert!(check_network_error("Connection refused"));
-        assert!(check_network_error("Connection reset by peer"));
-        assert!(check_network_error("Connection timed out"));
-        assert!(check_network_error("ERROR: Connection failed"));
-    }
-
-    #[test]
-    fn test_check_network_error_timeout() {
-        assert!(check_network_error("Timeout while connecting"));
-        assert!(check_network_error("Request Timeout"));
-        assert!(check_network_error("ERROR: Read Timeout"));
-    }
-
-    #[test]
-    fn test_check_network_error_network() {
-        assert!(check_network_error("Network is unreachable"));
-        assert!(check_network_error("Network error occurred"));
-        assert!(check_network_error("ERROR: Network failure"));
-    }
-
-    #[test]
-    fn test_check_network_error_ssl() {
-        assert!(check_network_error("SSL: CERTIFICATE_VERIFY_FAILED"));
-        assert!(check_network_error("SSL handshake failed"));
-        assert!(check_network_error("ERROR: SSL error"));
-    }
-
-    #[test]
-    fn test_check_network_error_false_positives() {
-        // These should NOT be detected as network errors
-        assert!(!check_network_error("Video unavailable"));
-        assert!(!check_network_error("This video is private"));
-        assert!(!check_network_error("ERROR: Unsupported URL"));
-        assert!(!check_network_error("[download] 50% of 100.00MiB"));
-        assert!(!check_network_error("Downloading video info"));
-        assert!(!check_network_error("Format not available"));
-    }
-
-    #[test]
-    fn test_check_network_error_empty_string() {
-        assert!(!check_network_error(""));
-    }
-
-    #[test]
-    fn test_check_network_error_case_sensitive() {
-        // The function is case-sensitive, so these should not match
-        assert!(!check_network_error("http error")); // lowercase
-        assert!(!check_network_error("connection")); // lowercase
-        assert!(!check_network_error("timeout")); // lowercase
-        assert!(!check_network_error("network")); // lowercase
-        assert!(!check_network_error("ssl")); // lowercase
-    }
-
-    #[test]
-    fn test_check_network_error_partial_matches() {
-        // Partial/embedded matches should still work
-        assert!(check_network_error("Some prefix HTTP Error suffix"));
-        assert!(check_network_error("xxx Connection yyy"));
-        assert!(check_network_error(
-            "Error message with SSL certificate issue"
-        ));
-    }
-}
+mod tests;

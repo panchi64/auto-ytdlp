@@ -7,50 +7,60 @@ use crate::{
 
 use super::worker::download_worker;
 
-/// Processes the download queue using multiple worker threads.
+/// Returns whether the queue is empty, treating a lock failure as "not empty".
 ///
-/// This function is the main orchestrator of the download process. It:
-/// 1. Checks if the queue is empty and marks as completed if so
-/// 2. Resets application state for a new download run
-/// 3. Creates a controller thread to monitor the queue
-/// 4. Creates worker threads only when downloads are ready to start
-/// 5. Each worker thread pulls URLs from the queue and processes them
-/// 6. Handles pausing, shutdown, and force quit conditions
-/// 7. Waits for all worker threads to complete
-/// 8. Updates application state and logs completion status
+/// A failed read must never be mistaken for "nothing left to do", which would
+/// make the controller declare the batch complete while URLs are still queued.
+fn queue_is_empty(state: &AppState) -> bool {
+    state.queue_len().map(|len| len == 0).unwrap_or(false)
+}
+
+/// Returns whether there are no active downloads, treating a lock failure as
+/// "downloads still active" for the same reason as [`queue_is_empty`].
+fn active_downloads_empty(state: &AppState) -> bool {
+    state
+        .active_download_count()
+        .map(|count| count == 0)
+        .unwrap_or(false)
+}
+
+/// Spawns a controller thread that keeps N workers draining the download queue.
 ///
-/// # Parameters
-///
-/// * `state` - The application state containing the download queue
-/// * `args` - Command line arguments with download configuration
-///
-/// # Example
-///
-/// ```
-/// // Start processing the download queue in a separate thread
-/// let state_clone = state.clone();
-/// let args_clone = args.clone();
-/// thread::spawn(move || process_queue(state_clone, args_clone));
-/// ```
-///
-/// # Notes
-///
-/// Each worker thread will continue running until one of these conditions is met:
-/// - The queue is empty AND there are no active downloads
-/// - The application is shutting down
-/// - A force quit is requested
-///
-/// Workers will pause processing (but not exit) when the pause flag is set.
+/// Workers exit once the queue is empty and nothing is downloading, or on shutdown
+/// or force quit. The pause flag makes them sleep rather than exit.
 pub fn process_queue(state: AppState, args: Args) {
-    if state.queue_len().unwrap_or(0) == 0 {
-        if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
-            eprintln!("Error setting completed: {}", e);
+    match state.queue_len() {
+        Ok(len) => {
+            if len == 0 {
+                if let Err(e) = state.send(StateMessage::SetCompleted(true)) {
+                    eprintln!("Error setting completed: {}", e);
+                }
+                return;
+            }
         }
-        return;
+        Err(e) => {
+            // A lock failure is not an empty queue: bail out without claiming the
+            // batch finished, so queued URLs are not silently dropped.
+            if let Err(log_err) = state.log_error("Queue read failed", format!("{}", e)) {
+                eprintln!("Error adding log: {}", log_err);
+            }
+            return;
+        }
     }
 
     if let Err(e) = state.reset_for_new_run() {
         eprintln!("Error resetting state: {}", e);
+    }
+
+    // Mark the run as started only after the reset, which clears the flag.
+    if let Err(e) = state.send(StateMessage::SetStarted(true)) {
+        eprintln!("Error setting started: {}", e);
+    }
+
+    // Marked before the spawn so a keypress landing in the next tick already
+    // sees a live controller
+    if let Err(e) = state.set_controller_active(true) {
+        eprintln!("Error marking controller active: {}", e);
     }
 
     // Create a single controller thread instead of immediately creating all worker threads
@@ -58,7 +68,7 @@ pub fn process_queue(state: AppState, args: Args) {
     let args_clone = args.clone();
 
     let controller = thread::spawn(move || {
-        let mut worker_handles = vec![];
+        let mut worker_handles: Vec<thread::JoinHandle<()>> = vec![];
         let mut workers_created = false;
 
         loop {
@@ -82,9 +92,11 @@ pub fn process_queue(state: AppState, args: Args) {
                 continue;
             }
 
-            // Check if we need to start processing and haven't created workers yet
-            if !workers_created && state_clone.queue_len().unwrap_or(0) > 0 {
-                // Create worker threads only when we're about to start processing
+            // Spawn workers when there is queued work and none are alive. Workers
+            // exit once the queue drains, so URLs added later (clipboard, retry)
+            // need a fresh batch rather than a one-shot "created" latch.
+            let workers_alive = worker_handles.iter().any(|handle| !handle.is_finished());
+            if !workers_alive && !queue_is_empty(&state_clone) {
                 let concurrent_count = state_clone.get_concurrent().unwrap_or(1);
                 workers_created = true;
 
@@ -134,11 +146,8 @@ pub fn process_queue(state: AppState, args: Args) {
                             } else {
                                 thread::sleep(Duration::from_millis(100));
 
-                                if worker_state.queue_len().unwrap_or(0) == 0
-                                    && worker_state
-                                        .get_active_downloads()
-                                        .unwrap_or_default()
-                                        .is_empty()
+                                if queue_is_empty(&worker_state)
+                                    && active_downloads_empty(&worker_state)
                                 {
                                     // Only break if we're truly done and not just between tasks
                                     break;
@@ -152,11 +161,8 @@ pub fn process_queue(state: AppState, args: Args) {
 
             // Check if we're done
             if workers_created
-                && state_clone.queue_len().unwrap_or(0) == 0
-                && state_clone
-                    .get_active_downloads()
-                    .unwrap_or_default()
-                    .is_empty()
+                && queue_is_empty(&state_clone)
+                && active_downloads_empty(&state_clone)
             {
                 break;
             }
@@ -198,11 +204,8 @@ pub fn process_queue(state: AppState, args: Args) {
             }
         }
 
-        let queue_empty = state_clone.queue_len().unwrap_or(0) == 0;
-        let active_downloads_empty = state_clone
-            .get_active_downloads()
-            .unwrap_or_default()
-            .is_empty();
+        let queue_empty = queue_is_empty(&state_clone);
+        let downloads_drained = active_downloads_empty(&state_clone);
 
         // Update final status based on whether it was a force quit or not
         if state_clone.is_force_quit().unwrap_or(false) {
@@ -213,7 +216,7 @@ pub fn process_queue(state: AppState, args: Args) {
             }
             // Do not set SetCompleted(true) on force quit, even if queue became empty by chance.
             // The state should reflect an interruption.
-        } else if queue_empty && active_downloads_empty {
+        } else if queue_empty && downloads_drained {
             if let Err(e) = state_clone.send(StateMessage::SetCompleted(true)) {
                 eprintln!("Error setting completed: {}", e);
             }
@@ -232,6 +235,12 @@ pub fn process_queue(state: AppState, args: Args) {
         if let Err(e) = state_clone.send(StateMessage::SetStarted(false)) {
             eprintln!("Error setting started: {}", e);
         } // Always mark as not started
+
+        // Last thing the controller does: every worker has been joined by now,
+        // so anything gated on "is a download still running" opens here.
+        if let Err(e) = state_clone.set_controller_active(false) {
+            eprintln!("Error clearing controller active: {}", e);
+        }
 
         // Clear logs after a short delay, but only if not a force quit.
         // For force quit, we want to preserve the logs detailing the forceful termination.
@@ -256,179 +265,4 @@ pub fn process_queue(state: AppState, args: Args) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app_state::AppState;
-    use crate::args::Args;
-    use clap::Parser;
-
-    /// Helper function to create Args for testing
-    fn create_test_args() -> Args {
-        Args::parse_from([
-            "test",
-            "-d",
-            "/tmp/test_downloads",
-            "-f",
-            "/tmp/test_archive.txt",
-        ])
-    }
-
-    // ==================== Empty Queue Handling ====================
-
-    #[test]
-    fn test_process_queue_empty_queue_sets_completed() {
-        // Create a new app state with an empty queue
-        let state = AppState::new();
-        let args = create_test_args();
-
-        // Ensure the queue is empty
-        assert_eq!(state.queue_len().unwrap_or(0), 0);
-
-        // Process the empty queue
-        process_queue(state.clone(), args);
-
-        // Wait for the message to be processed (SetCompleted is sent via channel)
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // The completed flag should be set to true
-        assert!(state.is_completed().unwrap_or(false));
-    }
-
-    #[test]
-    fn test_process_queue_empty_queue_does_not_start() {
-        // Create a new app state with an empty queue
-        let state = AppState::new();
-        let args = create_test_args();
-
-        // Process the empty queue
-        process_queue(state.clone(), args);
-
-        // Wait for any message processing
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        // The started flag should still be false (or set to false by the end)
-        assert!(!state.is_started().unwrap_or(true));
-    }
-
-    // ==================== Concurrent Worker Count ====================
-
-    #[test]
-    fn test_get_concurrent_returns_expected_value() {
-        let state = AppState::new();
-
-        // Set concurrent downloads to a specific value
-        let _ = state.set_concurrent(8);
-
-        // Verify the value is set correctly
-        assert_eq!(state.get_concurrent().unwrap_or(0), 8);
-    }
-
-    #[test]
-    fn test_concurrent_default_value() {
-        let state = AppState::new();
-
-        // Default concurrent should be some positive number (typically from settings)
-        let concurrent = state.get_concurrent().unwrap_or(0);
-        assert!(concurrent > 0);
-    }
-
-    // ==================== Shutdown Flag Handling ====================
-
-    #[test]
-    fn test_shutdown_flag_default_false() {
-        let state = AppState::new();
-
-        // By default, shutdown should be false
-        assert!(!state.is_shutdown().unwrap_or(true));
-    }
-
-    #[test]
-    fn test_force_quit_flag_default_false() {
-        let state = AppState::new();
-
-        // By default, force_quit should be false
-        assert!(!state.is_force_quit().unwrap_or(true));
-    }
-
-    #[test]
-    fn test_shutdown_flag_can_be_set() {
-        let state = AppState::new();
-
-        // Set shutdown flag
-        let _ = state.send(StateMessage::SetShutdown(true));
-
-        // Allow some time for the message to be processed
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        // Verify the shutdown flag is set
-        assert!(state.is_shutdown().unwrap_or(false));
-    }
-
-    #[test]
-    fn test_force_quit_flag_can_be_set() {
-        let state = AppState::new();
-
-        // Set force quit flag
-        let _ = state.send(StateMessage::SetForceQuit(true));
-
-        // Allow some time for the message to be processed
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        // Verify the force quit flag is set
-        assert!(state.is_force_quit().unwrap_or(false));
-    }
-
-    // ==================== Queue State ====================
-
-    #[test]
-    fn test_queue_can_hold_urls() {
-        let state = AppState::new();
-
-        // Add URLs to the queue
-        let _ = state.send(StateMessage::LoadLinks(vec![
-            "https://example.com/video1".to_string(),
-            "https://example.com/video2".to_string(),
-            "https://example.com/video3".to_string(),
-        ]));
-
-        // Allow some time for the message to be processed
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        // Verify the queue has the expected number of items
-        let queue = state.get_queue().unwrap_or_default();
-        assert_eq!(queue.len(), 3);
-    }
-
-    #[test]
-    fn test_pop_queue_returns_url() {
-        let state = AppState::new();
-
-        // Add a URL to the queue
-        let _ = state.send(StateMessage::LoadLinks(vec![
-            "https://example.com/video".to_string(),
-        ]));
-
-        // Allow some time for the message to be processed
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        // Pop from the queue
-        let url = state.pop_queue();
-
-        assert!(url.is_ok());
-        assert!(url.expect("failed to pop from queue").is_some());
-    }
-
-    #[test]
-    fn test_pop_queue_empty_returns_none() {
-        let state = AppState::new();
-
-        // Ensure the queue is empty
-        assert_eq!(state.queue_len().unwrap_or(0), 0);
-
-        // Pop from empty queue should return None
-        let url = state.pop_queue();
-
-        assert!(url.is_ok());
-        assert!(url.expect("failed to pop from empty queue").is_none());
-    }
-}
+mod tests;

@@ -5,21 +5,51 @@ use std::fs;
 /// Default filename for the download queue
 pub const LINKS_FILE: &str = "links.txt";
 
+/// Queue file the operations below act on.
+///
+/// In test builds this is a per-thread temp file. Tests drive the real read and
+/// write paths, so without it they would fight each other over one shared
+/// `links.txt` in the working directory - and clobber the developer's own.
+#[cfg(test)]
+fn links_file_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static PATH: std::path::PathBuf = {
+            let dir = std::env::temp_dir().join("auto-ytdlp-test-links");
+            fs::create_dir_all(&dir).ok();
+            let path = dir.join(format!(
+                "links-{}.txt",
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::write(&path, "").ok();
+            path
+        };
+    }
+    PATH.with(|path| path.clone())
+}
+
+#[cfg(not(test))]
+fn links_file_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(LINKS_FILE)
+}
+
 /// Internal function to remove a link from file while holding the file lock.
 /// This prevents race conditions when multiple workers complete simultaneously.
 fn remove_link_from_file_internal(_guard: &FileLockGuard<'_>, url: &str) -> Result<()> {
-    let file_path = LINKS_FILE;
-    let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
+    let file_path = links_file_path();
+    let content = fs::read_to_string(&file_path).map_err(AppError::Io)?;
 
     // Use a temporary file for atomic writes
-    let temp_path = format!("{}.tmp", file_path);
+    let temp_path = file_path.with_extension("txt.tmp");
     let new_content: Vec<&str> = content
         .lines()
         .filter(|line| line.trim() != url.trim())
         .collect();
 
     fs::write(&temp_path, new_content.join("\n") + "\n").map_err(AppError::Io)?;
-    fs::rename(&temp_path, file_path).map_err(AppError::Io)?; // Atomic replace
+    fs::rename(&temp_path, &file_path).map_err(AppError::Io)?; // Atomic replace
 
     Ok(())
 }
@@ -42,24 +72,9 @@ pub fn remove_link_from_file_sync(state: &AppState, url: &str) -> Result<()> {
     remove_link_from_file_internal(&guard, url)
 }
 
-/// Loads URLs from the 'links.txt' file without requiring an AppState.
-///
-/// Reads all lines from the links.txt file into a vector of strings.
-/// Creates an empty file if it doesn't exist.
-/// Filters out any entries that aren't valid URLs.
-///
-/// # Returns
-///
-/// * `Result<Vec<String>>` - Vector containing all valid URLs from the file or an error
-///
-/// # Example
-///
-/// ```
-/// let links = get_links_from_file()?;
-/// state.send(StateMessage::LoadLinks(links))?;
-/// ```
+/// Reads the valid URLs out of links.txt, skipping blanks and unparseable lines.
 pub fn get_links_from_file() -> Result<Vec<String>> {
-    let content = fs::read_to_string(LINKS_FILE).map_err(AppError::Io)?;
+    let content = fs::read_to_string(links_file_path()).map_err(AppError::Io)?;
 
     Ok(content
         .lines()
@@ -69,24 +84,18 @@ pub fn get_links_from_file() -> Result<Vec<String>> {
         .collect())
 }
 
-/// Sanitizes the links.txt file by removing invalid URLs.
+/// Drops invalid URLs from links.txt, returning how many were removed.
 ///
-/// Reads the file, filters out invalid URLs, and writes the sanitized
-/// content back to the file.
-///
-/// # Returns
-///
-/// * `Result<usize>` - The number of invalid entries that were removed, or an error
-///
-/// # Example
-///
-/// ```
-/// let removed = sanitize_links_file()?;
-/// println!("Removed {} invalid URLs", removed);
-/// ```
-pub fn sanitize_links_file() -> Result<usize> {
-    let file_path = LINKS_FILE;
-    let content = fs::read_to_string(file_path).map_err(AppError::Io)?;
+/// Takes the file lock: this is a read-modify-write, so without it a worker
+/// finishing mid-scan would have its removal undone by the stale snapshot.
+pub fn sanitize_links_file(state: &AppState) -> Result<usize> {
+    let guard = state.acquire_file_lock()?;
+    sanitize_links_file_internal(&guard)
+}
+
+fn sanitize_links_file_internal(_guard: &FileLockGuard<'_>) -> Result<usize> {
+    let file_path = links_file_path();
+    let content = fs::read_to_string(&file_path).map_err(AppError::Io)?;
 
     // Single pass: count total non-empty lines and collect valid URLs
     let mut total_non_empty = 0usize;
@@ -101,39 +110,49 @@ pub fn sanitize_links_file() -> Result<usize> {
     let removed_count = total_non_empty - valid_lines.len();
 
     if removed_count > 0 {
-        let temp_path = format!("{}.tmp", file_path);
+        let temp_path = file_path.with_extension("txt.tmp");
         fs::write(&temp_path, valid_lines.join("\n") + "\n").map_err(AppError::Io)?;
-        fs::rename(&temp_path, file_path).map_err(AppError::Io)?;
+        fs::rename(&temp_path, &file_path).map_err(AppError::Io)?;
     }
 
     Ok(removed_count)
 }
 
-/// Parses URLs from clipboard content and adds them to both the links.txt file
-/// and the application state.
+/// Replaces the download queue with the contents of links.txt, returning how
+/// many URLs were loaded.
 ///
-/// This function combines adding links to the file and updating the app state directly.
+/// `sanitize` drops invalid lines from the file first; a sanitize failure is
+/// logged but does not abort the load, since the file may still be readable.
+/// An `Err` here means the queue was left untouched - callers must not report
+/// success on it.
+pub fn load_links_into_queue(state: &AppState, sanitize: bool) -> Result<usize> {
+    if sanitize {
+        match sanitize_links_file(state) {
+            Ok(removed) if removed > 0 => {
+                if let Err(e) =
+                    state.add_log(format!("Removed {} invalid URLs from links.txt", removed))
+                {
+                    eprintln!("Error adding log: {}", e);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if let Err(log_err) = state.add_log(format!("Error sanitizing links file: {}", e)) {
+                    eprintln!("Error adding log: {}", log_err);
+                }
+            }
+        }
+    }
+
+    let links = get_links_from_file()?;
+    let count = links.len();
+    state.send(StateMessage::LoadLinks(links))?;
+    Ok(count)
+}
+
+/// Adds the URLs found in clipboard text to links.txt and the queue.
 ///
-/// # Parameters
-///
-/// * `state` - Reference to the application state to update
-/// * `clipboard_content` - String content from the clipboard to parse
-///
-/// # Returns
-///
-/// * `Result<usize>` - The number of new URLs that were added, or an error
-///
-/// # Example
-///
-/// ```
-/// let ctx = ClipboardProvider::new()
-///     .map_err(|e| AppError::Clipboard(e.to_string()))?;
-///
-/// if let Ok(contents) = ctx.get_contents() {
-///     let links_added = add_clipboard_links(&state, &contents)?;
-///     state.add_log(format!("Added {} links", links_added))?;
-/// }
-/// ```
+/// Returns how many were new.
 pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<usize> {
     // Parse and deduplicate new links before writing to file
     let new_links: Vec<String> = {
@@ -146,17 +165,20 @@ pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<
             .collect();
 
         let current_links = get_links_from_file()?;
-        let existing: std::collections::HashSet<_> = current_links.iter().collect();
+        let mut seen: std::collections::HashSet<String> = current_links.iter().cloned().collect();
 
+        // `seen` grows as we go, so a URL repeated inside the pasted text is
+        // only taken once - queueing it twice would spawn two yt-dlp processes
+        // writing the same file.
         let new: Vec<String> = parsed
             .into_iter()
-            .filter(|link| !existing.contains(link))
+            .filter(|link| seen.insert(link.clone()))
             .collect();
 
         if !new.is_empty() {
             let mut all_links = current_links;
             all_links.extend(new.iter().cloned());
-            fs::write(LINKS_FILE, all_links.join("\n") + "\n").map_err(AppError::Io)?;
+            fs::write(links_file_path(), all_links.join("\n") + "\n").map_err(AppError::Io)?;
         }
 
         drop(guard);
@@ -172,300 +194,4 @@ pub fn add_clipboard_links(state: &AppState, clipboard_content: &str) -> Result<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    /// Test helper to read links from a specific file path (not the hardcoded "links.txt")
-    fn get_links_from_file_at_path(path: &std::path::Path) -> Result<Vec<String>> {
-        let content = fs::read_to_string(path).map_err(AppError::Io)?;
-
-        Ok(content
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .filter(|l| url::Url::parse(l).is_ok())
-            .collect())
-    }
-
-    /// Test helper to sanitize a links file at a specific path
-    fn sanitize_links_file_at_path(path: &std::path::Path) -> Result<usize> {
-        let content = fs::read_to_string(path).map_err(AppError::Io)?;
-
-        let mut total_non_empty = 0usize;
-        let valid_lines: Vec<&str> = content
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .inspect(|_| total_non_empty += 1)
-            .filter(|l| url::Url::parse(l).is_ok())
-            .collect();
-
-        let removed_count = total_non_empty - valid_lines.len();
-
-        if removed_count > 0 {
-            fs::write(path, valid_lines.join("\n")).map_err(AppError::Io)?;
-        }
-
-        Ok(removed_count)
-    }
-
-    #[test]
-    fn test_get_links_from_file_valid_urls() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content = "https://example.com/video1\nhttps://youtube.com/watch?v=abc123\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
-        assert_eq!(links.len(), 2);
-        assert!(links.contains(&"https://example.com/video1".to_string()));
-        assert!(links.contains(&"https://youtube.com/watch?v=abc123".to_string()));
-    }
-
-    #[test]
-    fn test_get_links_from_file_invalid_urls_filtered() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content = "https://example.com/video1\nnot-a-valid-url\nhttps://example.com/video2\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
-        assert_eq!(links.len(), 2);
-        assert!(!links.iter().any(|l| l == "not-a-valid-url"));
-    }
-
-    #[test]
-    fn test_get_links_from_file_empty_file() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        fs::write(&links_path, "").expect("failed to write empty test links file");
-
-        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
-        assert!(links.is_empty());
-    }
-
-    #[test]
-    fn test_get_links_from_file_whitespace_and_blank_lines() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content = "  https://example.com/video1  \n\n\n   \nhttps://example.com/video2\n\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
-        assert_eq!(links.len(), 2);
-        assert_eq!(links[0], "https://example.com/video1");
-        assert_eq!(links[1], "https://example.com/video2");
-    }
-
-    #[test]
-    fn test_get_links_from_file_unicode_urls() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content = "https://example.com/video?title=%E4%B8%AD%E6%96%87\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
-        assert_eq!(links.len(), 1);
-    }
-
-    #[test]
-    fn test_sanitize_links_file_removes_invalid() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content =
-            "https://example.com/video1\ninvalid-url\nhttps://example.com/video2\nalso-invalid\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let removed =
-            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
-        assert_eq!(removed, 2);
-
-        // Verify file content
-        let remaining = fs::read_to_string(&links_path).expect("failed to read back links file");
-        assert!(remaining.contains("https://example.com/video1"));
-        assert!(remaining.contains("https://example.com/video2"));
-        assert!(!remaining.contains("invalid-url"));
-        assert!(!remaining.contains("also-invalid"));
-    }
-
-    #[test]
-    fn test_sanitize_links_file_no_invalid_urls() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content = "https://example.com/video1\nhttps://example.com/video2\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let removed =
-            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
-        assert_eq!(removed, 0);
-    }
-
-    #[test]
-    fn test_sanitize_links_file_returns_count() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content = "https://valid.com\nbad1\nbad2\nbad3\nhttps://also-valid.com\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let removed =
-            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
-        assert_eq!(removed, 3);
-    }
-
-    #[test]
-    fn test_get_links_file_not_found() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        // Don't create links.txt
-        let result = get_links_from_file_at_path(&links_path);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_get_links_very_long_urls() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        // Create a very long but valid URL
-        let long_path = "a".repeat(500);
-        let long_url = format!("https://example.com/{}", long_path);
-        fs::write(&links_path, &long_url).expect("failed to write test links file");
-
-        let links = get_links_from_file_at_path(&links_path).expect("failed to read links file");
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0], long_url);
-    }
-
-    #[test]
-    fn test_sanitize_links_file_preserves_valid_content() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-
-        let content = "https://example.com/a\nbad\nhttps://example.com/b\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        let removed =
-            sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
-        assert_eq!(removed, 1);
-
-        // Original file should still contain valid URLs
-        let result = fs::read_to_string(&links_path).expect("failed to read back links file");
-        assert!(result.contains("https://example.com/a"));
-        assert!(result.contains("https://example.com/b"));
-        assert!(!result.contains("bad"));
-    }
-
-    #[test]
-    fn test_sanitize_links_file_no_temp_file_left_behind() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let links_path = temp_dir.path().join("links.txt");
-        let temp_path = temp_dir.path().join("links.txt.tmp");
-
-        let content = "https://example.com/a\nbad\n";
-        fs::write(&links_path, content).expect("failed to write test links file");
-
-        sanitize_links_file_at_path(&links_path).expect("failed to sanitize links file");
-
-        // No temp file should remain after the operation
-        assert!(!temp_path.exists());
-    }
-
-    /// Helper that mirrors the dedup logic used in add_clipboard_links
-    fn deduplicate_links(existing: &[String], clipboard: &str) -> Vec<String> {
-        let parsed: Vec<String> = clipboard
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .filter(|l| url::Url::parse(l).is_ok())
-            .collect();
-
-        let existing_set: std::collections::HashSet<_> = existing.iter().collect();
-
-        parsed
-            .into_iter()
-            .filter(|link| !existing_set.contains(link))
-            .collect()
-    }
-
-    #[test]
-    fn test_deduplicate_links_no_duplicates() {
-        let existing = vec!["https://example.com/a".to_string()];
-        let clipboard = "https://example.com/b\nhttps://example.com/c\n";
-
-        let new = deduplicate_links(&existing, clipboard);
-        assert_eq!(new.len(), 2);
-        assert!(new.contains(&"https://example.com/b".to_string()));
-        assert!(new.contains(&"https://example.com/c".to_string()));
-    }
-
-    #[test]
-    fn test_deduplicate_links_all_duplicates() {
-        let existing = vec![
-            "https://example.com/a".to_string(),
-            "https://example.com/b".to_string(),
-        ];
-        let clipboard = "https://example.com/a\nhttps://example.com/b\n";
-
-        let new = deduplicate_links(&existing, clipboard);
-        assert!(new.is_empty());
-    }
-
-    #[test]
-    fn test_deduplicate_links_mixed() {
-        let existing = vec!["https://example.com/a".to_string()];
-        let clipboard = "https://example.com/a\nhttps://example.com/b\n";
-
-        let new = deduplicate_links(&existing, clipboard);
-        assert_eq!(new.len(), 1);
-        assert_eq!(new[0], "https://example.com/b");
-    }
-
-    #[test]
-    fn test_deduplicate_links_filters_invalid_urls() {
-        let existing: Vec<String> = vec![];
-        let clipboard = "https://example.com/a\nnot-a-url\nhttps://example.com/b\n";
-
-        let new = deduplicate_links(&existing, clipboard);
-        assert_eq!(new.len(), 2);
-        assert!(!new.iter().any(|l| l == "not-a-url"));
-    }
-
-    #[test]
-    fn test_deduplicate_links_empty_clipboard() {
-        let existing = vec!["https://example.com/a".to_string()];
-        let clipboard = "";
-
-        let new = deduplicate_links(&existing, clipboard);
-        assert!(new.is_empty());
-    }
-
-    #[test]
-    fn test_deduplicate_links_whitespace_only_clipboard() {
-        let existing: Vec<String> = vec![];
-        let clipboard = "   \n\n  \n";
-
-        let new = deduplicate_links(&existing, clipboard);
-        assert!(new.is_empty());
-    }
-
-    #[test]
-    fn test_deduplicate_links_trims_whitespace() {
-        let existing: Vec<String> = vec![];
-        let clipboard = "  https://example.com/a  \n  https://example.com/b  \n";
-
-        let new = deduplicate_links(&existing, clipboard);
-        assert_eq!(new.len(), 2);
-        assert_eq!(new[0], "https://example.com/a");
-        assert_eq!(new[1], "https://example.com/b");
-    }
-}
+mod tests;

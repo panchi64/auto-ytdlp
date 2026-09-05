@@ -5,17 +5,34 @@ Terminal User Interface using ratatui and crossterm.
 ## Structure
 
 ### tui/
-The main TUI implementation, split into submodules:
+The main TUI implementation:
 
-- **mod.rs**: `run_tui()` main event loop, `UiContext` struct for UI-only state (not in AppState)
-- **render.rs**: All rendering functions - `ui()` coordinates panels, helpers for progress bars, help overlay, toast
-- **input.rs**: Keyboard event handlers split by mode (normal, edit, help overlay)
+- **mod.rs**: `flip_index()`, `url_key()`, `FLASH_DURATION` and the module wiring
+- **context.rs**: `UiContext`, the UI-only state that is not in AppState, plus the flash tracking and scroll helpers
+- **run.rs**: `run_tui()` main event loop
+- **render/**: `mod.rs` lays out the frame; `panels/{pending,active,logs_footer}.rs` draw each panel; `overlays.rs` has the help overlay and toast; `style.rs` holds shared colour and formatting helpers
+- **input/**: `normal.rs`, `edit.rs`, `filter.rs` and `mouse.rs` handle one mode each; `actions/downloads.rs` and `actions/links.rs` hold what the keys do. The root keeps `DownloadState`, `ForceQuitState`, `InputResult` and `NormalModeContext`.
 
-### settings_menu.rs
-F2 overlay for configuring download options. Uses `SettingsMenu` struct with:
-- `selected_option`: Current highlighted setting
-- `edit_mode`: Whether currently editing a value
-- Option cycling with Up/Down arrows when editing
+### settings_menu/
+F2 overlay for configuring download options.
+
+**`table.rs` is where a setting is declared.** The `SETTINGS` descriptor array carries
+each item's label, description, kind (`Bool`/`Enum`/`Text`/`Action`), audio-only
+override, and the `value` fn that renders its column. It replaced five separate `match`
+blocks over the menu index plus a positional value array.
+
+Adding a setting still touches four places, and all four are index-keyed rather than
+positional, so a mismatch is a compile error or a visibly wrong row rather than a silent
+misalignment:
+
+1. `table.rs` — a new `IDX_*` constant, a `SETTINGS` entry, and a bump to `SETTINGS_COUNT`
+2. `display.rs` — a `values::*` formatter for the new row
+3. `input.rs` and `apply.rs` — the read/write arms, which cannot be table-driven because each maps a distinct enum
+4. `render/popups.rs` — `edit_popup_options`, if the row is an `Enum` needing choice labels
+
+The rest: `mod.rs` (the `SettingsMenu` struct, `persist`), `input.rs` (navigation),
+`edit.rs` (value cycling), `apply.rs` (writing the setting back), `display.rs` (list item
+formatting), `render/` (the list and its popups).
 
 ## Key Patterns
 

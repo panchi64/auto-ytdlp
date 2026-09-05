@@ -21,9 +21,9 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let state = AppState::new();
 
-    state.set_concurrent(args.concurrent)?;
-
     let settings = state.get_settings().unwrap_or_default();
+    state.set_concurrent(args.resolve_concurrent(&settings))?;
+
     let download_dir = args.resolve_download_dir(&settings);
     if let Err(error) = fs::create_dir_all(&download_dir) {
         // In TUI mode this must not be fatal: the directory can come from the
