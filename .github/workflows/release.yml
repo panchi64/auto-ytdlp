@@ -116,27 +116,50 @@ jobs:
 
       - name: Generate release notes
         id: release-notes
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
-          PREVIOUS_TAG=$(git tag --sort=-v:refname | head -n1)
+          # Prefer the hand-written CHANGELOG section for this version. Fall back
+          # to commit subjects if the release was cut without a matching entry.
+          if [ -f CHANGELOG.md ]; then
+            awk -v hdr="## [$VERSION]" '
+              index($0, hdr) == 1 { found = 1; next }
+              found && index($0, "## ") == 1 { exit }
+              found && /^\[.*\]: http/ { next }
+              found { print }
+            ' CHANGELOG.md > changelog-section.md
+          else
+            : > changelog-section.md
+          fi
+
+          if [ ! -s changelog-section.md ]; then
+            echo "No CHANGELOG.md entry for $VERSION, falling back to commit subjects" >&2
+            PREVIOUS_TAG=$(git tag --sort=-v:refname | head -n1)
+            {
+              if [ -n "$PREVIOUS_TAG" ]; then
+                echo "## Changes since $PREVIOUS_TAG"
+                echo ""
+                git log "$PREVIOUS_TAG"..HEAD --pretty=format:"- %s" --no-merges
+              else
+                echo "## Initial Release"
+                echo ""
+                git log --pretty=format:"- %s" --no-merges -20
+              fi
+              echo ""
+            } > changelog-section.md
+          fi
+
+          DELIM="NOTES_EOF_$(date +%s)_$RANDOM"
           {
-            echo 'notes<<EOF'
-            if [ -n "$PREVIOUS_TAG" ]; then
-              echo "## Changes since $PREVIOUS_TAG"
-              echo ""
-              git log "$PREVIOUS_TAG"..HEAD --pretty=format:"- %s" --no-merges
-            else
-              echo "## Initial Release"
-              echo ""
-              git log --pretty=format:"- %s" --no-merges -20
-            fi
-            echo ""
+            echo "notes<<$DELIM"
+            cat changelog-section.md
             echo ""
             echo "## Checksums (SHA-256)"
             echo '```'
             cat artifacts/checksums-sha256.txt
             echo '```'
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

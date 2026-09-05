@@ -56,7 +56,7 @@ sudo mv auto-ytdlp-<version>-<platform> /usr/local/bin/auto-ytdlp
 ### Cargo
 
 ```bash
-cargo install auto-ytdlp-rs
+cargo install auto-ytdlp
 ```
 
 ### From Source
