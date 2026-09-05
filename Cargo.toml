@@ -16,7 +16,8 @@ categories = [
     "filesystem"
 ]
 # Agent guidance for working on this repo; of no use to someone depending on the crate.
-exclude = ["**/CLAUDE.md"]
+# README art is served from GitHub, so the crate does not need to carry the gif either.
+exclude = ["**/CLAUDE.md", "assets/"]
 
 [dependencies]
 anyhow = "1.0.98"

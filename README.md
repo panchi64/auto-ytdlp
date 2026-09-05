@@ -2,7 +2,7 @@
 
 A concurrent video downloader built on [yt-dlp](https://github.com/yt-dlp/yt-dlp) with an interactive terminal interface. Queue up URLs, configure quality and format settings, and let it handle the rest.
 
-<img width="1903" height="986" alt="Auto-YTDLP TUI Screenshot" src="https://github.com/user-attachments/assets/18cf03b0-369a-470e-b6da-fe230edde28b" />
+<img width="960" height="540" alt="Auto-YTDLP TUI demo" src="https://raw.githubusercontent.com/panchi64/auto-ytdlp/main/assets/demo.gif" />
 
 ## Features
 
